@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api, versionText } from '../api.js'
+import AutomationProfileSelector from '../components/AutomationProfileSelector.jsx'
 import { deriveSavedLookWardrobeProgression } from '../wardrobe.js'
 import { resolveEffectiveWardrobes } from '../sessionPlan.js'
 
@@ -118,12 +119,29 @@ const wasLookApplied = (loaded, request) => {
 
   const decisions = request.decisions
   const before = request.planBefore
-  const expectedLook = decisions.look === 'replace' ? request.look.appearance : before.look
-  const expectedLookOrigin = decisions.look === 'replace' ? 'saved_look' : 'user'
+  const profileApplication = request.kind === 'profile-look'
+  const expectedLook = decisions.look === 'replace'
+    ? (profileApplication ? request.profile.permanent_appearance : request.look.appearance)
+    : before.look
+  const expectedLookOrigin = decisions.look === 'replace'
+    ? (profileApplication && request.profile.permanent_appearance !== request.look.appearance ? 'user' : 'saved_look')
+    : 'user'
   if (
     current.look !== expectedLook
     || current.authoring.shared_state?.look?.origin !== expectedLookOrigin
   ) return false
+
+  if (profileApplication) {
+    const actual = loaded.profileApplication
+    const expected = request.profile
+    if (
+      !actual || actual.look_key !== expected.look_key
+      || versionText(actual.version) !== versionText(expected.version)
+      || actual.content_digest !== expected.content_digest
+      || versionText(actual.profile_revision) !== versionText(expected.profile_revision)
+      || actual.profile_digest !== expected.profile_digest
+    ) return false
+  }
 
   if (decisions.initial_wardrobe === 'replace') {
     let expectedWardrobe
@@ -176,6 +194,8 @@ export default function SessionLookProgression({
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const [decisions, setDecisions] = useState({ look: '', initial_wardrobe: '' })
+  const [profileChooserOpen, setProfileChooserOpen] = useState(false)
+  const [selectedProfile, setSelectedProfile] = useState(null)
   const [removalOrderConfirmed, setRemovalOrderConfirmed] = useState(false)
   const [finalStage, setFinalStage] = useState('')
   const [intermediateStages, setIntermediateStages] = useState([])
@@ -271,6 +291,8 @@ export default function SessionLookProgression({
     setStartTakeId('')
     setEndTakeId('')
     setEventPolicy('')
+    setProfileChooserOpen(false)
+    setSelectedProfile(null)
   }, [sessionId, snapshotDigest])
 
   useEffect(() => {
@@ -327,6 +349,7 @@ export default function SessionLookProgression({
     setDetailError('')
     setLookDetail(null)
     setDecisions({ look: '', initial_wardrobe: '' })
+    setSelectedProfile(null)
     try {
       const result = await api.getVersioned(
         `/api/looks/${encodeURIComponent(key)}/versions/${exactVersion}`,
@@ -388,7 +411,7 @@ export default function SessionLookProgression({
         setActionError(`The saved plan is still below revision ${minimumRevision}. Retry readback; the write will not be sent again.`)
         return false
       }
-      const applied = request.kind === 'look'
+      const applied = request.kind === 'look' || request.kind === 'profile-look'
         ? wasLookApplied(loaded, request)
         : wasProgressionApplied(loaded, request)
       setUnknownOutcome(null)
@@ -397,8 +420,10 @@ export default function SessionLookProgression({
       onBusyChange(false)
       if (applied) {
         setActionError('')
-        setNotice(request.kind === 'look'
-          ? 'The saved look is present in the authoritative session plan.'
+        setNotice(request.kind === 'profile-look'
+          ? 'The exact saved look and profile revision are present in the authoritative session plan.'
+          : request.kind === 'look'
+            ? 'The saved look is present in the authoritative session plan.'
           : 'The reviewed clothing progression is present in the authoritative session plan.')
       } else {
         setActionError(`The plan was reloaded at revision ${loaded.planRevision}, but it does not contain this requested change. Review the current plan before starting a new action.`)
@@ -439,9 +464,13 @@ export default function SessionLookProgression({
     try {
       const path = kind === 'look'
         ? `/api/sessions/${requestSessionId}/plan/apply-look`
-        : `/api/sessions/${requestSessionId}/plan/wardrobe-progression/apply`
-      const result = kind === 'look'
-        ? await api.postVersioned(path, requestBody, ['version'])
+        : kind === 'profile-look'
+          ? `/api/sessions/${requestSessionId}/plan/apply-automation-profile`
+          : `/api/sessions/${requestSessionId}/plan/wardrobe-progression/apply`
+      const result = kind === 'profile-look'
+        ? await api.postVersioned(path, requestBody, ['version', 'profile_revision', 'expected_revision'])
+        : kind === 'look'
+          ? await api.postVersioned(path, requestBody, ['version'])
         : await api.post(path, requestBody)
       if (!isCurrent(requestSessionId, requestId, mutationRequestRef)) return
       const minimumRevision = Number.isInteger(result?.plan_revision)
@@ -497,6 +526,39 @@ export default function SessionLookProgression({
     }, {
       look: lookDetail,
       decisions: Object.fromEntries(required.map((field) => [field, decisions[field]])),
+      planBefore: plan,
+    })
+  }
+
+  const handleApplyProfile = () => {
+    if (!lookDetail || !selectedProfile || !Number.isInteger(revision) || revision < 1) return
+    const required = lookDetail.outfit || wardrobeOrigin === 'saved_look'
+      ? ['look', 'initial_wardrobe'] : ['look']
+    if (decisions.look !== 'replace' || required.some((field) => (
+      field === 'look' ? decisions[field] !== 'replace' : !['replace', 'keep'].includes(decisions[field])
+    ))) return
+    if (lookDetail.outfit === null && decisions.initial_wardrobe === 'replace') return
+    const selected = {
+      look_key: selectedProfile.look_key,
+      version: versionText(selectedProfile.version),
+      content_digest: selectedProfile.content_digest,
+      profile_revision: versionText(selectedProfile.profile_revision),
+      profile_digest: selectedProfile.profile_digest,
+      permanent_appearance: selectedProfile.permanent_appearance,
+    }
+    const selectedDecisions = Object.fromEntries(required.map((field) => [field, decisions[field]]))
+    void applyMutation('profile-look', {
+      expected_revision: revision,
+      look_key: selected.look_key,
+      version: selected.version,
+      content_digest: selected.content_digest,
+      profile_revision: selected.profile_revision,
+      profile_digest: selected.profile_digest,
+      decisions: selectedDecisions,
+    }, {
+      look: lookDetail,
+      profile: selected,
+      decisions: selectedDecisions,
       planBefore: plan,
     })
   }
@@ -596,6 +658,7 @@ export default function SessionLookProgression({
                   setDetailLoading(false)
                   setDetailError('')
                   setDecisions({ look: '', initial_wardrobe: '' })
+                  setSelectedProfile(null)
                   invalidatePreview()
                   if (summary) void loadLookVersion(key, versionText(summary.version))
                 }}
@@ -622,6 +685,7 @@ export default function SessionLookProgression({
                   setDetailLoading(false)
                   setDetailError('')
                   setDecisions({ look: '', initial_wardrobe: '' })
+                  setSelectedProfile(null)
                   invalidatePreview()
                 }}
               />
@@ -716,6 +780,37 @@ export default function SessionLookProgression({
                 >
                   {mutationBusy ? 'Applying saved look…' : 'Apply saved look with these decisions'}
                 </button>
+                <details onToggle={(event) => setProfileChooserOpen(event.currentTarget.open)}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Apply an exact automation profile (optional)</summary>
+                  <div style={{ display: 'grid', gap: 8, paddingTop: 8 }}>
+                    <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                      Profile application replaces appearance with the selected revision’s permanent projection and records its exact identity through the current plan revision CAS. A profile can remain useful for manual sessions even when it is not ready for Full Auto.
+                    </p>
+                    <AutomationProfileSelector
+                      key={`${lookDetail.key}:${versionText(lookDetail.version)}:${lookDetail.content_digest}`}
+                      look={lookDetail}
+                      active={profileChooserOpen}
+                      disabled={disabled || mutationBusy || Boolean(unknownOutcome)}
+                      label="Exact profile revision for this saved-look version"
+                      onProfileChange={setSelectedProfile}
+                    />
+                    {selectedProfile && <div className="muted" aria-label="Selected exact profile application">
+                      <p>Selected profile revision {versionText(selectedProfile.profile_revision)} · {selectedProfile.profile_digest}</p>
+                      <p>Permanent appearance projection: {selectedProfile.permanent_appearance || 'No permanent appearance text'}</p>
+                    </div>}
+                    <button
+                      type="button"
+                      onClick={handleApplyProfile}
+                      disabled={disabled || mutationBusy || Boolean(unknownOutcome) || !selectedProfile
+                        || !Number.isInteger(revision) || revision < 1
+                        || decisions.look !== 'replace'
+                        || (needsWardrobeDecision && !['replace', 'keep'].includes(decisions.initial_wardrobe))
+                        || (!lookDetail.outfit && decisions.initial_wardrobe === 'replace')}
+                    >
+                      {mutationBusy ? 'Applying exact profile revision…' : 'Apply exact profile and saved look with these decisions'}
+                    </button>
+                  </div>
+                </details>
               </div>
             </div>
           )}

@@ -159,7 +159,10 @@ Verified baseline from the repository layout and application entry points.
   authoring-v1 plan through compare-and-swap, recording exact profile evidence
   when used. `frontend/src/appearanceOwnership.js` maps browser UTF-16 selection
   offsets to exact Unicode-scalar spans; `frontend/src/views/Looks.jsx` provides
-  the editor, JSON import/export, and photo review, but not a profile editor.
+  saved-look editing, JSON import/export, and photo review.
+  `frontend/src/views/AutomationProfileEditor.jsx` edits immutable profiles for
+  exact look versions; `frontend/src/components/AutomationProfileSelector.jsx`
+  loads exact revisions and displays server readiness.
   `frontend/src/views/SessionLookProgression.jsx`, embedded in `SessionView.jsx`,
   handles saved-look selection and wardrobe progression in **Shared Choices**.
 - Legacy room imports and catalogue preparation use `importer.py`,

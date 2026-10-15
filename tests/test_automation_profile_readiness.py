@@ -594,7 +594,10 @@ def test_reviewed_copy_resolves_exact_source_and_invalidates_changed_states_and_
     )
     assert changed_canonical["garment_coverage"] == {}
     assert changed_canonical["skipped"] == [
-        {"garment_key": garments[0]["key"], "state": "aside", "code": "state_changed"},
+        {
+            "garment_key": garments[0]["key"],
+            "state": "aside", "code": "state_changed",
+        },
     ]
     monkeypatch.setattr(saved_looks, "get_version", original_get_version)
 
@@ -629,8 +632,37 @@ def test_reviewed_copy_resolves_exact_source_and_invalidates_changed_states_and_
     )
     assert invalidated["garment_coverage"] == {}
     assert invalidated["skipped"] == [
-        {"garment_key": changed_key, "state": "aside", "code": "state_changed"},
+        {
+            "garment_key": changed_key,
+            "state": "aside", "code": "state_changed",
+        },
     ]
+
+    # Even a target aside phrase equal to the source worn phrase is a changed
+    # cross-version state and must not be treated as equivalent.
+    adversarial_target = deepcopy(same_facts)
+    adversarial_garment = adversarial_target["outfit"]["garments"][0]
+    adversarial_key = adversarial_garment["key"]
+    adversarial_garment["aside"] = adversarial_garment["wording"]
+    original_get_version = saved_looks.get_version
+    monkeypatch.setattr(
+        saved_looks,
+        "get_version",
+        lambda key, version: (
+            adversarial_target
+            if (key, version) == (same_facts["key"], same_facts["version"])
+            else original_get_version(key, version)
+        ),
+    )
+    adversarial = saved_looks.copy_reviewed_automation_profile_facts(
+        same_facts["key"], same_facts["version"], source_profile["profile_digest"],
+        2, [{"garment_key": adversarial_key, "source_state": "worn", "state": "aside"}],
+    )
+    assert adversarial["garment_coverage"] == {}
+    assert adversarial["skipped"] == [{
+        "garment_key": adversarial_key, "source_state": "worn",
+        "state": "aside", "code": "state_changed",
+    }]
 
 
 def test_reviewed_copy_never_promotes_unknown_region_facts(tmp_path, monkeypatch):

@@ -217,6 +217,39 @@ describe('Looks manual editor', () => {
       .toEqual(['Version 1', 'Version 2', 'Version 3 · latest'])
   })
 
+  it('offers profile correction only for a saved exact look version and keeps discovery explicit', async () => {
+    summaries = [summary('look-studio', 2, 'Studio look')]
+    versions['look-studio:2'] = savedLook({ version: 2, appearance: 'latest appearance' })
+    const get = api.get
+    get.mockImplementation(async (path) => {
+      if (path === '/api/looks') return summaries
+      if (path === '/api/wardrobe') return inventory
+      if (path === '/api/comfy/status') return { online: false, output_dir_ok: true }
+      if (path === '/api/components?all=1') return []
+      if (path.includes('/automation-profiles?content_digest=')) return {
+        look: { key: 'look-studio', version: 2, content_digest: versions['look-studio:2'].content_digest },
+        latest_profile_revision: 0,
+        profiles: [],
+      }
+      const match = path.match(/^\/api\/looks\/([^/]+)\/versions\/(\d+)$/)
+      if (match) return versions[`${decodeURIComponent(match[1])}:${Number(match[2])}`]
+      throw new Error(`Unexpected GET ${path}`)
+    })
+    await render()
+    await click(button('Studio look · version 2'))
+    const summaryRow = [...container.querySelectorAll('summary')]
+      .find((item) => item.textContent.includes('Portable look-v1 does not include profiles'))
+    expect(summaryRow).toBeTruthy()
+    expect(get).not.toHaveBeenCalledWith(expect.stringContaining('/automation-profiles?'))
+
+    await click(summaryRow)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(get).toHaveBeenCalledWith(expect.stringContaining('/automation-profiles?content_digest='), {
+      losslessVersions: true,
+    })
+    expect(container.textContent).toContain('No profile exists for this exact look version')
+  })
+
   it('keeps the form intact and shows a readable disabled-feature error after a failed save', async () => {
     vi.spyOn(api, 'post').mockRejectedValue(Object.assign(
       new Error('Resource planning feature is disabled.'), { status: 503 },

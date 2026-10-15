@@ -1,5 +1,18 @@
 # Project Diary
 
+## Full Auto Task 6.1 Profile UI Boundaries
+
+Keep source version/profile identity explicit throughout editing and readback;
+identical permanent projections do not prove identical profile revisions.
+Visual selection must retain exact Unicode scalar text and show the joined
+projection before acceptance. Scope no-coverage assertions to selected states.
+Same-version state equivalence is a new user assertion; cross-version reuse
+requires unchanged same-state identity/wording and preserves reviewed provenance.
+Changing a source selection must invalidate confirmed previews and in-flight
+results. Preserve legacy helper response shapes while extending explicit mapping
+requests. Independent stale-preview and legacy-shape regressions both passed
+after repair; only the final complete suite establishes acceptance for Task 6.1.
+
 ## Full Auto Task 5.8 Rollback Boundaries
 
 Reuse the online SQLite backup and restore exact pre-upgrade bytes separately;

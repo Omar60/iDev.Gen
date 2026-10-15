@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   scalarOffsetFromUtf16,
   scalarSpanFromUtf16Selection,
+  assignScalarSpanOwner,
 } from './appearanceOwnership.js'
 
 describe('appearance ownership Unicode coordinates', () => {
@@ -20,5 +21,25 @@ describe('appearance ownership Unicode coordinates', () => {
     expect(() => scalarOffsetFromUtf16('a😀b', 2)).toThrow(RangeError)
     expect(() => scalarOffsetFromUtf16('\ud800', 0)).toThrow(RangeError)
     expect(() => scalarOffsetFromUtf16('ok', 3)).toThrow(RangeError)
+  })
+
+  it('corrects ownership by Unicode scalar selection and preserves a full partition', () => {
+    const appearance = 'A 😀 bracelet.'
+    let nextId = 0
+    const ids = () => `segment-${++nextId}`
+    const initial = [{ start: 0, end: Array.from(appearance).length, owner: 'permanent' }]
+    const first = assignScalarSpanOwner(appearance, initial, 3, 12, 'garment:bracelet', ids)
+    const corrected = assignScalarSpanOwner(appearance, first, 3, 4, 'permanent', ids)
+    expect(corrected.map(({ text, owner }) => ({ text, owner }))).toEqual([
+      { text: 'A 😀', owner: 'permanent' },
+      { text: ' ', owner: 'permanent' },
+      { text: 'bracelet', owner: 'garment:bracelet' },
+      { text: '.', owner: 'permanent' },
+    ])
+    expect(corrected[0].start).toBe(0)
+    expect(corrected.at(-1).end).toBe(Array.from(appearance).length)
+    expect(corrected.slice(1).every((segment, index) => (
+      corrected[index].end === segment.start
+    ))).toBe(true)
   })
 })

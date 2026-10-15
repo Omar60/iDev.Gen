@@ -89,4 +89,32 @@ describe('lossless saved-look version transport', () => {
     }, ['expected_version'])).rejects.toThrow('Invalid expected_version version.')
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
+  it('preserves automation profile revisions and supports the initial zero CAS token', async () => {
+    const responseText = `{"profile_revision":${SQLITE_MAX},"latest_profile_revision":0,"profile":{"authored_provenance":{"accepted_revision":${SQLITE_MAX}}}}`
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockResolvedValue(responseText),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(api.getVersioned('/api/profile')).resolves.toEqual({
+      profile_revision: SQLITE_MAX,
+      latest_profile_revision: 0,
+      profile: { authored_provenance: { accepted_revision: SQLITE_MAX } },
+    })
+    await expect(api.postVersioned('/api/profile', {
+      expected_profile_revision: '0',
+      version: SQLITE_MAX,
+      source_profile_revision: SQLITE_MAX,
+    }, ['expected_profile_revision', 'version', 'source_profile_revision'])).resolves.toEqual({
+      profile_revision: SQLITE_MAX,
+      latest_profile_revision: 0,
+      profile: { authored_provenance: { accepted_revision: SQLITE_MAX } },
+    })
+    expect(fetchMock.mock.calls[1][1].body).toBe(
+      `{"expected_profile_revision":0,"version":${SQLITE_MAX},"source_profile_revision":${SQLITE_MAX}}`,
+    )
+  })
 })

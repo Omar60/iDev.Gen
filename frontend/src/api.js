@@ -70,7 +70,11 @@ export function parseVersionJson(source) {
         whitespace()
         if (source[index++] !== ':') throw new SyntaxError('Invalid JSON object.')
         output.push(':')
-        value(key === 'version' || key === 'expected_version')
+        value([
+          'version', 'expected_version', 'profile_revision',
+          'expected_profile_revision', 'latest_profile_revision',
+          'accepted_revision', 'source_profile_revision',
+        ].includes(key))
         whitespace()
         const separator = source[index++]
         output.push(separator)
@@ -120,7 +124,11 @@ function versionedBody(body, integerFields) {
   const seen = new Set()
   const serialize = (value, path) => {
     if (fields.has(path)) {
-      const rawValue = versionText(value)
+      const text = typeof value === 'string'
+        ? value
+        : typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : ''
+      const allowZero = path === 'expected_profile_revision'
+      const rawValue = allowZero && text === '0' ? '0' : versionText(value)
       if (rawValue === null) throw new TypeError(`Invalid ${path} version.`)
       seen.add(path)
       return rawValue

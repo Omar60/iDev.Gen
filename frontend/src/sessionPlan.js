@@ -571,6 +571,7 @@ export async function loadSessionPlan(sessionId, api) {
       conflicts: data.conflicts || rawPlan.conflicts || [],
       preparation: data.preparation || rawPlan.preparation || null,
       sharedSummary: data.shared_summary || null,
+      ...(data.profile_application ? { profileApplication: data.profile_application } : {}),
       error: null,
     }
   } catch (err) {

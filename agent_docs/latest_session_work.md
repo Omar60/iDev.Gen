@@ -1,78 +1,72 @@
 # Latest Session Work
 
-## Full Auto Task 5.8 Accepted Handoff
+## Full Auto Task 6.1 Accepted Handoff
 
-Deployment `full-auto-first-task-20261014` entered from clean `f3f8f10` and
-completes only Task 5.8 of `automate-resource-session-full-auto`. Heavy intake
-covered the complete project framework, proposal, design, tasks, delta specs
-and decisive backup/startup/attempt contracts. Main retained architecture,
-scope, integration and acceptance. Internal Executor implemented and repaired;
-Tester independently reviewed actual code/diff and executed the gates;
-Archivist documented the isolated rollback procedure and owns closure reporting.
-Only 5.8 is newly checked: 30 of 41 tasks. Do not advance another task.
+Deployment `fa61-20261014` completes only Task 6.1 of
+`automate-resource-session-full-auto`, entered from a clean working tree.
+Heavy intake covered the complete agent_docs framework, applicable instructions,
+proposal, design, tasks, delta specs and decisive UI/API/profile contracts.
+Main retained architecture, scope, integration and acceptance. Internal Explorer
+mapped the existing contracts; Executor implemented and repaired; independent
+Tester reviewed actual source/diff and executed gates; Archivist updated public
+and structural documentation and owns the final token report.
+Only 6.1 is newly checked: 31 of 41 tasks. Do not advance Task 6.2.
 
 ## Delivered Contracts
 
-The existing SQLite online backup captures committed WAL without schema
-migration and excludes external photographs. The new read-only
-`python -m backend.full_auto_rollback --check` accepts explicit backup,
-upgraded/restored data, old config and runtime-root inputs. It verifies
-integrity, pre-Full-Auto table footprint, byte-identical restore, effective
-config/environment paths, disjoint file identities and upgraded settlement.
-All database inspection uses private temporary copies; the upgraded copy
-includes WAL with before/copied/after digest checks. No supplied SQLite file
-is opened by SQLite, avoiding transient source sidecars.
+`AutomationProfileEditor` in Looks supports exact immutable version/profile
+selection, authoritative readiness, structured chest/hips/legs/feet coverage,
+explicit baseline/inventory, visual Unicode scalar ownership correction and
+joined permanent projection. Permanent and selected-state no-coverage shortcuts
+require preview and acceptance. Coverage copies bind exact source identity:
+same-version cross-state equivalence becomes an explicit user assertion;
+cross-version reuse requires unchanged key, canonical wording and same-state
+wording. Changed states stay unknown and appearance spans are reassigned.
 
-Nonterminal runs, uncertain or pending attempts, assistant work, runner owners,
-running sessions/shots and uncertain admissions refuse rollback. Risk acceptance
-does not settle old unknown evidence. Known failed submitted work requires a
-terminal known attempt. Directory aliases and shared upgraded identities,
-including config hardlinks, are refused. The command returns sanitized nonzero
-refusals and never launches an executable. README and session guidance link the
-runbook, which distinguishes upgraded command root from old runtime root.
+A shared exact-profile selector supports explicit manual application through the
+existing plan CAS endpoint. Optional safe profile identity in plan readback
+reconciles lost responses, including profiles with identical projections.
+Linked profiles remain frozen. Legacy profile-free behavior and portable-v1
+remain compatible; no per-take profile setup or implicit generation is added.
+New discovery and read-only copy preview reuse saved-look services. Profile
+revisions preserve SQLite integer identity through browser transport.
 
 ## Independent Evidence
 
-Final `.venv/Scripts/python.exe -m pytest`: 3,554 passed, two skipped, five
-warnings, exit zero in 1,151.22 seconds. External raw log:
-`fa58-full-pytest.log` in the temporary evidence directory. Skips: opt-in
-500-take synthesis benchmark and unavailable Windows filesystem symlinks.
-Warnings: two Pydantic register warnings, Starlette/httpx TestClient,
-AnyIO portal alias and raw httpx bytes upload.
+Final `.venv/Scripts/python.exe -m pytest`: 3,558 passed, two skipped, five
+warnings, exit zero in 1,037.40 seconds. Raw external evidence:
+`fa61-full-python-pytest-final.log` in the temporary evidence directory.
+Full frontend: 35 files, 622 passed (`fa61-full-frontend-test.log`). Build passed
+with the existing bundle-size warning (`fa61-frontend-build.log`). Frontend
+remained unchanged after these gates; independent UI probes passed three cases
+and API probes two cases after repairs (`fa61-frontend-independent-probes-final.log`
+and `fa61-python-independent-probes-final.log`). Privacy passed ten tests; strict
+OpenSpec and diff checks passed, with final logs named `fa61-privacy-gate-final.log`,
+`fa61-openspec-strict-final.log` and `fa61-git-diff-check-final.log`.
+Final task/document changes receive compact closure checks before commit.
 
-Independent CLI/sidecar probes passed all thirteen cases:
-`fa58-independent-final.log`. Explicit `tests/historical_rollback.py` passed
-three cases: `fa58-historical-final.log`. The new case extracts recorded
-pre-Full-Auto revision `fd38b6173ad25bd8ba44dbfd6c97d5523a61b78e` and executes
-its real app lifespan/API against restored synthetic data, preserving upgraded
-database/image bytes. Existing historical cases also ran; their tar extraction
-and compatibility warnings remain visible. Privacy passed ten checks:
-`fa58-privacy-final.log`. Strict OpenSpec and diff checks passed:
-`fa58-openspec-strict.log` and `fa58-diff-check-final.log`. Frontend was unchanged;
-npm tests/build were not required or run. Final documentation/task-state changes
-receive compact closure checks before commit.
-
-Independent red probes found orphan running shots, incomplete admissions,
-hidden junction/hardlink identity, config hardlink identity and transient WAL
-sidecar writes. Executor repaired all five; unchanged acceptance requirements
-passed afterwards. The sidecar observer was corrected to inspect source paths
-during every open inspection connection without requiring source-file opening.
-Red evidence is retained in `fa58-independent-rollback-probes.log` and
-`fa58-wal-sidecar-probe.log`; focused repair evidence is
-`fa58-rollback-repair1-focused.log`. Earlier failures are not passing gates.
+Independent review reproduced a stale confirmed copy preview after changing its
+source profile revision. Executor repaired invalidation and response fencing;
+the unchanged independent regression passed. The first full Python run failed
+one existing independent response-shape assertion: adding source_state to legacy
+copy diagnostics broke compatibility. Executor restored legacy output while
+keeping explicit mapping output; the existing test remained intact. That failed
+run (3,557 passed, two skipped, one failed) remains separate in
+`fa61-full-python-pytest.log`; the final complete run above is acceptance evidence.
+An approximate catalogue failure hypothesis was withdrawn after its exact test
+passed; an earlier misspelled test invocation returned not-found, not a test
+failure. No unrelated catalogue repair was made.
 
 ## Closure and Continuation
 
-The acceptance commit includes only Task 5.8 code, scoped and independent tests,
-its marking and required public/project documentation. Archivist supplies final
-read-only Git handoff and exact Deployment Token Report after repository seal.
-Task 6.1 and all other unfinished tasks remain pending. No external agent,
-external handoff, real generation, next task, push or archive occurred.
+Main accepts Task 6.1 and owns its acceptance commit after final isolated diff
+and closure checks. Archivist supplies the read-only Git handoff and exact
+six-column Deployment Token Report after the repository seal. Task 6.2 and all
+other unfinished tasks stay pending. No external agent, external handoff,
+real generation, archive or push occurred.
 
-The preflight verifies schema/identity, not historical provenance or creation
-time. Operators must retain the recorded source/backup provenance, stop/fence
-all processes, preserve matching photos and start the old release with the
-validated environment. It cannot retroactively prevent direct old-code writes
-to upgraded data; `PRAGMA user_version` alone offers no such protection.
-Historical synthetic startup does not establish real ComfyUI generation,
-photo completeness, visual fidelity or arbitrary older-release compatibility.
+Unknown coverage remains a blocker for Full Auto readiness; partial coverage
+certifies no side/subregion and v1 covers only four named regions. Ownership
+and coverage are instructions, not guarantees of pixels or anatomy. Full Auto
+selection/consent/progress UI and separately authorized live acceptance remain
+unfinished. Portable JSON intentionally excludes separate automation profiles.

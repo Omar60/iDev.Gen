@@ -38,3 +38,40 @@ export function scalarSpanFromUtf16Selection(text, startOffset, endOffset) {
     text: scalarValues(text).slice(start, end).join(''),
   }
 }
+
+export function assignScalarSpanOwner(text, segments, start, end, owner, idFactory) {
+  const values = scalarValues(text)
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+      || start < 0 || end <= start || end > values.length) {
+    throw new RangeError('ownership selection is outside the appearance')
+  }
+  if (typeof owner !== 'string' || !owner) throw new TypeError('ownership must be explicit')
+  const makeId = typeof idFactory === 'function'
+    ? idFactory
+    : (() => `appearance-${Math.random().toString(36).slice(2)}`)
+  const source = segments.length
+    ? segments
+    : [{ start: 0, end: values.length, owner: null }]
+  const result = []
+  for (const segment of source) {
+    const boundaries = [segment.start]
+    if (start > segment.start && start < segment.end) boundaries.push(start)
+    if (end > segment.start && end < segment.end) boundaries.push(end)
+    boundaries.push(segment.end)
+    boundaries.sort((left, right) => left - right)
+    for (let index = 0; index < boundaries.length - 1; index += 1) {
+      const partStart = boundaries[index]
+      const partEnd = boundaries[index + 1]
+      if (partEnd <= partStart) continue
+      const partOwner = partStart >= start && partEnd <= end ? owner : segment.owner
+      result.push({
+        segment_id: makeId(),
+        start: partStart,
+        end: partEnd,
+        text: values.slice(partStart, partEnd).join(''),
+        owner: partOwner,
+      })
+    }
+  }
+  return result
+}

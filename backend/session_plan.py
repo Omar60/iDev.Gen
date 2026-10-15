@@ -3459,6 +3459,31 @@ def _load_session_profile_application(session_id: int, revision: int, plan: dict
     return application
 
 
+def get_session_profile_application_identity(
+    session_id: int, plan_revision: int,
+) -> dict | None:
+    """Return only the exact saved profile identity bound to the current plan revision."""
+    if type(session_id) is not int or session_id < 1 or type(plan_revision) is not int or plan_revision < 1:
+        raise PlanValidationError("session profile identity request is invalid")
+    draft = get_draft(session_id)
+    if draft is None or draft["plan_revision"] != plan_revision:
+        raise PlanValidationError("session profile identity revision is unavailable")
+    application = _load_session_profile_application(
+        session_id, plan_revision, draft["plan"],
+    )
+    if application is None:
+        return None
+    saved = application["saved_look"]
+    profile = application["profile"]
+    return {
+        "look_key": saved["key"],
+        "version": saved["version"],
+        "content_digest": saved["content_digest"],
+        "profile_revision": profile["profile_revision"],
+        "profile_digest": profile["profile_digest"],
+    }
+
+
 def _same_session_profile_application(left: dict, right: dict) -> bool:
     return (
         left["saved_look"]["key"] == right["saved_look"]["key"]

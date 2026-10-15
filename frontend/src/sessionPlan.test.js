@@ -787,6 +787,30 @@ describe('API persistence and CAS operations (loadSessionPlan & executeSavePlan)
     expect(res.plan).not.toHaveProperty('shared_summary')
   })
 
+  it('preserves optional exact profile identity for lost-response readback', async () => {
+    const profileApplication = {
+      look_key: 'look-exact',
+      version: '9007199254740993',
+      content_digest: 'a'.repeat(64),
+      profile_revision: '9007199254740995',
+      profile_digest: 'b'.repeat(64),
+    }
+    const mockApi = {
+      getVersioned: async () => ({
+        plan_revision: 8,
+        plan: {
+          version: 'resource-v1', look: 'Reviewed appearance', initial_wardrobe: '',
+          takes: [{ take_id: 'take-001' }], selected_resources: [],
+        },
+        profile_application: profileApplication,
+      }),
+    }
+
+    const res = await loadSessionPlan(10, mockApi)
+    expect(res.profileApplication).toEqual(profileApplication)
+    expect(res.plan).not.toHaveProperty('profile_application')
+  })
+
   it('loadSessionPlan fails visibly and never creates fallback plan when backend gives 404', async () => {
     const mockApi = {
       get: async () => {

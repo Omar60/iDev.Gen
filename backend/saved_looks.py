@@ -1085,6 +1085,52 @@ def get_latest_automation_profile(look_key: str, version: int) -> dict | None:
     )
 
 
+def list_automation_profile_identities(
+    look_key: str, version: int, content_digest: str,
+) -> dict:
+    """List exact profile identities and authoritative readiness for one look version."""
+    if (
+        not _valid_profile_key(look_key)
+        or type(version) is not int
+        or not 1 <= version <= _SQLITE_INTEGER_MAX
+        or not _valid_sha256(content_digest)
+    ):
+        _invalid()
+    saved = get_version(look_key, version)
+    if saved["content_digest"] != content_digest:
+        _automation_profile_stale()
+    rows = db.q(
+        """SELECT profile_revision, profile_digest
+           FROM saved_look_automation_profile
+           WHERE look_key = ? AND look_version = ?
+           ORDER BY profile_revision""",
+        look_key, version,
+    )
+    profiles = []
+    for row in rows:
+        profile = get_automation_profile(
+            look_key, version, row["profile_revision"], content_digest,
+            row["profile_digest"],
+        )
+        profiles.append({
+            "profile_revision": profile["profile_revision"],
+            "profile_digest": profile["profile_digest"],
+            "readiness": get_automation_profile_readiness(
+                look_key, version, content_digest,
+                profile["profile_revision"], profile["profile_digest"],
+            ),
+        })
+    return {
+        "look": {
+            "key": look_key,
+            "version": version,
+            "content_digest": content_digest,
+        },
+        "latest_profile_revision": profiles[-1]["profile_revision"] if profiles else 0,
+        "profiles": profiles,
+    }
+
+
 def _readiness_diagnostic(code: str, **fields) -> dict:
     return {"code": code, **fields}
 
@@ -1321,18 +1367,30 @@ def copy_reviewed_automation_profile_facts(
     normalized = []
     seen = set()
     for selection in selections:
-        if type(selection) is not dict or set(selection) != {"garment_key", "state"}:
-            _invalid()
-        key, state = selection["garment_key"], selection["state"]
-        if (
-            not _valid_profile_key(key)
-            or type(state) is not str
-            or state not in {"worn", "aside"}
-            or (key, state) in seen
+        if type(selection) is not dict or set(selection) not in (
+            {"garment_key", "state"},
+            {"garment_key", "source_state", "state"},
         ):
             _invalid()
-        seen.add((key, state))
-        normalized.append({"garment_key": key, "state": state})
+        key, target_state = selection["garment_key"], selection["state"]
+        source_state_explicit = "source_state" in selection
+        source_state = selection.get("source_state", target_state)
+        if (
+            not _valid_profile_key(key)
+            or type(source_state) is not str
+            or source_state not in {"worn", "aside"}
+            or type(target_state) is not str
+            or target_state not in {"worn", "aside"}
+            or (key, source_state, target_state) in seen
+        ):
+            _invalid()
+        seen.add((key, source_state, target_state))
+        normalized.append({
+            "garment_key": key,
+            "source_state": source_state,
+            "state": target_state,
+            "source_state_explicit": source_state_explicit,
+        })
 
     target_saved = get_version(target_look_key, target_version)
     source = _automation_profile_by_digest(source_profile_digest)
@@ -1349,29 +1407,65 @@ def copy_reviewed_automation_profile_facts(
     }
     copied = {}
     skipped = []
+    selected = []
+    has_explicit_source_state = any(
+        selection["source_state_explicit"] for selection in normalized
+    )
     for selection in normalized:
-        key, state = selection["garment_key"], selection["state"]
+        key = selection["garment_key"]
+        source_state, target_state = selection["source_state"], selection["state"]
+
+        selected_item = {"garment_key": key}
+        if selection["source_state_explicit"]:
+            selected_item["source_state"] = source_state
+        selected_item["state"] = target_state
+        selected.append(selected_item)
+
+        def skipped_selection(code: str) -> dict:
+            diagnostic = {"garment_key": key, "state": target_state, "code": code}
+            if selection["source_state_explicit"]:
+                diagnostic["source_state"] = source_state
+            return diagnostic
+
         target_garment = _saved_garment(target_saved, key)
         source_garment = _saved_garment(source_saved, key)
         if target_garment is None or source_garment is None:
-            skipped.append({"garment_key": key, "state": state, "code": "state_changed"})
+            skipped.append(skipped_selection("state_changed"))
             continue
         source_fact = _profile_fact(source_profile, {
-            "kind": "garment_state", "garment_key": key, "state": state,
+            "kind": "garment_state", "garment_key": key, "state": source_state,
         })
-        if not _same_garment_state_wording(source_garment, target_garment, state):
-            skipped.append({"garment_key": key, "state": state, "code": "state_changed"})
+        same_exact_version = (
+            source_saved["key"] == target_saved["key"]
+            and source_saved["version"] == target_saved["version"]
+            and source_saved["content_digest"] == target_saved["content_digest"]
+        )
+        if source_state == target_state:
+            equivalent_state = _same_garment_state_wording(
+                source_garment, target_garment, source_state,
+            )
+        elif same_exact_version:
+            equivalent_state = (
+                source_garment["key"] == target_garment["key"]
+                and source_garment["wording"] == target_garment["wording"]
+            )
+        else:
+            equivalent_state = False
+        if not equivalent_state or (
+            target_state == "aside" and not target_garment["aside"]
+        ):
+            skipped.append(skipped_selection("state_changed"))
             continue
         if source_fact is None:
-            skipped.append({"garment_key": key, "state": state, "code": "source_state_missing"})
+            skipped.append(skipped_selection("source_state_missing"))
             continue
-        selector = {"kind": "garment_state", "garment_key": key, "state": state}
+        selector = {"kind": "garment_state", "garment_key": key, "state": source_state}
         if not _profile_fact_provenance_accepted(
             source_fact["provenance"], source_saved, source_profile, source_fact, selector,
         ):
-            skipped.append({"garment_key": key, "state": state, "code": "source_fact_unaccepted"})
+            skipped.append(skipped_selection("source_fact_unaccepted"))
             continue
-        copied.setdefault(key, {})[state] = {
+        copied.setdefault(key, {})[target_state] = {
             "regions": dict(source_fact["regions"]),
             "provenance": dict(provenance),
         }
@@ -1398,13 +1492,16 @@ def copy_reviewed_automation_profile_facts(
                 "provenance": dict(provenance),
             }
 
-    return {
+    result = {
         "source_profile_digest": source_profile_digest,
         "accepted_revision": accepted_revision,
         "garment_coverage": copied,
         "baseline_coverage": baseline,
         "skipped": skipped,
     }
+    if has_explicit_source_state:
+        result["selections"] = selected
+    return result
 
 
 def export_version(look_key: str, version: int) -> dict:

@@ -1500,6 +1500,32 @@ class AutomationProfilePublishIn(BaseModel):
     profile: dict[str, Any]
 
 
+class AutomationProfileCopySelectionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    garment_key: str = Field(min_length=1, max_length=128)
+    source_state: Literal["worn", "aside"] | None = None
+    state: Literal["worn", "aside"]
+
+
+class AutomationProfileCopyPreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    target_look_key: str = Field(min_length=1, max_length=128)
+    target_version: int = Field(ge=1, le=saved_looks._SQLITE_INTEGER_MAX)
+    target_content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_profile_revision: int = Field(
+        ge=0, le=saved_looks._SQLITE_INTEGER_MAX - 1,
+    )
+    source_look_key: str = Field(min_length=1, max_length=128)
+    source_version: int = Field(ge=1, le=saved_looks._SQLITE_INTEGER_MAX)
+    source_content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_profile_revision: int = Field(ge=1, le=saved_looks._SQLITE_INTEGER_MAX)
+    source_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selections: list[AutomationProfileCopySelectionIn] = Field(max_length=256)
+    copy_baseline: bool = Field(default=False, strict=True)
+
+
 class ApplySavedLookProfileIn(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -1615,6 +1641,72 @@ def publish_saved_look_automation_profile(p: AutomationProfilePublishIn):
             p.look_key, p.version, p.content_digest,
             p.expected_profile_revision, p.profile,
         )
+    except saved_looks.SavedLookError as exc:
+        return _automation_profile_error(exc)
+    except Exception:
+        return _stable_error(500, "internal_error", "Unexpected server error.")
+
+
+@app.get("/api/looks/{look_key:path}/versions/{version}/automation-profiles")
+def discover_saved_look_automation_profiles(
+    request: Request,
+    look_key: str,
+    version: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
+):
+    """List exact profile identities and server readiness for one immutable look version."""
+    query = request.query_params
+    if len(query.multi_items()) != 1 or set(query.keys()) != {"content_digest"}:
+        return _stable_error(
+            422, "invalid_request", "Query must contain the exact saved-look content digest.",
+        )
+    try:
+        return saved_looks.list_automation_profile_identities(
+            look_key, version, query["content_digest"],
+        )
+    except saved_looks.SavedLookError as exc:
+        return _automation_profile_error(exc)
+    except Exception:
+        return _stable_error(500, "internal_error", "Unexpected server error.")
+
+
+@app.post("/api/looks/automation-profiles/copy-preview")
+def preview_saved_look_automation_profile_copy(p: AutomationProfileCopyPreviewIn):
+    """Preview explicitly selected reviewed facts without changing profile storage."""
+    try:
+        target = saved_looks.get_version(p.target_look_key, p.target_version)
+        if target["content_digest"] != p.target_content_digest:
+            raise saved_looks.SavedLookError(
+                409, "automation_profile_stale",
+                "Saved look or automation profile changed; reload it and try again.",
+            )
+        source_profile = saved_looks.get_automation_profile(
+            p.source_look_key, p.source_version, p.source_profile_revision,
+            p.source_content_digest, p.source_profile_digest,
+        )
+        accepted_revision = p.expected_profile_revision + 1
+        copied = saved_looks.copy_reviewed_automation_profile_facts(
+            p.target_look_key, p.target_version, source_profile["profile_digest"],
+            accepted_revision,
+            [selection.model_dump(exclude_none=True) for selection in p.selections],
+            copy_baseline=p.copy_baseline,
+        )
+        return {
+            "target": {
+                "look_key": p.target_look_key,
+                "version": p.target_version,
+                "content_digest": p.target_content_digest,
+                "expected_profile_revision": p.expected_profile_revision,
+                "profile_revision": accepted_revision,
+            },
+            "source": {
+                "look_key": p.source_look_key,
+                "version": p.source_version,
+                "content_digest": p.source_content_digest,
+                "profile_revision": source_profile["profile_revision"],
+                "profile_digest": source_profile["profile_digest"],
+            },
+            **copied,
+        }
     except saved_looks.SavedLookError as exc:
         return _automation_profile_error(exc)
     except Exception:
@@ -7430,6 +7522,17 @@ def get_plan_draft(sid: int):
     draft = session_plan.get_draft(sid)
     if draft is None:
         raise HTTPException(404, "no plan draft for this session")
+    try:
+        profile_identity = session_plan.get_session_profile_application_identity(
+            sid, draft["plan_revision"],
+        )
+    except Exception:
+        return _stable_error(
+            500, "profile_application_invalid",
+            "Stored session profile identity is inconsistent; reload is unavailable.",
+        )
+    if profile_identity is not None:
+        draft["profile_application"] = profile_identity
     draft["shared_summary"] = resource_preparation.build_shared_state_summary(
         draft.get("plan")
     )

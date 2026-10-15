@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api, parseVersionJson, versionText } from '../api.js'
+import AutomationProfileEditor from './AutomationProfileEditor.jsx'
 
 async function postRawJson(path, body, action) {
   const response = await fetch(path, {
@@ -1386,6 +1387,16 @@ export default function Looks() {
               </div>
             </form>
           )}
+          {currentLook && !isNew && !photoMode
+            && currentLook.key === selectedKey
+            && versionText(currentLook.version) === versionText(selectedVersion)
+            && (
+              <AutomationProfileEditor
+                key={`${currentLook.key}:${versionText(currentLook.version)}:${currentLook.content_digest}`}
+                look={currentLook}
+                disabled={saving || dirty || lookLoading}
+              />
+            )}
           {wardrobeError && form?.outfitMode !== 'garments' && <p className="error" role="alert">{wardrobeError}</p>}
         </section>
       </div>

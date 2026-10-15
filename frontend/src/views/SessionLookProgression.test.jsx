@@ -149,6 +149,24 @@ const savedPlanAfterLook = (before, decisions, version = savedLook) => {
   return next
 }
 
+const profileReadback = (revision = '1', digest = 'd'.repeat(64)) => ({
+  look_key: savedLook.key,
+  version: String(savedLook.version),
+  content_digest: savedLook.content_digest,
+  profile_revision: revision,
+  profile_digest: digest,
+})
+
+const automationProfile = {
+  profile_revision: 1,
+  profile_digest: 'd'.repeat(64),
+  look: { key: savedLook.key, version: savedLook.version, content_digest: savedLook.content_digest },
+  appearance_segments: [{
+    segment_id: 'permanent', start: 0, end: Array.from(savedLook.appearance).length,
+    text: savedLook.appearance, owner: 'permanent',
+  }],
+}
+
 beforeEach(() => {
   vi.restoreAllMocks()
 })
@@ -213,6 +231,96 @@ describe('Task 9.11 session saved looks and wardrobe progression', () => {
     }, ['version'])
     expect(onReload).toHaveBeenCalledWith(5)
     expect(container.textContent).toContain('authoritative session plan')
+  })
+
+  it('applies an exact manual profile once and reconciles a lost response by profile identity', async () => {
+    const before = makePlan()
+    const projected = savedPlanAfterLook(before, { look: 'replace', initial_wardrobe: 'keep' })
+    const onReload = vi.fn(async () => ({
+      ok: true,
+      planRevision: 5,
+      plan: projected,
+      profileApplication: profileReadback(),
+    }))
+    const get = vi.spyOn(api, 'getVersioned').mockImplementation(async (path) => {
+      if (path === '/api/looks') return [{ key: savedLook.key, version: savedLook.version, name: savedLook.name }]
+      if (path.includes('/automation-profiles?') && path.includes('content_digest') && path.includes('look_key=')) {
+        return automationProfile
+      }
+      if (path.includes('/automation-profiles?') && path.includes('content_digest')) return {
+        look: { key: savedLook.key, version: savedLook.version, content_digest: savedLook.content_digest },
+        latest_profile_revision: 1,
+        profiles: [{ profile_revision: 1, profile_digest: automationProfile.profile_digest,
+          readiness: { profile_ready: false, manual_available: true, diagnostics: [{ code: 'coverage_unknown', region: 'feet' }] } }],
+      }
+      return savedLook
+    })
+    const post = vi.spyOn(api, 'postVersioned').mockRejectedValue(new TypeError('connection lost'))
+    mountPanel({ plan: before, revision: 4, onReload })
+    await click(container.querySelector('summary'))
+    await selectValue(container.querySelector('[aria-label="Saved look"]'), savedLook.key)
+    await selectValue(container.querySelector('[aria-label="Look decision"]'), 'replace')
+    await selectValue(container.querySelector('[aria-label="Wardrobe decision"]'), 'keep')
+    const profileSummary = [...container.querySelectorAll('summary')]
+      .find((item) => item.textContent.includes('Apply an exact automation profile'))
+    await click(profileSummary)
+    const profileSelect = [...container.querySelectorAll('select')]
+      .find((item) => item.getAttribute('aria-label') === 'Exact profile revision for this saved-look version')
+    await selectValue(profileSelect, '1')
+    expect(container.textContent).toContain('manual use remains available')
+    await click([...container.querySelectorAll('button')]
+      .find((item) => item.textContent.includes('Apply exact profile and saved look')))
+
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith(`/api/sessions/911/plan/apply-automation-profile`, {
+      expected_revision: 4,
+      look_key: savedLook.key,
+      version: '3',
+      content_digest: savedLook.content_digest,
+      profile_revision: '1',
+      profile_digest: automationProfile.profile_digest,
+      decisions: { look: 'replace', initial_wardrobe: 'keep' },
+    }, ['version', 'profile_revision', 'expected_revision'])
+    expect(onReload).toHaveBeenCalledWith(5)
+    expect(container.textContent).toContain('exact saved look and profile revision')
+    expect(get).toHaveBeenCalledWith(expect.stringContaining('/automation-profiles?'))
+  })
+
+  it('rejects readback of a different profile revision with the same appearance and never resends', async () => {
+    const before = makePlan()
+    const onReload = vi.fn(async () => ({
+      ok: true,
+      planRevision: 5,
+      plan: savedPlanAfterLook(before, { look: 'replace', initial_wardrobe: 'keep' }),
+      profileApplication: profileReadback('2', 'e'.repeat(64)),
+    }))
+    vi.spyOn(api, 'getVersioned').mockImplementation(async (path) => {
+      if (path === '/api/looks') return [{ key: savedLook.key, version: savedLook.version, name: savedLook.name }]
+      if (path.includes('/automation-profiles?') && path.includes('look_key=')) return automationProfile
+      if (path.includes('/automation-profiles?')) return {
+        look: { key: savedLook.key, version: savedLook.version, content_digest: savedLook.content_digest },
+        latest_profile_revision: 1,
+        profiles: [{ profile_revision: 1, profile_digest: automationProfile.profile_digest,
+          readiness: { profile_ready: true, manual_available: true, diagnostics: [] } }],
+      }
+      return savedLook
+    })
+    const post = vi.spyOn(api, 'postVersioned').mockRejectedValue(new TypeError('connection lost'))
+    mountPanel({ plan: before, revision: 4, onReload })
+    await click(container.querySelector('summary'))
+    await selectValue(container.querySelector('[aria-label="Saved look"]'), savedLook.key)
+    await selectValue(container.querySelector('[aria-label="Look decision"]'), 'replace')
+    await selectValue(container.querySelector('[aria-label="Wardrobe decision"]'), 'keep')
+    await click([...container.querySelectorAll('summary')]
+      .find((item) => item.textContent.includes('Apply an exact automation profile')))
+    await selectValue([...container.querySelectorAll('select')]
+      .find((item) => item.getAttribute('aria-label') === 'Exact profile revision for this saved-look version'), '1')
+    await click([...container.querySelectorAll('button')]
+      .find((item) => item.textContent.includes('Apply exact profile and saved look')))
+
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(onReload).toHaveBeenCalledTimes(1)
+    expect(container.textContent).toContain('does not contain this requested change')
   })
 
   it('requires Keep for an old saved-look wardrobe over an appearance-only version', async () => {

@@ -84,9 +84,12 @@ wording that conflicts with the applicable worn, aside, or removed stage; the
 exact accepted aside phrase remains valid. Derived coverage is composed once,
 and the creative writer cannot replace it. Matching is literal: it can flag a
 negation or an object mention and miss a paraphrase, so it is not semantic or
-pixel verification. Exact profile read/create-revision and manual
-session-application APIs are documented in
-[Saved looks](docs/looks.md#automation-profile-api). Guided creation also has a
+pixel verification. The Looks view includes a reusable profile editor for each
+exact saved-look version, so ownership and coverage facts are recorded once
+rather than per take. Its workflow and manual application are documented in
+[Saved looks](docs/looks.md#reusable-automation-profiles); exact profile
+read/write APIs are in [the API reference](docs/looks.md#automation-profile-api).
+Guided creation also has a
 backend API for selecting an exact saved-look snapshot and for read-only Full
 Auto preflight plus atomic initial run authorization. The API also exposes
 persisted-run status, Cancel, Resume, and read-only Resume scope comparison;
@@ -209,9 +212,9 @@ queue time does not consume the 900-second executing-shot timeout. If another
 client queues work after an empty observation, Full Auto may still send one
 normal-priority POST for that attempt. This local policy provides no remote queue
 fairness or exclusivity guarantee. The isolated Full Auto rollback preflight
-and runbook are documented in [Operational rollback](docs/rollback.md). The
-profile editor, Full Auto selection/consent/progress UI, and separately
-authorized real-generation validation remain unfinished.
+and runbook are documented in [Operational rollback](docs/rollback.md). Full
+Auto selection/consent/progress UI and separately authorized real-generation
+validation remain unfinished.
 The existing manual workflow remains available for sessions without a
 nonterminal Full Auto owner.
 While a run is nonterminal or its work is unresolved, supported DELETE routes

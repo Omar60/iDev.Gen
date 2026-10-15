@@ -66,6 +66,54 @@ applies it through a signed preview and plan CAS. See
 [applying a saved look](sessions.md#applying-a-saved-look) and
 [previewing a saved-look outfit progression](sessions.md#previewing-a-saved-look-outfit-progression).
 
+### Reusable automation profiles
+
+In **Looks**, expand **Reusable automation profile** on an exact saved-look
+version. Load a selected immutable profile revision as the editing basis, or
+start a blank draft; publishing creates the next revision for that same look
+version. The selector shows server readiness and the reasons an incomplete
+profile needs attention. An incomplete profile may still be applied for its
+permanent appearance projection when the current-plan API checks and accepted
+appearance ownership validate the exact profile. It supplies no derived
+coverage; existing manual coverage remains user-authored.
+
+For each appearance phrase, select the saved text and assign it to permanent
+appearance or a progressive garment. The source text stays unchanged; the view
+shows the joined permanent projection used by profile-aware application. The
+**All appearance is permanent** shortcut previews and asks you to confirm that
+assertion for the exact version.
+
+Record chest, hips, legs, and feet as full, partial, none, or unknown for the
+baseline (every listed garment absent) and each garment's worn and, when
+defined, moved-aside state. A blank draft has unknown coverage, no baseline,
+and no inventory assertion. Confirm explicitly whether the listed garment
+inventory is complete. Unknown is not none, and garment prose does not supply
+coverage facts. You can publish an incomplete profile, but Full Auto readiness
+requires a confirmed complete inventory and known applicable facts. Coverage
+is recorded once in the reusable profile instead of repeated per take.
+
+The **No coverage in supported regions** shortcut applies only to states you
+select, after preview and confirmation. It asserts `none` for the four listed
+regions and does not confirm inventory completeness.
+
+To reuse coverage, select an exact source version and profile revision, map
+source states to target states, preview, and confirm the copy. Mapping between
+states within the same exact look version is an explicit user assertion that
+those states are equivalent. Across look versions, only the same state copies,
+and only when the garment key, canonical wording, and state wording are
+unchanged. The accepted source profile digest is retained as provenance;
+changed or unaccepted states remain unknown, and appearance ownership spans
+are never copied.
+
+In **Shared Choices**, you can explicitly apply an exact profile revision to an
+authoring-v1 plan with the required replace/keep decisions. The write uses the
+current plan revision, then reads the saved plan back; a linked shot freezes
+the selected profile identity. Application updates the plan and its eligible
+stage coverage. It does not start a progression, prepare or review takes,
+submit them, or run the session. The profile covers only the four named regions
+and does not guarantee rendered pixels. Portable look-v1 JSON does not include
+profiles.
+
 ### Automation profile storage
 
 The backend can store a separate immutable v1 automation profile for an exact
@@ -159,6 +207,16 @@ its assigned `profile_revision` and `profile_digest`. The revision check is
 compare-and-swap: one concurrent writer can succeed, and stale writers must
 reload before retrying.
 
+`GET /api/looks/{look_key}/versions/{version}/automation-profiles?content_digest=...`
+discovers profile revision/digest identities and server readiness for that
+exact look version. It does not select or return a latest profile; choose a
+revision explicitly, then use the exact-identity read above.
+
+`POST /api/looks/automation-profiles/copy-preview` accepts exact source and
+target identities plus selected state mappings, and returns copied and skipped
+facts without writing a profile. Review that response before publishing a new
+profile revision; stale source or target identity is refused.
+
 `POST /api/sessions/{sid}/plan/apply-automation-profile` explicitly applies an
 exact saved-look and profile identity to an existing authoring-v1 plan. Its
 closed body contains `expected_revision`, `look_key`, `version`,
@@ -172,19 +230,25 @@ identity freeze, or other plan conflict is refused without applying the request.
 This operation only updates the plan; it does not authorize preparation
 or generation.
 
+`GET /api/sessions/{sid}/plan` includes `profile_application` only when the
+current plan revision has an applied profile. The field contains only
+`look_key`, `version`, `content_digest`, `profile_revision`, and
+`profile_digest`, providing a safe identity readback after an uncertain write.
+
 These routes return errors in the stable
 `{"detail":{"code":"...","message":"..."}}` envelope. Codes identify
 invalid requests, stale identities/revisions, missing records, disabled
 resource planning, and plan conflicts; messages do not expose private source
 values, filesystem paths, or internal exception text.
 
-These profile routes remain backend capabilities; there is no profile editor.
-Guided creation can apply an exact saved-look snapshot through
+The Looks view edits reusable profiles, and Shared Choices can explicitly
+apply an exact revision to a manual authoring-v1 plan. Guided creation can
+apply an exact saved-look snapshot through
 `POST /api/sessions/guided`, without applying a profile or starting progression.
 The guided-creation API also provides Full Auto preflight and atomic initial
 authorization. The backend coordinator and status/Cancel/Resume API are
-implemented; session progress/results and Cancel/Resume UI, plus Full Auto
-selection/consent UI, are not implemented.
+implemented; Full Auto selection/consent/progress UI and Cancel/Resume UI are
+not implemented.
 The manual saved-look workflow remains available, including progression
 preview, review, submission, and Run controls. See the
 [guided creation API](sessions.md#saved-look-and-full-auto-creation-api).
@@ -418,7 +482,10 @@ remains a separate operation.
 | `POST /api/looks/{key}/versions` | Append a version with the same content fields and required `expected_version`. |
 | `GET /api/looks/automation-profiles` | Read one automation-profile revision using its complete saved-look and profile identity. |
 | `POST /api/looks/automation-profiles` | Create an immutable automation-profile revision with `expected_profile_revision` compare-and-swap. |
+| `GET /api/looks/{look_key}/versions/{version}/automation-profiles?content_digest=...` | Discover exact profile identities and server readiness; the caller chooses a revision. |
+| `POST /api/looks/automation-profiles/copy-preview` | Preview selected coverage facts from an exact source profile for an exact target look; no write. |
 | `POST /api/sessions/{sid}/plan/apply-automation-profile` | Apply an exact profile to an existing authoring-v1 plan using `expected_revision` compare-and-swap. |
+| `GET /api/sessions/{sid}/plan` | Read the plan and, when bound, its safe five-field `profile_application` identity. |
 | `POST /api/looks/photo-stages` | Stage one validated JPEG, PNG, or WebP image for preview, manual description, or extraction. |
 | `GET /api/looks/photo-stages/{photo_id}` | Read temporary photo-stage status and metadata. |
 | `GET /api/looks/photo-stages/{photo_id}/preview` | Read staged image bytes for preview. |
