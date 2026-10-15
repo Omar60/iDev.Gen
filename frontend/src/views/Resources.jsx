@@ -1,7 +1,9 @@
-import React, { useEffect, useState, useRef } from 'react'
-import { api } from '../api'
+import React, { useEffect, useLayoutEffect, useState, useRef } from 'react'
+import { api, versionText } from '../api'
 import { go } from '../App.jsx'
 import CanvasSize from './CanvasSize.jsx'
+import AutomationProfileSelector from '../components/AutomationProfileSelector.jsx'
+import { deriveSavedLookWardrobeProgression } from '../wardrobe.js'
 import {
   normalizeFieldRole,
   extractCategories,
@@ -29,10 +31,36 @@ const GUIDED_DIMENSIONS = [
   ['pose', 'Pose'],
   ['expression', 'Expression'],
 ]
+const SHA256 = /^[0-9a-f]{64}$/
 
 const defaultGuidedPolicy = () => Object.fromEntries(
   GUIDED_DIMENSIONS.map(([field]) => [field, { mode: 'vary', value: '' }]),
 )
+
+const fullAutoWardrobeAtStage = (look, stageIndex) => {
+  if (!Number.isInteger(stageIndex) || stageIndex < 0) return ''
+  if (look?.outfit === null) {
+    if (stageIndex !== 0) return ''
+    const unchanged = deriveSavedLookWardrobeProgression(null, '', 1)[0]
+    return unchanged ? `Appearance-only look; ${unchanged}` : 'Appearance-only saved look; wardrobe remains unchanged.'
+  }
+  if (!look?.outfit) return ''
+  try {
+    return deriveSavedLookWardrobeProgression(
+      look.outfit, '', stageIndex + 1, { stageIndices: [stageIndex] },
+    )[stageIndex] || ''
+  } catch {
+    return ''
+  }
+}
+
+const fullAutoWardrobeStageCount = (look) => {
+  if (look?.outfit === null) return 1
+  const garments = look?.outfit?.garments
+  if (!Array.isArray(garments) || garments.length === 0
+    || typeof garments[garments.length - 1]?.aside !== 'string') return 0
+  return garments.length + 1 + Number(Boolean(garments[garments.length - 1].aside))
+}
 
 const freezeGuidedRequest = (request) => Object.freeze({
   ...request,
@@ -40,10 +68,13 @@ const freezeGuidedRequest = (request) => Object.freeze({
   variation_policy: Object.freeze(Object.fromEntries(
     Object.entries(request.variation_policy).map(([field, setting]) => [field, Object.freeze({ ...setting })]),
   )),
+  ...(request.saved_look ? { saved_look: Object.freeze({ ...request.saved_look }) } : {}),
+  ...(request.full_auto ? { full_auto: Object.freeze({ ...request.full_auto }) } : {}),
 })
 
 const isGuidedSuccessResponse = ({ status, data }, request) => {
   const plan = data?.plan
+  const snapshot = plan?.authoring?.look_snapshot
   const matchesAnchor = (anchor) => anchor?.library_key === request.scene_anchor.library_key
     && anchor?.source_id === request.scene_anchor.source_id
     && anchor?.content_digest === request.scene_anchor.content_digest
@@ -58,6 +89,78 @@ const isGuidedSuccessResponse = ({ status, data }, request) => {
     && plan.authoring?.schema_version === 1
     && plan.authoring.mode === request.mode
     && matchesAnchor(plan.authoring.scene_anchor)
+    && (!request.saved_look || (
+      snapshot?.look_id === request.saved_look.look_key
+      && versionText(snapshot?.version) === versionText(request.saved_look.version)
+      && snapshot?.content_digest === request.saved_look.content_digest
+    ))
+    && (!request.full_auto || (typeof data.full_auto_run_id === 'string' && data.full_auto_run_id.length > 0))
+}
+
+const isFullAutoConsent = (result, request, look) => {
+  const summary = result?.summary
+  const stages = summary?.progression?.stages
+  const limits = summary?.limits
+  const saved = summary?.saved_look
+  const profile = summary?.automation_profile
+  const room = summary?.room
+  const workflow = summary?.workflow
+  const provider = summary?.provider
+  const canvas = summary?.canvas
+  const issued = Date.parse(result?.scope_issued_at || '')
+  const expires = Date.parse(summary?.authorization_expires_at || '')
+  const stageCount = fullAutoWardrobeStageCount(look)
+  const expectedStageCounts = Array.from({ length: stageCount }, () => 0)
+  if (stageCount > 0 && Number.isSafeInteger(summary?.photo_count)
+    && summary.photo_count >= stageCount) {
+    for (let takeIndex = 0; takeIndex < summary.photo_count; takeIndex += 1) {
+      const stageIndex = stageCount === 1
+        ? 0
+        : Math.floor(takeIndex * (stageCount - 1) / (summary.photo_count - 1))
+      expectedStageCounts[stageIndex] += 1
+    }
+  }
+  let nextTake = 1
+  return SHA256.test(result?.scope_digest || '')
+    && Number.isFinite(issued) && Number.isFinite(expires) && expires > issued
+    && result.scope_issued_at === summary.scope_issued_at
+    && saved?.look_key === request.saved_look?.look_key
+    && versionText(saved?.version) === versionText(request.saved_look?.version)
+    && saved?.content_digest === request.saved_look?.content_digest
+    && versionText(profile?.revision) === versionText(request.full_auto?.profile_revision)
+    && profile?.digest === request.full_auto?.profile_digest && profile?.ready === true
+    && room?.library_key === request.scene_anchor?.library_key
+    && room?.source_id === request.scene_anchor?.source_id
+    && room?.content_digest === request.scene_anchor?.content_digest
+    && summary.character_id === request.character_id
+    && Number.isSafeInteger(summary.photo_count) && summary.photo_count === request.photo_count
+    && Number.isSafeInteger(workflow?.workflow_id) && typeof workflow.kind === 'string'
+    && SHA256.test(workflow.graph_digest || '') && SHA256.test(workflow.node_map_digest || '')
+    && typeof provider?.model === 'string' && SHA256.test(provider.endpoint_identity || '')
+    && Number.isInteger(canvas?.width) && canvas.width > 0
+    && Number.isInteger(canvas?.height) && canvas.height > 0
+    && summary.framing_intent === request.full_auto.framing_intent
+    && summary.progression?.policy === 'all_stages_full_interval'
+    && Array.isArray(stages) && stageCount > 0 && stages.length === stageCount
+    && summary.photo_count >= stageCount
+    && stages.every((stage, index) => {
+      const expectedCount = expectedStageCounts[index]
+      const firstTake = `take-${String(nextTake).padStart(3, '0')}`
+      const lastTake = `take-${String(nextTake + expectedCount - 1).padStart(3, '0')}`
+      nextTake += expectedCount
+      return typeof stage.coverage === 'string'
+      && stage.first_take_id === firstTake && stage.last_take_id === lastTake
+      && Number.isInteger(stage.stage_index) && stage.stage_index === index
+      && Number.isInteger(stage.take_count) && stage.take_count === expectedCount && expectedCount > 0
+      && Boolean(fullAutoWardrobeAtStage(look, stage.stage_index))
+    })
+    && stages.reduce((total, stage) => total + stage.take_count, 0) === request.photo_count
+    && limits?.assistant_calls_per_take === 2
+    && limits.assistant_calls_total === request.photo_count * 2
+    && limits.image_attempts_per_take === 1
+    && limits.image_attempts_total === request.photo_count
+    && typeof summary.policy_version === 'string'
+    && typeof summary.coverage_compiler_version === 'string'
 }
 
 export default function Resources({ requestedModelId = '' }) {
@@ -76,6 +179,21 @@ export default function Resources({ requestedModelId = '' }) {
   const [guidedVariationPolicy, setGuidedVariationPolicy] = useState(defaultGuidedPolicy)
   const [guidedLook, setGuidedLook] = useState('')
   const [guidedInitialWardrobe, setGuidedInitialWardrobe] = useState('')
+  const [guidedSavedLooks, setGuidedSavedLooks] = useState([])
+  const [guidedSavedLooksLoading, setGuidedSavedLooksLoading] = useState(false)
+  const [guidedSavedLooksError, setGuidedSavedLooksError] = useState('')
+  const [guidedSavedLookKey, setGuidedSavedLookKey] = useState('')
+  const [guidedSavedLookVersion, setGuidedSavedLookVersion] = useState('')
+  const [guidedSavedLook, setGuidedSavedLook] = useState(null)
+  const [guidedSavedLookLoading, setGuidedSavedLookLoading] = useState(false)
+  const [guidedSavedLookError, setGuidedSavedLookError] = useState('')
+  const [guidedSelectedProfile, setGuidedSelectedProfile] = useState(null)
+  const [fullAutoEnabled, setFullAutoEnabled] = useState(false)
+  const [guidedFramingIntent, setGuidedFramingIntent] = useState('vary')
+  const [fullAutoQuote, setFullAutoQuote] = useState(null)
+  const [fullAutoPreflightLoading, setFullAutoPreflightLoading] = useState(false)
+  const [fullAutoPreflightError, setFullAutoPreflightError] = useState('')
+  const [fullAutoRefreshNotice, setFullAutoRefreshNotice] = useState('')
   const [guidedCanvasOverride, setGuidedCanvasOverride] = useState(false)
   const [guidedCanvasSize, setGuidedCanvasSize] = useState({ width: 768, height: 1360 })
   const [guidedAdvancedOpen, setGuidedAdvancedOpen] = useState(false)
@@ -105,6 +223,11 @@ export default function Resources({ requestedModelId = '' }) {
   const guidedRequestMountedRef = useRef(true)
   const guidedRequestSnapshotRef = useRef(null)
   const guidedSubmissionInFlightRef = useRef(false)
+  const guidedCreationCompleteRef = useRef(false)
+  const guidedLooksRequestRef = useRef(0)
+  const guidedLookRequestRef = useRef(0)
+  const fullAutoPreflightRequestRef = useRef(0)
+  const fullAutoInputSignatureRef = useRef('')
 
   // Legacy path import state (for compatibility)
   const [selections, setSelections] = useState([{ path: '', library_key: '' }])
@@ -524,6 +647,35 @@ export default function Resources({ requestedModelId = '' }) {
   }, [])
 
   useEffect(() => {
+    if (!guidedSceneKey) return undefined
+    const request = ++guidedLooksRequestRef.current
+    let active = true
+    setGuidedSavedLooksLoading(true)
+    setGuidedSavedLooksError('')
+    api.getVersioned('/api/looks')
+      .then((result) => {
+        if (!active || request !== guidedLooksRequestRef.current) return
+        if (!Array.isArray(result) || result.some((look) => (
+          !look || typeof look.key !== 'string' || !look.key
+          || typeof look.name !== 'string' || !versionText(look.version)
+        ))) throw new Error('The saved-look list is invalid. Reload it from Looks.')
+        setGuidedSavedLooks(result)
+      })
+      .catch((cause) => {
+        if (active && request === guidedLooksRequestRef.current) {
+          setGuidedSavedLooksError(cause?.message || 'Could not load saved looks.')
+        }
+      })
+      .finally(() => {
+        if (active && request === guidedLooksRequestRef.current) setGuidedSavedLooksLoading(false)
+      })
+    return () => {
+      active = false
+      if (request === guidedLooksRequestRef.current) guidedLooksRequestRef.current += 1
+    }
+  }, [guidedSceneKey])
+
+  useEffect(() => {
     if (guidedSceneKey && !guidedMode && assistantConfigured !== null) {
       setGuidedMode(assistantConfigured ? 'automatic' : 'manual')
     }
@@ -594,6 +746,10 @@ export default function Resources({ requestedModelId = '' }) {
   }
 
   const openGuidedCreation = (libraryKey, revision) => {
+    guidedLooksRequestRef.current += 1
+    guidedLookRequestRef.current += 1
+    fullAutoPreflightRequestRef.current += 1
+    fullAutoInputSignatureRef.current = ''
     const anchor = exactRevisionTriple(libraryKey, revision)
     setGuidedSceneKey(JSON.stringify([anchor.library_key, anchor.source_id, anchor.content_digest]))
     setGuidedCharacterId(String(selectedModelId || requestedModelId || ''))
@@ -604,14 +760,107 @@ export default function Resources({ requestedModelId = '' }) {
     setGuidedVariationPolicy(defaultGuidedPolicy())
     setGuidedLook('')
     setGuidedInitialWardrobe('')
+    setGuidedSavedLooks([])
+    setGuidedSavedLooksError('')
+    setGuidedSavedLookKey('')
+    setGuidedSavedLookVersion('')
+    setGuidedSavedLook(null)
+    setGuidedSavedLookError('')
+    setGuidedSelectedProfile(null)
+    setFullAutoEnabled(false)
+    setGuidedFramingIntent('vary')
+    setFullAutoQuote(null)
+    setFullAutoPreflightLoading(false)
+    setFullAutoPreflightError('')
+    setFullAutoRefreshNotice('')
     setGuidedCanvasOverride(false)
     setGuidedCanvasSize({ width: 768, height: 1360 })
     setGuidedAdvancedOpen(false)
     setGuidedRequestId(crypto.randomUUID())
     guidedRequestSnapshotRef.current = null
+    guidedCreationCompleteRef.current = false
     setGuidedOutcomeUnknown(false)
     setGuidedRequestConflict(false)
     setError('')
+  }
+
+  const loadGuidedSavedLookVersion = async (lookKey, version) => {
+    const exactVersion = versionText(version)
+    const request = ++guidedLookRequestRef.current
+    setGuidedSavedLook(null)
+    setGuidedSelectedProfile(null)
+    setGuidedSavedLookError('')
+    setFullAutoQuote(null)
+    setFullAutoRefreshNotice('')
+    if (!lookKey || !exactVersion) {
+      setGuidedSavedLookLoading(false)
+      setGuidedSavedLookError('Enter an exact saved-look version supported by the library.')
+      return
+    }
+    setGuidedSavedLookLoading(true)
+    try {
+      const result = await api.getVersioned(
+        `/api/looks/${encodeURIComponent(lookKey)}/versions/${exactVersion}`,
+      )
+      if (request !== guidedLookRequestRef.current || !guidedRequestMountedRef.current) return
+      if (result?.key !== lookKey || versionText(result?.version) !== exactVersion
+        || !SHA256.test(result?.content_digest || '') || typeof result.appearance !== 'string') {
+        throw new Error('The server returned a different or incomplete exact saved-look version.')
+      }
+      setGuidedSavedLook(result)
+      setGuidedSavedLookVersion(exactVersion)
+    } catch (cause) {
+      if (request === guidedLookRequestRef.current) {
+        setGuidedSavedLookError(cause?.message || 'Could not load this exact saved-look version.')
+      }
+    } finally {
+      if (request === guidedLookRequestRef.current) setGuidedSavedLookLoading(false)
+    }
+  }
+
+  const selectGuidedSavedLook = (lookKey) => {
+    setGuidedSavedLookKey(lookKey)
+    setGuidedSavedLook(null)
+    setGuidedSelectedProfile(null)
+    setGuidedSavedLookError('')
+    const selected = guidedSavedLooks.find((look) => look.key === lookKey)
+    const latestVersion = versionText(selected?.version)
+    setGuidedSavedLookVersion(latestVersion || '')
+    if (lookKey && latestVersion) void loadGuidedSavedLookVersion(lookKey, latestVersion)
+    else {
+      guidedLookRequestRef.current += 1
+      setGuidedSavedLookLoading(false)
+    }
+  }
+
+  const fetchFullAutoPreflight = async (body, signature) => {
+    const request = ++fullAutoPreflightRequestRef.current
+    let active = true
+    setFullAutoQuote(null)
+    setFullAutoPreflightError('')
+    setFullAutoPreflightLoading(true)
+    try {
+      const response = await api.postWithStatus(
+        '/api/sessions/guided/full-auto/preflight', body,
+        ['saved_look.version', 'full_auto.profile_revision'],
+      )
+      if (!active || request !== fullAutoPreflightRequestRef.current
+        || signature !== fullAutoInputSignatureRef.current) return null
+      if (response?.status !== 200 || !isFullAutoConsent(response.data, body, guidedSavedLook)) {
+        throw new Error('The server returned an incomplete Full Auto consent summary. Refresh the selection before authorizing.')
+      }
+      const quote = { ...response.data, signature }
+      setFullAutoQuote(quote)
+      return quote
+    } catch (cause) {
+      if (active && request === fullAutoPreflightRequestRef.current
+        && signature === fullAutoInputSignatureRef.current) {
+        setFullAutoPreflightError(cause?.message || 'Could not resolve Full Auto consent.')
+      }
+      return null
+    } finally {
+      if (active && request === fullAutoPreflightRequestRef.current) setFullAutoPreflightLoading(false)
+    }
   }
 
   const sendGuidedRequest = async (request) => {
@@ -620,8 +869,11 @@ export default function Resources({ requestedModelId = '' }) {
     setBusy(true)
     setError('')
     try {
-      const response = await api.postWithStatus('/api/sessions/guided', request)
-      if (!guidedRequestMountedRef.current) return
+      const response = await api.postWithStatus('/api/sessions/guided', request, [
+        ...(request.saved_look ? ['saved_look.version'] : []),
+        ...(request.full_auto ? ['full_auto.profile_revision'] : []),
+      ])
+      if (!guidedRequestMountedRef.current || guidedRequestSnapshotRef.current !== request) return
       if (!isGuidedSuccessResponse(response, request)) {
         setGuidedOutcomeUnknown(true)
         setGuidedRequestConflict(false)
@@ -630,9 +882,10 @@ export default function Resources({ requestedModelId = '' }) {
       }
       setGuidedOutcomeUnknown(false)
       setGuidedRequestConflict(false)
+      guidedCreationCompleteRef.current = true
       go(`/session/${response.data.session_id}`)
     } catch (e) {
-      if (!guidedRequestMountedRef.current) return
+      if (!guidedRequestMountedRef.current || guidedRequestSnapshotRef.current !== request) return
       const stableClientError = Number.isInteger(e.status)
         && e.status >= 400 && e.status < 500
         && e.hasStableErrorBody === true
@@ -642,6 +895,27 @@ export default function Resources({ requestedModelId = '' }) {
         setGuidedOutcomeUnknown(false)
         setGuidedRequestConflict(true)
         setError(e.message)
+      } else if (stableClientError && e.status === 409 && e.detail.code === 'authorization_scope_changed'
+        && request.full_auto) {
+        guidedRequestSnapshotRef.current = null
+        setGuidedOutcomeUnknown(false)
+        setGuidedRequestConflict(false)
+        const body = { ...request }
+        delete body.request_id
+        body.full_auto = Object.fromEntries(Object.entries(request.full_auto)
+          .filter(([key]) => key !== 'scope_digest' && key !== 'scope_issued_at'))
+        const current = e.detail.current
+        const refreshed = current && isFullAutoConsent(current, body, guidedSavedLook)
+          ? { ...current, signature: fullAutoInputSignatureRef.current }
+          : null
+        if (refreshed) {
+          setFullAutoQuote(refreshed)
+          setFullAutoPreflightError('')
+        } else {
+          void fetchFullAutoPreflight(body, fullAutoInputSignatureRef.current)
+        }
+        setFullAutoRefreshNotice('The authorized inputs changed. Review this refreshed summary, then click Generate without pauses again to authorize it.')
+        setError('')
       } else if (stableClientError) {
         guidedRequestSnapshotRef.current = null
         setGuidedOutcomeUnknown(false)
@@ -708,6 +982,24 @@ export default function Resources({ requestedModelId = '' }) {
       }
     }
 
+    const savedLookIdentity = guidedSavedLook && guidedSavedLook.key === guidedSavedLookKey
+      && versionText(guidedSavedLook.version) === versionText(guidedSavedLookVersion)
+      ? {
+        look_key: guidedSavedLook.key,
+        version: versionText(guidedSavedLook.version),
+        content_digest: guidedSavedLook.content_digest,
+      }
+      : null
+    if (guidedSavedLookKey && !savedLookIdentity) {
+      setError('Load the selected exact saved-look version before creating this session.')
+      return
+    }
+    if (savedLookIdentity && (guidedLook.trim() || guidedInitialWardrobe.trim())) {
+      setGuidedAdvancedOpen(true)
+      setError('Clear both shared overrides to create from this saved look, or remove the saved look and use the existing post-creation Keep/Replace flow.')
+      return
+    }
+
     const request = freezeGuidedRequest({
       request_id: guidedRequestId,
       character_id: character.id,
@@ -720,8 +1012,35 @@ export default function Resources({ requestedModelId = '' }) {
       look: guidedLook,
       initial_wardrobe: guidedInitialWardrobe,
       ...(guidedCanvasOverride ? guidedCanvasSize : {}),
+      ...(savedLookIdentity ? { saved_look: savedLookIdentity } : {}),
     })
     guidedRequestSnapshotRef.current = request
+    await sendGuidedRequest(request)
+  }
+
+  const submitFullAutoCreation = async () => {
+    if (guidedSubmissionInFlightRef.current || guidedOutcomeUnknown || guidedRequestConflict) return
+    const quote = fullAutoQuote
+    const body = fullAutoPreflightBody
+    const signature = fullAutoPreflightInputSignature
+    if (!body || !quote || quote.signature !== signature || !signature || fullAutoPreflightLoading) return
+    const age = Date.now() - Date.parse(quote.scope_issued_at)
+    if (!Number.isFinite(age) || age < 0 || age > 300_000) {
+      setFullAutoRefreshNotice('This consent check is older than five minutes. The summary is refreshing; review it and click again.')
+      void fetchFullAutoPreflight(body, signature)
+      return
+    }
+    const request = freezeGuidedRequest({
+      ...body,
+      request_id: guidedRequestId,
+      full_auto: {
+        ...body.full_auto,
+        scope_digest: quote.scope_digest,
+        scope_issued_at: quote.scope_issued_at,
+      },
+    })
+    guidedRequestSnapshotRef.current = request
+    setFullAutoRefreshNotice('')
     await sendGuidedRequest(request)
   }
 
@@ -734,6 +1053,7 @@ export default function Resources({ requestedModelId = '' }) {
   const startGuidedCreationAttempt = () => {
     if (busy || guidedSubmissionInFlightRef.current) return
     guidedRequestSnapshotRef.current = null
+    guidedCreationCompleteRef.current = false
     setGuidedRequestId(crypto.randomUUID())
     setGuidedOutcomeUnknown(false)
     setGuidedRequestConflict(false)
@@ -1195,6 +1515,85 @@ export default function Resources({ requestedModelId = '' }) {
   const guidedHasWorkflow = guidedCharacterHasDefaultWorkflow
     || (Number.isInteger(Number(guidedWorkflowOverrideId)) && Number(guidedWorkflowOverrideId) > 0)
   const guidedLocked = busy || guidedOutcomeUnknown || guidedRequestConflict
+  const guidedSceneChoice = readyRoomChoices.find((choice) => choice.key === guidedSceneKey)
+  const currentGuidedVariationPolicy = Object.fromEntries(GUIDED_DIMENSIONS.map(([field]) => {
+    const setting = guidedVariationPolicy[field] || { mode: 'vary', value: '' }
+    return setting.mode === 'fixed'
+      ? [field, { mode: 'fixed', value: setting.value, value_origin: 'user' }]
+      : [field, { mode: 'vary' }]
+  }))
+  const guidedSavedLookIdentity = guidedSavedLook && guidedSavedLook.key === guidedSavedLookKey
+    && versionText(guidedSavedLook.version) === versionText(guidedSavedLookVersion)
+    ? {
+      look_key: guidedSavedLook.key,
+      version: versionText(guidedSavedLook.version),
+      content_digest: guidedSavedLook.content_digest,
+    }
+    : null
+  const guidedProfileMatchesLook = guidedSelectedProfile && guidedSavedLookIdentity
+    && guidedSelectedProfile.look_key === guidedSavedLookIdentity.look_key
+    && versionText(guidedSelectedProfile.version) === guidedSavedLookIdentity.version
+    && guidedSelectedProfile.content_digest === guidedSavedLookIdentity.content_digest
+    && SHA256.test(guidedSelectedProfile.profile_digest || '')
+    && versionText(guidedSelectedProfile.profile_revision)
+    && guidedSelectedProfile.readiness?.profile_ready === true
+  const guidedSharedOverridesConflict = Boolean(guidedSavedLookIdentity
+    && (guidedLook.trim() || guidedInitialWardrobe.trim()))
+  const guidedFullAutoInputsReady = Boolean(
+    fullAutoEnabled && guidedCharacter && guidedSceneChoice && guidedSavedLookIdentity
+    && guidedProfileMatchesLook && assistantConfigured === true && guidedMode === 'automatic'
+    && guidedHasWorkflow && guidedRequestId && !guidedSharedOverridesConflict
+    && Number.isInteger(Number(guidedPhotoCount)) && Number(guidedPhotoCount) >= 1
+    && Number(guidedPhotoCount) <= 500 && guidedBrief.length <= 2000
+    && !GUIDED_DIMENSIONS.some(([field]) => currentGuidedVariationPolicy[field].mode === 'fixed'
+      && !currentGuidedVariationPolicy[field].value.trim())
+    && (!guidedCanvasOverride || (Number.isInteger(guidedCanvasSize.width)
+      && Number.isInteger(guidedCanvasSize.height) && guidedCanvasSize.width >= 8
+      && guidedCanvasSize.height >= 8 && guidedCanvasSize.width % 8 === 0
+      && guidedCanvasSize.height % 8 === 0))
+  )
+  const fullAutoPreflightBody = guidedFullAutoInputsReady ? {
+    character_id: guidedCharacter.id,
+    workflow_id: guidedWorkflowOverrideId ? Number(guidedWorkflowOverrideId) : null,
+    scene_anchor: exactRevisionTriple(guidedSceneChoice.libraryKey, guidedSceneChoice.revision),
+    photo_count: Number(guidedPhotoCount),
+    brief: guidedBrief,
+    mode: 'automatic',
+    variation_policy: currentGuidedVariationPolicy,
+    look: guidedLook,
+    initial_wardrobe: guidedInitialWardrobe,
+    ...(guidedCanvasOverride ? guidedCanvasSize : {}),
+    saved_look: guidedSavedLookIdentity,
+    full_auto: {
+      authorization_version: 1,
+      generate_without_pauses: true,
+      profile_revision: versionText(guidedSelectedProfile.profile_revision),
+      profile_digest: guidedSelectedProfile.profile_digest,
+      progression: 'all_stages_full_interval',
+      framing_intent: guidedFramingIntent,
+    },
+  } : null
+  const fullAutoPreflightInputSignature = fullAutoPreflightBody
+    ? JSON.stringify(fullAutoPreflightBody) : ''
+
+  useLayoutEffect(() => {
+    fullAutoInputSignatureRef.current = fullAutoPreflightInputSignature
+    fullAutoPreflightRequestRef.current += 1
+    setFullAutoQuote((current) => current?.signature === fullAutoPreflightInputSignature ? current : null)
+  }, [fullAutoPreflightInputSignature])
+
+  useEffect(() => {
+    fullAutoPreflightRequestRef.current += 1
+    setFullAutoQuote(null)
+    setFullAutoPreflightError('')
+    setFullAutoRefreshNotice('')
+    if (!fullAutoPreflightBody || guidedOutcomeUnknown || guidedRequestConflict || guidedCreationCompleteRef.current) {
+      setFullAutoPreflightLoading(false)
+      return undefined
+    }
+    void fetchFullAutoPreflight(fullAutoPreflightBody, fullAutoPreflightInputSignature)
+    return () => { fullAutoPreflightRequestRef.current += 1 }
+  }, [fullAutoEnabled, fullAutoPreflightInputSignature, guidedOutcomeUnknown, guidedRequestConflict])
 
   const canImport = isImportEligible(selectionView, { activeSelectionId, pendingMutation: busy })
   const previewReport = selectionView?.preview ? parsePreviewSummary(selectionView.preview) : null
@@ -1213,11 +1612,19 @@ export default function Resources({ requestedModelId = '' }) {
               type="button"
               disabled={busy || guidedOutcomeUnknown}
               onClick={() => {
+                guidedRequestSnapshotRef.current = null
+                guidedLooksRequestRef.current += 1
+                guidedLookRequestRef.current += 1
+                fullAutoPreflightRequestRef.current += 1
+                fullAutoInputSignatureRef.current = ''
                 setGuidedSceneKey('')
                 setGuidedRequestId('')
-                guidedRequestSnapshotRef.current = null
                 setGuidedOutcomeUnknown(false)
                 setGuidedRequestConflict(false)
+                setFullAutoEnabled(false)
+                setFullAutoQuote(null)
+                setGuidedSavedLook(null)
+                setGuidedSelectedProfile(null)
                 setError('')
               }}
             >
@@ -1279,6 +1686,70 @@ export default function Resources({ requestedModelId = '' }) {
             </div>
           </div>
 
+          <section aria-label="Optional exact saved look" style={{ marginTop: 14 }}>
+            <h3 style={{ margin: '0 0 6px' }}>Optional saved look</h3>
+            <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
+              Select an immutable version to apply its appearance and initial outfit at creation. Manual creation keeps its normal review and run controls.
+            </p>
+            {guidedSavedLooksLoading && <p className="muted" role="status">Loading saved looks…</p>}
+            {guidedSavedLooksError && <p className="error" role="alert">{guidedSavedLooksError}</p>}
+            <div className="grid-form">
+              <label htmlFor="guided-saved-look">Saved look
+                <select
+                  id="guided-saved-look"
+                  value={guidedSavedLookKey}
+                  onChange={(event) => selectGuidedSavedLook(event.target.value)}
+                  disabled={guidedLocked || guidedSavedLooksLoading}
+                >
+                  <option value="">No saved look</option>
+                  {guidedSavedLooks.map((look) => <option key={look.key} value={look.key}>{look.name} · latest v{versionText(look.version)}</option>)}
+                </select>
+              </label>
+              <div>
+                <label htmlFor="guided-saved-look-version">Exact saved-look version</label>
+                <div className="row">
+                  <input
+                    id="guided-saved-look-version"
+                    type="text"
+                    inputMode="numeric"
+                    value={guidedSavedLookVersion}
+                    onChange={(event) => {
+                      const value = event.target.value
+                      guidedLookRequestRef.current += 1
+                      setGuidedSavedLookVersion(value)
+                      setGuidedSavedLook(null)
+                      setGuidedSelectedProfile(null)
+                      setGuidedSavedLookLoading(false)
+                      setGuidedSavedLookError('')
+                    }}
+                    disabled={guidedLocked || !guidedSavedLookKey}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void loadGuidedSavedLookVersion(guidedSavedLookKey, guidedSavedLookVersion)}
+                    disabled={guidedLocked || !guidedSavedLookKey || !versionText(guidedSavedLookVersion) || guidedSavedLookLoading}
+                  >
+                    {guidedSavedLookLoading ? 'Loading exact version…' : 'Load exact version'}
+                  </button>
+                </div>
+              </div>
+            </div>
+            {guidedSavedLookLoading && <p className="muted" role="status">Verifying the immutable saved-look version…</p>}
+            {guidedSavedLookError && <p className="error" role="alert">{guidedSavedLookError}</p>}
+            {guidedSavedLookIdentity && (
+              <div className="muted" aria-label="Loaded exact saved look" style={{ marginTop: 8 }}>
+                <p>Loaded {guidedSavedLook.name} · version {guidedSavedLookIdentity.version} · {guidedSavedLookIdentity.content_digest}</p>
+                <p>Appearance: {guidedSavedLook.appearance || 'None'}</p>
+                <p>Outfit: {guidedSavedLook.outfit?.garments?.map((item) => item.wording).join(' · ') || 'No saved outfit'}</p>
+              </div>
+            )}
+            {guidedSharedOverridesConflict && (
+              <p className="error" role="alert">
+                Clear the Advanced look and initial-wardrobe overrides before using this exact saved look. They will not be replaced silently.
+              </p>
+            )}
+          </section>
+
           {assistantConfigured === false && (
             <p className="muted">
               Manual is the default without a configured text assistant. <a href="#/setup">Configure assistant</a>.
@@ -1294,6 +1765,95 @@ export default function Resources({ requestedModelId = '' }) {
             </div>
           )}
 
+          <section aria-label="Full Auto setup" style={{ marginTop: 14 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600 }}>
+              <input
+                id="guided-full-auto"
+                type="checkbox"
+                checked={fullAutoEnabled}
+                onChange={(event) => {
+                  const enabled = event.target.checked
+                  setFullAutoEnabled(enabled)
+                  setFullAutoQuote(null)
+                  setFullAutoRefreshNotice('')
+                  if (enabled) setGuidedMode('automatic')
+                }}
+                disabled={guidedLocked}
+              />
+              Enable opt-in Full Auto
+            </label>
+            {fullAutoEnabled && (
+              <div style={{ display: 'grid', gap: 9, marginTop: 8 }}>
+                <p className="muted" style={{ margin: 0 }}>
+                  Full Auto requires an exact ready saved-look profile and Automatic mode. It keeps manual creation available when a look is ineligible.
+                </p>
+                {assistantConfigured === false && <p className="error" role="alert">Full Auto needs a configured text assistant. <a href="#/setup">Configure assistant</a>; manual creation remains available.</p>}
+                {guidedSavedLookKey && !guidedSavedLookIdentity && <p className="muted" role="status">Load the selected exact saved-look version to continue.</p>}
+                {!guidedSavedLookKey && <p className="muted" role="status">Choose an exact saved-look version to continue.</p>}
+                {guidedSavedLookIdentity && (
+                  <div>
+                    <AutomationProfileSelector
+                      key={`${guidedSavedLookIdentity.look_key}:${guidedSavedLookIdentity.version}:${guidedSavedLookIdentity.content_digest}`}
+                      look={guidedSavedLook}
+                      active={fullAutoEnabled}
+                      disabled={guidedLocked || guidedSavedLookLoading}
+                      label="Exact automation profile revision"
+                      onProfileChange={setGuidedSelectedProfile}
+                    />
+                    {guidedSelectedProfile && <p className="muted">Selected profile revision {versionText(guidedSelectedProfile.profile_revision)} · {guidedSelectedProfile.profile_digest}</p>}
+                  </div>
+                )}
+                <fieldset disabled={guidedLocked} style={{ border: 0, padding: 0, margin: 0 }}>
+                  <legend>Framing intent</legend>
+                  <label style={{ marginRight: 16 }}>
+                    <input type="radio" name="guided-full-auto-framing" value="vary" checked={guidedFramingIntent === 'vary'} onChange={() => setGuidedFramingIntent('vary')} />
+                    Vary framing
+                  </label>
+                  <label>
+                    <input type="radio" name="guided-full-auto-framing" value="full_body" checked={guidedFramingIntent === 'full_body'} onChange={() => setGuidedFramingIntent('full_body')} />
+                    Full body, head to toe
+                  </label>
+                </fieldset>
+                {guidedSharedOverridesConflict && <p className="error" role="alert">Clear both Advanced shared overrides before requesting Full Auto consent.</p>}
+                {fullAutoPreflightLoading && <p className="muted" role="status">Refreshing the read-only Full Auto consent summary…</p>}
+                {fullAutoPreflightError && <p className="error" role="alert">{fullAutoPreflightError}</p>}
+                {fullAutoRefreshNotice && <p className="panel" role="status">{fullAutoRefreshNotice}</p>}
+                {fullAutoQuote && fullAutoQuote.signature === fullAutoPreflightInputSignature && (
+                  <div className="panel" aria-label="Full Auto consent summary">
+                    <h3 style={{ marginTop: 0 }}>Review before Generate without pauses</h3>
+                    <p>Saved look: {fullAutoQuote.summary.saved_look.look_key} · version {versionText(fullAutoQuote.summary.saved_look.version)} · {fullAutoQuote.summary.saved_look.content_digest}</p>
+                    <p>Automation profile: revision {versionText(fullAutoQuote.summary.automation_profile.revision)} · {fullAutoQuote.summary.automation_profile.digest}</p>
+                    <p>Room: {fullAutoQuote.summary.room.library_key} / {fullAutoQuote.summary.room.source_id} · {fullAutoQuote.summary.room.content_digest}</p>
+                    <p>Photos: {fullAutoQuote.summary.photo_count} · all stages: {fullAutoQuote.summary.progression.stages.length}</p>
+                    <ol aria-label="Authorized wardrobe stage timeline">
+                      {fullAutoQuote.summary.progression.stages.map((stage) => (
+                        <li key={stage.stage_index}>
+                          Stage {stage.stage_index + 1}: {stage.first_take_id} to {stage.last_take_id} ({stage.take_count} takes) — {fullAutoWardrobeAtStage(guidedSavedLook, stage.stage_index)} — {stage.coverage}
+                        </li>
+                      ))}
+                    </ol>
+                    <p>Effective workflow ({fullAutoPreflightBody.workflow_id === null ? 'character default' : 'selected override'}): {fullAutoQuote.summary.workflow.workflow_id} · {fullAutoQuote.summary.workflow.kind} · graph {fullAutoQuote.summary.workflow.graph_digest.slice(0, 12)} · mapping {fullAutoQuote.summary.workflow.node_map_digest.slice(0, 12)}</p>
+                    <p>Provider: {fullAutoQuote.summary.provider.model} · endpoint fingerprint {fullAutoQuote.summary.provider.endpoint_identity}</p>
+                    <p>Canvas: {fullAutoQuote.summary.canvas.width} × {fullAutoQuote.summary.canvas.height} · framing: {fullAutoQuote.summary.framing_intent === 'full_body' ? 'Full body, head to toe, both feet visible, with space above the head and below the feet.' : 'Vary framing'}</p>
+                    <p>Effective framing policy: {JSON.stringify(fullAutoQuote.summary.effective_framing)} · policy {fullAutoQuote.summary.policy_version} · coverage compiler {fullAutoQuote.summary.coverage_compiler_version}</p>
+                    <p>Allowance: {fullAutoQuote.summary.limits.assistant_calls_per_take} assistant calls and {fullAutoQuote.summary.limits.image_attempts_per_take} initial image attempt per take; {fullAutoQuote.summary.limits.assistant_calls_total} assistant calls and {fullAutoQuote.summary.limits.image_attempts_total} image attempts total. Calls are counts, not a monetary cap; a compatibility fallback can use the second call. Failed images are not automatically rerolled.</p>
+                    <p>Authorization expires (UTC): {fullAutoQuote.summary.authorization_expires_at}</p>
+                    <p>One click authorizes automatic preparation, configured policy review and approval, submission, and one initial execution attempt per take. Policy review is automated and does not guarantee visual results.</p>
+                    <p>After creation, the backend continues if this browser closes and resumes unchanged work after a backend restart. Canvas and framing guide composition but do not guarantee visible feet, anatomy, or exact garment reproduction.</p>
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={guidedLocked || fullAutoPreflightLoading || !guidedFullAutoInputsReady || fullAutoQuote.signature !== fullAutoPreflightInputSignature}
+                      onClick={submitFullAutoCreation}
+                    >
+                      {busy ? 'Starting Full Auto…' : 'Generate without pauses'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
           <details open={guidedAdvancedOpen} onToggle={(event) => setGuidedAdvancedOpen(event.currentTarget.open)}>
             <summary>Advanced</summary>
             <div className="grid-form" style={{ marginTop: 10 }}>
@@ -1303,7 +1863,7 @@ export default function Resources({ requestedModelId = '' }) {
                   id="guided-mode"
                   value={guidedMode}
                   onChange={(event) => setGuidedMode(event.target.value)}
-                  disabled={assistantConfigured === null || guidedLocked}
+                  disabled={assistantConfigured === null || guidedLocked || fullAutoEnabled}
                 >
                   {!guidedMode && <option value="" disabled>Checking assistant configuration…</option>}
                   <option value="automatic">Automatic</option>
@@ -1451,10 +2011,11 @@ export default function Resources({ requestedModelId = '' }) {
             <button
               type="button"
               className="primary"
-              disabled={guidedLocked || !guidedCharacter || !guidedHasWorkflow || !guidedMode || assistantConfigured === null}
+              disabled={guidedLocked || !guidedCharacter || !guidedHasWorkflow || !guidedMode || assistantConfigured === null
+                || (guidedSavedLookKey && !guidedSavedLookIdentity)}
               onClick={submitGuidedCreation}
             >
-              {busy ? 'Creating…' : 'Create guided session'}
+              {busy ? 'Creating…' : fullAutoEnabled ? 'Create manual/assisted session' : 'Create guided session'}
             </button>
           </div>
         </section>

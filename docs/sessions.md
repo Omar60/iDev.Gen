@@ -1579,11 +1579,43 @@ configured. The character's default workflow is used unless overridden. If no
 default exists, the form links to assign one on the character page or choose an
 Advanced override.
 
-The form makes no server writes until **Create guided session**. That action
-creates the draft through the atomic guided-session endpoint and navigates from
-its validated stored response: HTTP 201 is a new creation and HTTP 200 replays
-the saved result. Neither path prepares or approves prompts, submits takes, or
-starts generation.
+In the manual flow, the form makes no server writes until **Create guided
+session**. That action creates the draft through the atomic guided-session
+endpoint and navigates from its validated stored response: HTTP 201 is a new
+creation and HTTP 200 replays the saved result. Neither initial creation nor
+exact replay prepares or approves prompts, submits takes, or starts generation.
+
+### Opting into Full Auto
+
+The Resources form can use an exact saved-look version for either manual or
+Full Auto creation. Manual saved-look creation copies that immutable snapshot
+without loading an automation profile, deriving progression or coverage, or
+creating Full Auto authorization. Full Auto requires Automatic authoring and a
+ready profile revision bound to that exact look version. When Full Auto is
+selected, Resources automatically obtains a read-only preflight. Review the
+summary and explicitly confirm **Generate without pauses**. It shows each
+ordered wardrobe stage, including
+aside and final wording, coverage, take count and interval, effective workflow
+and provider identity, inherited or overridden canvas, `vary` or `full_body`
+framing, budgets, policy/compiler versions, and the UTC authorization deadline
+seven days from the quote. Framing and coverage are intended instructions;
+generated images are not guaranteed to show every requested region or match
+exact anatomy or garment geometry.
+
+The explicit creation click sends one atomic request authorizing preparation,
+policy review and approval, submission, and the initial execution attempt. If
+the response is unknown, retry reuses the same request ID and frozen body, even
+after the quote expires, so a committed result can replay. A changed scope or
+expired quote requires refreshed consent and another explicit click; it never
+creates automatically. The persisted run can continue after the browser closes
+and through backend restart recovery. Blockers, exhausted budgets, authorization
+expiry, or Cancel can stop continuation. Each authorization
+allows at most two assistant calls per take, including compatibility fallback;
+this is a call limit, not a monetary cap.
+
+Creation navigates through the existing session route. The session page does
+not yet provide Full Auto progress, Cancel, Resume, or attempt-retry controls;
+those operations remain available through the documented backend API.
 
 ### Saved-look and Full Auto creation API
 
@@ -1750,7 +1782,9 @@ enters `active` or dispatches work. After settled cancellation, an otherwise
 eligible continuation Resume restores only linked targets that never had an
 execution attempt, under their existing shot IDs;
 completed outputs remain. Attempt retries are separate explicit Resume actions.
-No Full Auto control UI is present.
+Resources provides the selection, consent, and creation entry, while session
+progress and Cancel/Resume controls remain API-only; there is no runtime control
+UI yet.
 
 ##### Explicit retry of journaled Full Auto image attempts
 
@@ -1796,8 +1830,9 @@ remote work stopped, determine provider billing, or validate generated images.
 
 These controls apply to journaled Full Auto execution. Legacy unjournaled
 behavior is unchanged, and the legacy `/api/sessions/{sid}/retry` route refuses
-Full Auto-linked shots. The retry API has no dedicated UI. The Full Auto profile
-editor and selection/consent/progress UI remain unfinished. See the
+Full Auto-linked shots. Looks provides the profile editor, and Resources
+provides selection, consent, and creation. Session progress, Cancel/Resume, and
+attempt-retry UI remain unfinished. See the
 [isolated Full Auto rollback runbook](rollback.md); real-generation validation
 remains separately authorized.
 

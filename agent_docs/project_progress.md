@@ -2,28 +2,30 @@
 
 ## Accepted Position
 
-Deployment `fa61-20261014` completes only Task 6.1 of
-`automate-resource-session-full-auto`. Main accepted the actual source/diff and
-independent Tester evidence after internal Executor implementation and repair.
-Only 6.1 is newly checked: 31 of 41 tasks. Task 6.2 remains pending.
+Deployment `fa62-20261014` addresses only Task 6.2 of
+`automate-resource-session-full-auto`, entered from a clean working tree.
+Main accepted the actual diff and independent Tester verdict after internal
+Executor implementation and correction. Only 6.2 is newly checked: 32 of 41
+tasks. Task 6.3 remains pending.
 
-## Delivered Behavior
+## Delivered Scope
 
-Looks now edits immutable automation profiles for exact saved-look versions,
-with server readiness, structured region/state coverage, explicit inventory,
-visual Unicode ownership and a permanent-projection preview. Reviewed shortcuts
-apply only to selected states. Same-version equivalent-state copies require a
-new user assertion; cross-version copies retain only unchanged same-state facts.
-Manual exact-profile application retains CAS, readback and linked-shot freeze,
-without authorizing preparation or generation. Portable look-v1 stays unchanged.
+Resources supports optional exact saved-look manual creation and opt-in Full
+Auto with exact ready profile selection, automatic read-only preflight and one
+explicit Generate without pauses action. Consent shows every wardrobe stage,
+take interval, coverage, effective workflow/provider, canvas/framing, budgets
+and expiry. Changed consent needs another click; unknown creation results retain
+the frozen request and UUID. SQLite identities remain exact in transport.
 
 ## Verification and Stop Boundary
 
-Independent full Python: 3,558 passed, two skipped, five warnings. Frontend:
-622 passed; build passed with the existing large-chunk warning. Independent UI
-and API probes, privacy, strict OpenSpec and diff checks passed. The retained
-failed gates and final evidence are recorded in `latest_session_work.md`.
+Independent frontend: 634 passed in 35 files; build, strict OpenSpec and diff
+checks passed. Three independent UI probes passed. Final complete project-venv
+Python: 3,558 passed, two skipped, five warnings. Two earlier system-Python
+gates each failed; their evidence and diagnostic limits remain separate in
+`latest_session_work.md`. Final closure files receive compact checks.
 
-Only Task 6.1 implementation, tests, marking and closure documentation belong to
-the acceptance commit. No next task, real generation, external handoff, push or
-archive is authorized. Coverage expresses prompt intent, not visual certification.
+Main owns the isolated acceptance commit after final closure checks; Archivist
+owns the sealed Git handoff and token report. Do not advance Task 6.3, archive,
+push or run real generation. Session progress/Cancel/Resume UI remains pending;
+coverage and framing are instructions, not visual certification.

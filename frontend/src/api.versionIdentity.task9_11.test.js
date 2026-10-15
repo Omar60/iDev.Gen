@@ -9,12 +9,14 @@ describe('lossless saved-look version transport', () => {
   it('preserves large version tokens without rewriting strings or unknown fields', () => {
     const result = parseVersionJson(`{
       "version": ${SQLITE_MAX},
+      "revision": ${SQLITE_MAX},
       "look_snapshot": {"version": 9007199254740993},
       "version_text": "version: ${SQLITE_MAX}",
       "unknown": {"version": "${SQLITE_MAX}", "count": 7}
     }`)
 
     expect(result.version).toBe(SQLITE_MAX)
+    expect(result.revision).toBe(SQLITE_MAX)
     expect(result.look_snapshot.version).toBe('9007199254740993')
     expect(result.version_text).toBe(`version: ${SQLITE_MAX}`)
     expect(result.unknown).toEqual({ version: SQLITE_MAX, count: 7 })

@@ -25,6 +25,13 @@ const guidedResponseFor = (request, sessionId = 42, status = 201) => ({
         schema_version: 1,
         mode: request.mode,
         scene_anchor: request.scene_anchor,
+        ...(request.saved_look ? {
+          look_snapshot: {
+            look_id: request.saved_look.look_key,
+            version: request.saved_look.version,
+            content_digest: request.saved_look.content_digest,
+          },
+        } : {}),
         workflow_binding: {
           workflow_id: request.workflow_id ?? 12,
           kind: 'txt2img',
@@ -33,8 +40,94 @@ const guidedResponseFor = (request, sessionId = 42, status = 201) => ({
         },
       },
     },
+    ...(request.full_auto ? { full_auto_run_id: `run-${sessionId}` } : {}),
   },
 })
+
+const fullAutoLookSummary = (version = 3) => ({ key: 'look-example', name: 'Example Look', version })
+const fullAutoLook = (version = 3) => ({
+  ...fullAutoLookSummary(version),
+  content_digest: 'd'.repeat(64),
+  appearance: 'A permanent studio look.',
+  outfit: {
+    outfit_key: 'outfit-example',
+    garments: [
+      { key: 'dress', wording: 'a navy dress', aside: '' },
+      { key: 'necklace', wording: 'a silver necklace', aside: 'the silver necklace draped against her collarbone' },
+    ],
+  },
+})
+const fullAutoProfile = {
+  look_key: 'look-example',
+  version: '3',
+  content_digest: 'd'.repeat(64),
+  profile_revision: '2',
+  profile_digest: 'e'.repeat(64),
+  readiness: { profile_ready: true },
+  profile: { appearance_segments: [{ owner: 'permanent', text: 'A permanent studio look.' }] },
+  permanent_appearance: 'A permanent studio look.',
+}
+const fullAutoLibrary = {
+  id: 1,
+  library_key: 'guided_rooms',
+  display_name: 'Guided Rooms',
+  kind: 'rooms',
+  revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready', pending_fields: {} } }],
+  auxiliary: [],
+}
+const fullAutoConsentFor = (request, { workflowId = 12, providerModel = 'provider-model', issuedAt } = {}) => {
+  const issued = issuedAt || new Date(Date.now() - 30_000).toISOString().replace(/\.\d{3}Z$/, '+00:00')
+  const expiry = new Date(Date.parse(issued) + 7 * 24 * 60 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, '+00:00')
+  const count = request.photo_count
+  const look = fullAutoLook(Number(request.saved_look.version))
+  const stageCount = look.outfit.garments.length + 1 + Number(Boolean(look.outfit.garments.at(-1).aside))
+  const grouped = Array.from({ length: stageCount }, () => [])
+  for (let takeIndex = 0; takeIndex < count; takeIndex += 1) {
+    const stageIndex = stageCount === 1 ? 0 : Math.floor(takeIndex * (stageCount - 1) / (count - 1))
+    grouped[stageIndex].push(takeIndex + 1)
+  }
+  const stages = grouped.map((takeIndices, stage_index) => ({
+    coverage: `Accepted coverage for stage ${stage_index + 1}.`,
+    first_take_id: `take-${String(takeIndices[0]).padStart(3, '0')}`,
+    last_take_id: `take-${String(takeIndices.at(-1)).padStart(3, '0')}`,
+    stage_index,
+    take_count: takeIndices.length,
+  }))
+  return {
+    scope_digest: providerModel === 'provider-model' && workflowId === 12 ? 'b'.repeat(64) : 'c'.repeat(64),
+    scope_issued_at: issued,
+    summary: {
+      saved_look: { ...request.saved_look },
+      automation_profile: { revision: request.full_auto.profile_revision, digest: request.full_auto.profile_digest, ready: true },
+      room: { ...request.scene_anchor, translation_digest: 'f'.repeat(64) },
+      character_id: request.character_id,
+      model_binding: {
+        model_id: request.character_id, name: 'Character A', trigger_digest: '1'.repeat(64),
+        base_positive_digest: '2'.repeat(64), base_negative_digest: '3'.repeat(64),
+        lora_selection_digest: '4'.repeat(64), effective_settings_digest: '5'.repeat(64),
+      },
+      workflow: { workflow_id: workflowId, kind: 'txt2img', graph_digest: '6'.repeat(64), node_map_digest: '7'.repeat(64) },
+      provider: { model: providerModel, endpoint_identity: '8'.repeat(64) },
+      generation_settings: { steps: 24, cfg: 5.5, sampler: 'euler', scheduler: 'normal' },
+      canvas: { width: 768, height: 1360 },
+      framing_intent: request.full_auto.framing_intent,
+      effective_framing: request.full_auto.framing_intent === 'full_body'
+        ? { mode: 'fixed', value: 'Full body, head to toe, both feet visible, with space above the head and below the feet.', value_origin: 'user' }
+        : { mode: 'vary' },
+      variation_policy: request.variation_policy,
+      photo_count: count,
+      progression: { policy: 'all_stages_full_interval', stages },
+      coverage_compiler_version: 'compiler-v1',
+      policy_version: 'policy-v1',
+      limits: {
+        assistant_calls_per_take: 2, assistant_calls_total: count * 2,
+        image_attempts_per_take: 1, image_attempts_total: count,
+      },
+      scope_issued_at: issued,
+      authorization_expires_at: expiry,
+    },
+  }
+}
 
 describe('Resources Component - Task 1.5 Specification & Contract Tests', () => {
   let container = null
@@ -46,6 +139,7 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     root = createRoot(container)
     vi.restoreAllMocks()
     vi.spyOn(api, 'get').mockResolvedValue([])
+    vi.spyOn(api, 'getVersioned').mockResolvedValue([])
     vi.spyOn(api, 'post').mockResolvedValue({})
     vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
       if (url !== '/api/sessions/guided') throw new Error(`Unexpected request: ${url}`)
@@ -94,6 +188,69 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     await act(async () => {
       root.render(<Resources {...props} />)
     })
+  }
+
+  const prepareFullAutoForm = async ({
+    photoCount = '12',
+    preflight = (body) => fullAutoConsentFor(body),
+    create = (body) => guidedResponseFor(body, 42),
+  } = {}) => {
+    window.location.hash = ''
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [fullAutoLibrary]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: true }
+      return []
+    })
+    vi.spyOn(api, 'getVersioned').mockImplementation(async (url) => {
+      if (url === '/api/looks') return [fullAutoLookSummary()]
+      if (url === '/api/looks/look-example/versions/3') return fullAutoLook()
+      if (url.startsWith('/api/looks/look-example/versions/3/automation-profiles?')) {
+        return {
+          look: { key: 'look-example', version: 3, content_digest: 'd'.repeat(64) },
+          profiles: [{ profile_revision: 2, profile_digest: 'e'.repeat(64), readiness: { profile_ready: true } }],
+        }
+      }
+      if (url.startsWith('/api/looks/automation-profiles?')) {
+        return {
+          look: { key: 'look-example', version: 3, content_digest: 'd'.repeat(64) },
+          profile_revision: 2,
+          profile_digest: 'e'.repeat(64),
+          appearance_segments: [{ owner: 'permanent', text: 'A permanent studio look.' }],
+        }
+      }
+      throw new Error(`Unexpected versioned request: ${url}`)
+    })
+    const attempts = []
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
+      attempts.push([url, body])
+      if (url === '/api/sessions/guided/full-auto/preflight') return { status: 200, data: await preflight(body) }
+      if (url === '/api/sessions/guided') return create(body)
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    await renderComponent({ requestedModelId: '4' })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    expect(container.querySelector('#guided-character').value).toBe('4')
+    await act(async () => { container.querySelector('#guided-full-auto').click() })
+    await act(async () => {
+      setInputValue(container.querySelector('#guided-photo-count'), photoCount)
+      setSelectValue(container.querySelector('#guided-saved-look'), 'look-example')
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    const profile = container.querySelector('[aria-label="Exact automation profile revision"]')
+    expect(profile).toBeTruthy()
+    await act(async () => {
+      setSelectValue(profile, '2')
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    return { attempts, form: container.querySelector('[aria-label="Guided session setup"]') }
   }
 
   const switchToImportTab = async () => {
@@ -6479,5 +6636,248 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('6.2 Full Auto shows exact stage wardrobe states and sends one consented creation request', async () => {
+    const { attempts, form } = await prepareFullAutoForm()
+    const summary = form.querySelector('[aria-label="Full Auto consent summary"]')
+    expect(summary).toBeTruthy()
+    expect(summary.textContent).toContain('look-example · version 3')
+    expect(summary.textContent).toContain('Automation profile: revision 2')
+    expect(summary.textContent).toContain('Effective workflow (character default): 12')
+    expect(summary.textContent).toContain('Provider: provider-model')
+    expect(summary.textContent).toContain('768 × 1360')
+    expect(summary.textContent).toContain('Authorization expires (UTC):')
+    expect(summary.textContent).toContain('counts, not a monetary cap')
+    expect(summary.textContent).toContain('compatibility fallback can use the second call')
+    expect(summary.textContent).toContain('browser closes')
+    expect(summary.textContent).toContain('backend restart')
+    expect(summary.textContent).toContain('does not guarantee visual results')
+
+    const stages = Array.from(summary.querySelectorAll('[aria-label="Authorized wardrobe stage timeline"] li'))
+    expect(stages).toHaveLength(4)
+    expect(stages[0].textContent).toContain('She wears a navy dress, and a silver necklace.')
+    expect(stages[1].textContent).toContain('She wears a silver necklace.')
+    expect(stages[2].textContent).toContain('She wears the silver necklace draped against her collarbone.')
+    expect(stages[3].textContent).toContain('She wears nothing at all.')
+    expect(attempts.filter(([url]) => url === '/api/sessions/guided/full-auto/preflight')).toHaveLength(1)
+    expect(attempts.filter(([url]) => url === '/api/sessions/guided')).toHaveLength(0)
+
+    await act(async () => { summary.querySelector('button').click() })
+    const created = attempts.filter(([url]) => url === '/api/sessions/guided')
+    expect(created).toHaveLength(1)
+    expect(created[0][1]).toMatchObject({
+      character_id: 4,
+      workflow_id: null,
+      saved_look: { look_key: 'look-example', version: '3', content_digest: 'd'.repeat(64) },
+      full_auto: {
+        generate_without_pauses: true,
+        profile_revision: '2',
+        profile_digest: 'e'.repeat(64),
+        scope_digest: 'b'.repeat(64),
+      },
+    })
+    expect(Object.isFrozen(created[0][1])).toBe(true)
+    expect(Object.isFrozen(created[0][1].full_auto)).toBe(true)
+    expect(window.location.hash).toBe('#/session/42')
+  })
+
+  it('6.2 rejects a truncated stage summary before enabling consent or navigating', async () => {
+    window.location.hash = ''
+    const { attempts, form } = await prepareFullAutoForm({
+      preflight: (body) => {
+        const consent = fullAutoConsentFor(body)
+        consent.summary.progression.stages = [
+          { coverage: 'Stage one coverage.', first_take_id: 'take-001', last_take_id: 'take-011', stage_index: 0, take_count: 11 },
+          { coverage: 'Stage two coverage.', first_take_id: 'take-012', last_take_id: 'take-012', stage_index: 1, take_count: 1 },
+        ]
+        return consent
+      },
+    })
+
+    expect(form.querySelector('[aria-label="Full Auto consent summary"]')).toBeNull()
+    expect(container.textContent).toContain('The server returned an incomplete Full Auto consent summary.')
+    expect(Array.from(form.querySelectorAll('button')).some((button) => button.textContent === 'Generate without pauses')).toBe(false)
+    expect(attempts.filter(([url]) => url === '/api/sessions/guided')).toHaveLength(0)
+    expect(window.location.hash).toBe('')
+  })
+
+  it('6.2 retries an unknown Full Auto result with the same frozen request after consent expires', async () => {
+    let createCount = 0
+    const { attempts, form } = await prepareFullAutoForm({
+      create: (body) => {
+        createCount += 1
+        if (createCount === 1) throw new Error('Network disconnected')
+        return guidedResponseFor(body, 48, 200)
+      },
+    })
+    await act(async () => { form.querySelector('[aria-label="Full Auto consent summary"] button').click() })
+    expect(container.textContent).toContain('The creation result is unknown. Retry the same request')
+    const original = attempts.find(([url]) => url === '/api/sessions/guided')[1]
+    expect(Object.isFrozen(original)).toBe(true)
+    const oldNow = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(oldNow + 6 * 60 * 1000)
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Retry creation').click()
+    })
+
+    const creates = attempts.filter(([url]) => url === '/api/sessions/guided')
+    expect(creates).toHaveLength(2)
+    expect(creates[1][1]).toBe(original)
+    expect(creates[1][1].request_id).toBe(original.request_id)
+    expect(attempts.filter(([url]) => url === '/api/sessions/guided/full-auto/preflight')).toHaveLength(1)
+    expect(window.location.hash).toBe('#/session/48')
+  })
+
+  it('6.2 fences a preflight response when the exact look selection changes', async () => {
+    let oldRequest = null
+    let resolvePreflight
+    const { attempts, form } = await prepareFullAutoForm({
+      preflight: (body) => {
+        oldRequest = body
+        return new Promise((resolve) => { resolvePreflight = resolve })
+      },
+    })
+    expect(resolvePreflight).toBeTypeOf('function')
+    expect(oldRequest.saved_look.version).toBe('3')
+
+    await act(async () => { setInputValue(form.querySelector('#guided-saved-look-version'), '2') })
+    await act(async () => {
+      resolvePreflight(fullAutoConsentFor(oldRequest))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(form.querySelector('[aria-label="Full Auto consent summary"]')).toBeNull()
+    expect(container.textContent).toContain('Load the selected exact saved-look version to continue.')
+    expect(attempts.filter(([url]) => url === '/api/sessions/guided')).toHaveLength(0)
+    expect(attempts.filter(([url]) => url === '/api/sessions/guided/full-auto/preflight')).toHaveLength(1)
+  })
+
+  it('6.2 refreshes changed default workflow and provider consent, then waits for another click', async () => {
+    let createCount = 0
+    const { attempts, form } = await prepareFullAutoForm({
+      create: (body) => {
+        createCount += 1
+        if (createCount === 1) {
+          throw Object.assign(new Error('The authorized inputs changed.'), {
+            status: 409,
+            hasStableErrorBody: true,
+            detail: {
+              code: 'authorization_scope_changed',
+              message: 'Review the refreshed summary and authorize again.',
+              current: fullAutoConsentFor(body, { workflowId: 17, providerModel: 'provider-after-refresh' }),
+            },
+          })
+        }
+        return guidedResponseFor(body, 49, 200)
+      },
+    })
+    const button = () => form.querySelector('[aria-label="Full Auto consent summary"] button')
+    await act(async () => { button().click() })
+
+    expect(attempts.filter(([url]) => url === '/api/sessions/guided')).toHaveLength(1)
+    expect(container.textContent).toContain('Effective workflow (character default): 17')
+    expect(container.textContent).toContain('Provider: provider-after-refresh')
+    expect(container.textContent).toContain('Review this refreshed summary, then click Generate without pauses again')
+    expect(window.location.hash).toBe('')
+
+    await act(async () => { button().click() })
+    const creates = attempts.filter(([url]) => url === '/api/sessions/guided')
+    expect(creates).toHaveLength(2)
+    expect(creates[0][1].full_auto.scope_digest).toBe('b'.repeat(64))
+    expect(creates[1][1].full_auto.scope_digest).toBe('c'.repeat(64))
+    expect(attempts.filter(([url]) => url === '/api/sessions/guided/full-auto/preflight')).toHaveLength(1)
+    expect(window.location.hash).toBe('#/session/49')
+  })
+
+  it('6.2 refuses fewer photos than authorized stages while keeping exact-look manual creation available', async () => {
+    const { attempts, form } = await prepareFullAutoForm({
+      photoCount: '3',
+      preflight: async () => {
+        throw Object.assign(new Error('Full Auto requires at least 4 takes to cover every saved-look stage; increase the count or continue manually.'), {
+          status: 422,
+          hasStableErrorBody: false,
+          detail: {
+            code: 'insufficient_stage_count',
+            message: 'Full Auto requires at least 4 takes to cover every saved-look stage; increase the count or continue manually.',
+            current: {
+              required_count: 4,
+              available_count: 3,
+              manual_available: true,
+              remedy: 'increase_photo_count_or_use_manual_flow',
+            },
+          },
+        })
+      },
+    })
+    expect(container.textContent).toContain('Full Auto requires at least 4 takes to cover every saved-look stage; increase the count or continue manually.')
+    expect(attempts.filter(([url]) => url === '/api/sessions/guided')).toHaveLength(0)
+
+    await act(async () => {
+      Array.from(form.querySelectorAll('button')).find((button) => button.textContent === 'Create manual/assisted session').click()
+    })
+
+    const created = attempts.filter(([url]) => url === '/api/sessions/guided')
+    expect(created).toHaveLength(1)
+    expect(created[0][1].saved_look).toEqual({ look_key: 'look-example', version: '3', content_digest: 'd'.repeat(64) })
+    expect(created[0][1]).not.toHaveProperty('full_auto')
+    expect(created[0][1]).not.toHaveProperty('progression')
+    expect(window.location.hash).toBe('#/session/42')
+  })
+
+  it('6.2 loads and manually creates the exact maximum SQLite look version without Full Auto', async () => {
+    const maxVersion = '9223372036854775807'
+    const attempts = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [fullAutoLibrary]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: true }
+      return []
+    })
+    vi.spyOn(api, 'getVersioned').mockImplementation(async (url) => {
+      if (url === '/api/looks') return [{ key: 'look-example', name: 'Example Look', version: maxVersion }]
+      if (url === `/api/looks/look-example/versions/${maxVersion}`) return fullAutoLook(maxVersion)
+      throw new Error(`Unexpected versioned request: ${url}`)
+    })
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body, integerFields) => {
+      attempts.push([url, body, integerFields])
+      if (url === '/api/sessions/guided') return guidedResponseFor(body, 50)
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    await renderComponent({ requestedModelId: '4' })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    const form = container.querySelector('[aria-label="Guided session setup"]')
+    expect(form.querySelector('#guided-character').value).toBe('4')
+    await act(async () => { setSelectValue(form.querySelector('#guided-saved-look'), 'look-example') })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(form.querySelector('#guided-saved-look-version').value).toBe(maxVersion)
+    expect(container.textContent).toContain(`Loaded Example Look · version ${maxVersion}`)
+
+    await act(async () => { form.querySelector('button.primary').click() })
+
+    const created = attempts.find(([url]) => url === '/api/sessions/guided')
+    expect(created[1].saved_look.version).toBe(maxVersion)
+    expect(created[2]).toContain('saved_look.version')
+    expect(created[1]).not.toHaveProperty('full_auto')
+    expect(created[1]).not.toHaveProperty('progression')
+    expect(window.location.hash).toBe('#/session/50')
+  })
+
+  it('6.2 keeps the browser on Resources after an incomplete Full Auto creation response', async () => {
+    window.location.hash = ''
+    const { attempts, form } = await prepareFullAutoForm({
+      create: () => ({ status: 201, data: { session_id: 51, plan_revision: 1, plan: {} } }),
+    })
+    await act(async () => { form.querySelector('[aria-label="Full Auto consent summary"] button').click() })
+
+    expect(window.location.hash).toBe('')
+    expect(container.textContent).toContain('The server returned an incomplete guided creation result.')
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent === 'Retry creation')).toBe(true)
+    expect(attempts.filter(([url]) => url === '/api/sessions/guided')).toHaveLength(1)
   })
 })

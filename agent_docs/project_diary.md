@@ -1,5 +1,33 @@
 # Project Diary
 
+## Full Auto Task 6.2 Consent Boundaries
+
+Keep read-only preflight separate from the single creation authorization. Bind
+exact look/profile identities, fence superseded responses even across A-to-B-to-A
+selection changes, and retain the frozen request after an unknown creation
+outcome. Changed consent needs another explicit click; committed replay must
+not refresh its original request. Display every wardrobe stage, including aside
+and final states, rather than only stage numbers or coverage. Verify the full
+stage count and deterministic take intervals before showing consent. An
+appearance-only look remains one constant stage without an invented no-clothing
+sentence. Preserve SQLite version identities through browser transport.
+
+Independent review exposed acceptance of truncated stage summaries; the repaired
+validator and its regression retain all-stage authorization. Keep test fixtures
+faithful to the actual insufficient_stage_count envelope.
+
+The first full Python gate failed an existing unchanged-row review test whose
+snapshot precedes an explicit lease renewal. A controlled second-boundary delay
+reproduced it in pristine HEAD with assertions intact: lease_started_at,
+lease_expires_at and updated_at changed after the baseline. This proves the
+preexisting temporal test defect, not a Task 6.2 repair. Preserve its failed
+gate separately and require a final complete passing suite without weakening it.
+The second complete system-Python gate failed an existing 25ms runner-heartbeat
+assertion; isolated HEAD/current and interpreter comparisons passed, so its
+full-suite scheduling cause remains unproven. The final complete project-venv
+gate passed unchanged with 3,558 tests and two skips; it proves acceptance, not
+a repair of those unrelated failures.
+
 ## Full Auto Task 6.1 Profile UI Boundaries
 
 Keep source version/profile identity explicit throughout editing and readback;

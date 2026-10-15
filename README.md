@@ -89,11 +89,20 @@ exact saved-look version, so ownership and coverage facts are recorded once
 rather than per take. Its workflow and manual application are documented in
 [Saved looks](docs/looks.md#reusable-automation-profiles); exact profile
 read/write APIs are in [the API reference](docs/looks.md#automation-profile-api).
-Guided creation also has a
-backend API for selecting an exact saved-look snapshot and for read-only Full
-Auto preflight plus atomic initial run authorization. The API also exposes
-persisted-run status, Cancel, Resume, and read-only Resume scope comparison;
-the request, CAS, replay, and quote contract is documented in
+Resources offers opt-in Full Auto creation with an exact saved-look version and
+ready automation profile. Its read-only preflight summarizes every stage and
+coverage, take count and interval, effective canvas and framing, workflow and
+provider identity, budgets, policy/compiler versions, and quote expiry before
+consent. Confirming **Generate without pauses** authorizes one atomic creation
+request for automatic preparation, review and approval, submission, and initial
+execution; manual saved-look creation remains available without automation. A
+run can continue after browser closure or a backend restart, but blockers,
+exhausted allowances, expiry, or Cancel can stop it. The allowance is at most
+two assistant calls per take, including a
+compatibility fallback, and is not a monetary cap. Framing and coverage describe
+instructions, not guaranteed image content. The backend also exposes persisted
+status, Cancel, Resume, and read-only Resume scope comparison; their request,
+CAS, replay, and quote contract is documented in
 [Full Auto status and controls](docs/sessions.md#full-auto-status-and-controls).
 Guided Full Auto creation schedules the coordinator after authorization commits;
 eligible Resume and backend startup also schedule persisted work. The
@@ -120,8 +129,9 @@ continuation reuses shot IDs and restores only linked targets without an
 execution attempt. Journaled attempt retries are explicit Resume controls: they
 reuse linked shot IDs, require a fresh scope quote, and require separate
 duplicate-work risk acceptance plus a current queue check for unknown outcomes.
-The legacy session retry route refuses Full Auto-linked shots. These controls
-are backend-only; no Full Auto control UI is available. See
+The legacy session retry route refuses Full Auto-linked shots. Resources now
+provides selection, consent, and creation; status, Cancel, Resume, and attempt
+retry remain API-only while the session control UI is pending. See
 [Full Auto status and controls](docs/sessions.md#full-auto-status-and-controls).
 The backend-only all-target review gate checks current prepared evidence
 for Full Auto approval and new submissions: unresolved review conflicts,
@@ -213,8 +223,9 @@ client queues work after an empty observation, Full Auto may still send one
 normal-priority POST for that attempt. This local policy provides no remote queue
 fairness or exclusivity guarantee. The isolated Full Auto rollback preflight
 and runbook are documented in [Operational rollback](docs/rollback.md). Full
-Auto selection/consent/progress UI and separately authorized real-generation
-validation remain unfinished.
+Auto selection, consent, and creation are available in Resources; SessionView
+progress and runtime controls remain unfinished. Real-generation validation
+still requires separate authorization.
 The existing manual workflow remains available for sessions without a
 nonterminal Full Auto owner.
 While a run is nonterminal or its work is unresolved, supported DELETE routes

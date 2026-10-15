@@ -71,7 +71,7 @@ export function parseVersionJson(source) {
         if (source[index++] !== ':') throw new SyntaxError('Invalid JSON object.')
         output.push(':')
         value([
-          'version', 'expected_version', 'profile_revision',
+          'version', 'revision', 'expected_version', 'profile_revision',
           'expected_profile_revision', 'latest_profile_revision',
           'accepted_revision', 'source_profile_revision',
         ].includes(key))
@@ -162,11 +162,15 @@ async function request(method, path, body, options = {}) {
     let detail = res.statusText
     let hasStableErrorBody = false
     try {
-      detail = (await res.json()).detail ?? detail
+      const payload = losslessVersions ? parseVersionJson(await res.text()) : await res.json()
+      detail = payload.detail ?? detail
       const keys = detail && typeof detail === 'object' ? Object.keys(detail).sort() : []
-      hasStableErrorBody = keys.length === 2 && keys[0] === 'code' && keys[1] === 'message'
+      hasStableErrorBody = keys.includes('code') && keys.includes('message')
+        && keys.every((key) => ['code', 'message', 'current'].includes(key))
         && typeof detail.code === 'string' && Boolean(detail.code)
         && typeof detail.message === 'string' && Boolean(detail.message)
+        && (!Object.hasOwn(detail, 'current') || (detail.code === 'authorization_scope_changed'
+          && Boolean(detail.current && typeof detail.current === 'object' && !Array.isArray(detail.current))))
     } catch { /* response was not JSON */ }
     const err = new Error(typeof detail === 'string' ? detail : (detail?.message || JSON.stringify(detail)))
     err.detail = detail
@@ -224,7 +228,10 @@ export const api = {
   post: (p, b, options) => req('POST', p, b, options),
   getVersioned: (p) => api.get(p, { losslessVersions: true }),
   postVersioned: (p, b, integerFields = []) => api.post(p, b, { losslessVersions: true, integerFields }),
-  postWithStatus: (p, b) => request('POST', p, b),
+  postWithStatus: (p, b, integerFields = []) => request(
+    'POST', p, b,
+    integerFields.length ? { losslessVersions: true, integerFields } : undefined,
+  ),
   patch: (p, b) => req('PATCH', p, b),
   del: (p) => req('DELETE', p),
   upload,
