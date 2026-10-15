@@ -2,27 +2,32 @@
 
 ## Accepted Position
 
-Deployment `full-auto-first-20261015` accepts only Task 6.5 of
-`automate-resource-session-full-auto`, from clean baseline `2546cf3`.
-Main accepted the actual documentation diff and independent Tester verdict.
-Only 6.5 is newly checked: 35 of 41 tasks are complete. Section 7 remains pending.
+Deployment `full-auto-7-1-20261015` accepts only Task 7.1 of
+`automate-resource-session-full-auto`, from clean baseline `1315654`.
+Main reviewed the actual harness, regression and documentation and accepted
+independent browser/persistence evidence and completed gates. Only 7.1 is newly
+checked: 36 of 41 tasks are complete. Task 7.2 remains unstarted.
 
 ## Delivered Scope
 
-README now summarizes Full Auto and links canonical session, profile and
-isolated rollback guidance. Session and Looks documentation reconciles the
-implemented UI, exact eligibility, profile correction, recovery actions,
-automatic review, duplicate acceptance and visual/coverage limits. No runtime
-code, tests or frontend files changed.
+A disposable browser demo and network-free forty-take regression retain the
+real scheduler, preparation, policy approval, submission and runner, replacing
+only external HTTP providers. A linked walkthrough documents reproducible
+version/profile selection, consent, stages, expected evidence and cleanup.
+No product code or frontend source changed.
 
 ## Verification and Stop Boundary
 
-Independent complete project-venv Python: 3,558 passed, two skipped, five
-warnings in 18:51. Strict OpenSpec, diff checks, 46 privacy/control tests and
-new README link checks passed. Frontend tests/build were not required because
-frontend files were unchanged. Prior Task 6.4 verification is historical,
-not a newly executed frontend gate.
+Independent browser acceptance reached 40/40 successful outputs from one
+Generate action without intermediate actions. Exact look v1/profile 1 remained
+bound despite v2 existing; two preparation batches and all three stages passed.
+Independent Python rerun: 3,559 passed, two skipped, five warnings in 1,169.19s.
+The first complete run failed an unchanged budget-renewal error-code assertion;
+focused and module reproductions and the final full run passed without edits.
+Its cause remains unconfirmed. Frontend: 667 passed; build and strict OpenSpec
+passed. Final documentation/privacy/diff checks precede the acceptance commit.
 
-Task-only acceptance commit and Archivist closure follow final compact checks.
-No real generation, browser integration exercise, archive or push is authorized
-by this closure. Section 7 remains unstarted by this deployment.
+The disposable process, listener and temporary tree were removed. CUA exposed
+no independent HTTP request counter; observed browser actions and persisted
+receipts corroborate consent. Synthetic 2x2 images prove protocol completion,
+not visual fidelity. No live generation, next task, archive or push is included.

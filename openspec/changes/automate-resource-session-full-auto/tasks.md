@@ -56,7 +56,7 @@
 
 ## 7. Integration acceptance and real generation
 
-- [ ] 7.1 Run an isolated browser-to-backend 40-take Full Auto journey with fake providers through the actual creation/preparation/approval/submission/runner boundaries; verify one initial authorization, exact saved version, every stage, no per-take entry or intermediate click, unique links and completed output counts.
+- [x] 7.1 Run an isolated browser-to-backend 40-take Full Auto journey with fake providers through the actual creation/preparation/approval/submission/runner boundaries; verify one initial authorization, exact saved version, every stage, no per-take entry or intermediate click, unique links and completed output counts.
 - [ ] 7.2 Run complementary conflict/recovery journeys with immutable full-row before/after comparisons and controlled interleavings; verify accessory ownership failure/correction, source drift, duplicate review, cancellation, lease expiry, browser closure, backend restart and ambiguous dispatch without false passes from helper mocks.
 - [ ] 7.3 Run `python -m pytest`, `npm --prefix frontend test`, `npm --prefix frontend run build`, `openspec validate automate-resource-session-full-auto --strict --no-interactive` and `git diff --check`; inspect actual output and retain any failures without weakening tests or treating subsets as full-suite proof.
 - [ ] 7.4 After separate user authorization and selection of local test inputs/budget, execute a new real Full Auto session with at least twelve takes and every stage of an automation-ready look containing a progressive accessory; record sanitized protocol evidence, unique take/shot/attempt counts and a controlled recovery without publishing private prompts or images.

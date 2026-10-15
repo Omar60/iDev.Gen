@@ -10,6 +10,8 @@
 - [Judging](judging.md) — blind passes, the reading vocabulary, the two scopes.
 - [Catalogue measurements](catalogue-measurements.md) — what the shipped components
   were measured on.
+- [Task 7.1 Full Auto browser walkthrough](task-7-1-browser-walkthrough.md) — isolated
+  40-take browser journey, synthetic provider boundary, and acceptance evidence.
 - [Asking for candidates](catalogue-candidate-prompt.md) — the request that writes new
   component wordings, and the one that writes a reading vocabulary.
 - [Known limitations](known-limitations.md) — what the tool deliberately does not do yet.

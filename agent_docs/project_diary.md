@@ -1,5 +1,23 @@
 # Project Diary
 
+## Full Auto Task 7.1 Browser Acceptance
+
+Ordinary API fixtures disable the coordinator scheduler; restore the real
+scheduler for connected regression and run the rendered UI against an isolated
+backend for browser acceptance. Replace only external transports, keeping
+request parsing, evidence, review, submission, runner and file handling real.
+Use a nonlatest exact saved version and compare every frozen prompt with the
+queued graph, not just counts or links. Synthetic output success proves no
+visual fidelity. Browser action observation and durable receipts are evidence
+when a network counter is unavailable; disclose that observation boundary.
+
+The first full gate failed an unchanged budget-renewal error-code assertion;
+isolated/module checks and the final complete suite passed without edits.
+Keep the failed gate separate and do not claim its cause or repair. A browser
+demo may preserve its temporary tree after shutdown timeout: verify process
+and listener termination before removing only that owned tree. Only 7.1 is
+accepted; conflict/recovery and live visual acceptance remain separate.
+
 ## Full Auto Task 6.5 Documentation Acceptance
 
 Keep README concise and link canonical session, profile and rollback guides.
