@@ -2,32 +2,30 @@
 
 ## Accepted Position
 
-Deployment `full-auto-63-20261015` completes only Task 6.3 of
-`automate-resource-session-full-auto`, from clean baseline `84df397`.
+Deployment `full-auto-first-20261015` completes only Task 6.4 of
+`automate-resource-session-full-auto`, from clean baseline `3d88380`.
 Main accepted the actual diff and independent Tester verdict after internal
-Executor implementation and repair. Only 6.3 is newly checked: 33 of 41 tasks.
-Task 6.4 is the next pending task and is outside this deployment.
+Executor implementation and a scoped repair. Only 6.4 is newly checked:
+34 of 41 tasks are complete. Task 6.5 remains pending.
 
 ## Delivered Scope
 
-SessionView discovers authoritative Full Auto status without browser storage,
-shows progress and mixed results, and exposes eligible Cancel, Resume, renewal,
-retry and blocker remedies. Cancellation reconciliation remains read-only until
-verified settlement. Scope comparison displays allowances and expiry before
-explicit changed-scope acceptance. Unknown control outcomes retain the exact
-request and UUID; session epochs fence late responses. Existing test fixtures
-and the README/session guide reflect the new controls.
+Switch to manual reuses durable Cancel. Unknown status, pending cancellation
+and unresolved attempts keep manual controls fenced, including after reopen.
+Verified settlement releases controls without restarting Full Auto. Manual
+preparation, current-revision human approval, submission and Run stay separate;
+navigation does not grant approval. Progression retains Preview/Apply, and
+coverage labels use frozen manual or profile-derived evidence.
 
 ## Verification and Stop Boundary
 
-Independent frontend: 659 passed in 36 files; build, strict OpenSpec and diff
-checks passed. Privacy/control checks: 46 passed. Complete project-venv Python:
-3,558 passed, two skipped, five warnings. Python preceded the final frontend-only
-repair; backend stayed unchanged and privacy/control checks were repeated.
-The build retains the large-chunk warning. Final closure documents receive
-compact checks before the isolated acceptance commit and sealed Archivist report.
+Independent complete project-venv Python: 3,558 passed, two skipped, five
+warnings. Frontend: 667 passed in 36 files; build passed with the existing
+large-chunk warning. Strict OpenSpec, privacy (10 passed) and diff checks passed.
+Independent regression proves policy approval alone cannot authorize manual
+submission and the settled-transfer UI retains the full manual journey.
 
+Main created the isolated acceptance commit after compact closure checks.
+Archivist owns the sealed read-only Git handoff and Deployment Token Report.
 No real generation or browser-to-backend integration exercise was performed.
-Manual dispatch transfer after settled cancellation remains Task 6.4; visual
-coverage and framing remain instructions, not image certification. Do not begin
-the next task, archive, push, or run real generation without separate authority.
+Task 6.5 and section 7 remain pending. Do not advance, archive or push.

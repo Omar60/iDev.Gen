@@ -138,6 +138,19 @@ def test_policy_approval_stays_distinct_across_cancel_and_manual_transfer_flag_g
     )
     assert cancelled.view["state"] == "cancelled"
 
+    # Full Auto's policy approval must not authorize a manual submission after
+    # ownership settles; the separate human session-plan approval is required.
+    before_manual_submit = _database_snapshot()
+    policy_only_submit = client.post(
+        f"/api/sessions/{session_id}/plan/preparations/submit",
+        json={"plan_revision": revision, "take_id": _targets[0]},
+    )
+    assert policy_only_submit.status_code == 409, policy_only_submit.text
+    assert _database_snapshot() == before_manual_submit
+    assert db.one(
+        "SELECT session_id FROM session_plan_approval WHERE session_id = ?", session_id,
+    ) is None
+
     monkeypatch.setitem(main.CONFIG, "resource_planning_enabled", False)
     blocked = client.post(
         f"/api/sessions/{session_id}/plan/review/approve",

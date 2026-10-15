@@ -1,5 +1,21 @@
 # Project Diary
 
+## Full Auto Task 6.4 Transfer Contract
+
+Persisted Cancel intent and verified settlement already define the transfer
+boundary. Reuse them rather than adding a second transfer state machine.
+Historical Full Auto policy approval is separate from explicit manual review
+approval; enabling manual controls must preserve that distinction and unresolved
+attempt fencing. Navigation alone supplies no new authorization.
+
+Main review rejected hiding Retry in every Resource session: preserve the
+existing manual retry contract rather than adding a new approval rule. After
+repair, independent tests proved manual Prepare/Approve/Submit/Run after
+settlement, unresolved terminal fencing, and zero-write rejection of policy-only
+manual submission. Complete Python (3,558), frontend (667), build, strict
+OpenSpec, privacy and diff gates passed. Only Task 6.4 is accepted; real
+generation and broader integration acceptance remain separate.
+
 ## Full Auto Task 6.3 Control Integration
 
 Main accepted Task 6.3 after independent review of the repaired diff: 659

@@ -894,7 +894,7 @@ export function canPreparePlan(planState) {
  *  Requires:
  *  1. A valid draft loaded with a non-negative integer planRevision (canPreparePlan).
  *  2. No unsaved local changes (planDirty must be false).
- *  3. Any resource conflict markers are covered by approval of this exact plan revision.
+ *  3. The exact plan revision has an explicit, authoritative review approval.
  *  4. At least one planned take.
  *  5. A valid workflow assigned (on the session, model, or settings).
  */
@@ -903,7 +903,7 @@ export function canProceedToGeneration(session, planState = {}) {
   if (!canPreparePlan(planState)) return false
   if (planState.planDirty) return false
 
-  if (hasPlanConflictMarkers(planState) && planState.reviewedRevision !== planState.planRevision) return false
+  if (planState.reviewedRevision !== planState.planRevision) return false
 
   if (!planState.plan?.takes || planState.plan.takes.length === 0) return false
 
@@ -1175,10 +1175,9 @@ export function createSessionViewController(
           return false
         }
         const planState = { plan, planRevision, planDirty, conflicts: planConflicts, reviewedRevision }
-        const hasMarkers = hasPlanConflictMarkers(planState)
         if (!canProceedToGeneration(session, planState)) {
-          if (hasMarkers && reviewedRevision !== planRevision) {
-            error = 'Cannot proceed to generation: approve the current plan revision to continue while resource markers remain'
+          if (reviewedRevision !== planRevision) {
+            error = 'Cannot proceed to generation: approve the current plan revision before continuing'
           } else if (!plan?.takes || plan.takes.length === 0) {
             error = 'Cannot proceed to generation: plan must contain at least one take'
           } else if (!Boolean(session?.workflow_id || session?.model?.workflow_id || session?.settings?.workflow_id)) {
@@ -1189,7 +1188,6 @@ export function createSessionViewController(
           notify()
           return false
         }
-        if (!hasMarkers) reviewedRevision = planRevision
       }
     }
     activeStep = step

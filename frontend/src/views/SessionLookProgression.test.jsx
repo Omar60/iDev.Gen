@@ -180,6 +180,17 @@ afterEach(async () => {
 })
 
 describe('Task 9.11 session saved looks and wardrobe progression', () => {
+  it('does not write or authorize generation when opening the progression panel', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({})
+    mountPanel({ plan: makePlan({ lookSnapshot: snapshotFromLook() }) })
+
+    await click([...container.querySelectorAll('summary')]
+      .find((item) => item.textContent.includes('Plan clothing changes')))
+
+    expect(post).not.toHaveBeenCalled()
+    expect(container.textContent).not.toMatch(/Approve|Submit|Run/)
+  })
+
   it('keeps saved-look selection optional and performs no write by default', async () => {
     const get = vi.spyOn(api, 'getVersioned').mockResolvedValue([{ key: savedLook.key, version: 3, name: savedLook.name }])
     const post = vi.spyOn(api, 'post').mockResolvedValue({})
@@ -425,12 +436,16 @@ describe('Task 9.11 session saved looks and wardrobe progression', () => {
   it('previews every effective take state, names retained overrides, and applies the exact signed review', async () => {
     const full = deriveSavedLookWardrobeProgression(outfit, '', 1, { stageIndices: [0] })[0]
     const partial = deriveSavedLookWardrobeProgression(outfit, '', 1, { stageIndices: [2] })[0]
+    const manualCoverage = 'User-authored coverage detail.'
     const oldEvent = { take_id: 'take-004', scope: 'from_here', wardrobe: 'Old saved event.' }
     const override = { take_id: 'take-003', scope: 'this_take', wardrobe: 'A retained one-take exception.' }
     const before = makePlan({
       initialWardrobe: full,
       lookSnapshot: snapshotFromLook(),
       wardrobeChanges: [override, oldEvent],
+      takeList: takes.map((take, index) => index === 0
+        ? { ...take, wardrobe_coverage: manualCoverage }
+        : take),
     })
     const result = {
       expected_revision: 4,
@@ -497,6 +512,8 @@ describe('Task 9.11 session saved looks and wardrobe progression', () => {
       .find((button) => button.textContent.includes('Apply this reviewed timeline'))
     await click(applyButton)
     expect(post).toHaveBeenCalledTimes(2)
+    expect(appliedPlan.takes[0].wardrobe_coverage).toBe(manualCoverage)
+    expect(post.mock.calls.every(([, body]) => !Object.prototype.hasOwnProperty.call(body, 'wardrobe_coverage'))).toBe(true)
     expect(post.mock.calls[1]).toEqual([
       '/api/sessions/911/plan/wardrobe-progression/apply',
       {

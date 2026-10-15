@@ -1727,9 +1727,21 @@ timestamp, and the proposed authorization deadline.
 The Session page displays phase, progress counts, current assistant and
 image-attempt allowances, authorization expiry, and per-shot outcomes. Blocker
 cards offer mapped Setup/Resources, brief/take editing, review, scope, or run
-actions. When Full Auto owns the session, an editor opens only after the run
-settles. Browser storage is only an optional replay hint for an uncertain
-control response, not a source for run status.
+actions. In Review, each saved take labels coverage from its frozen evidence:
+**Derived** shows the saved-look version, profile revision, and stage; bound
+manual coverage shows its look/profile identity; unavailable provenance is
+called out.
+
+For an owned run, **Switch to manual** requests cancellation through the existing
+replay-safe Cancel action. Pending cancellation, an unknown remote outcome, or
+an outage keeps run ownership and fences manual controls. **Reconcile
+cancellation** performs read-only checks and does not dispatch generation. Once
+the backend verifies settlement, cancellation completes and manual controls
+unlock without restarting Full Auto. Continue manually by preparing takes,
+reviewing and approving the current revision, submitting selected ready takes,
+then choosing **Run**; navigating to the session does not approve, submit, or
+start generation. Browser storage is only an optional replay hint for an
+uncertain control response, not a source for run status.
 An expired or budget-blocked run offers **Compare renewal scope**. Its comparison
 shows remaining calls, added total and per-take assistant allowance, the amount
 after acceptance, image-retry allowance, and proposed expiry. Acceptance is

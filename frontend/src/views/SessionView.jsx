@@ -644,8 +644,12 @@ export default function SessionView({
   const fullAutoOwnsSession = isResource && Boolean(
     fullAutoRunForSession && FULL_AUTO_ACTIVE_STATES.has(fullAutoRunForSession.state),
   )
-  const fullAutoMutationLocked = fullAutoStatusUnknown || fullAutoOwnsSession || fullAutoControlPending
-  const fullAutoManualDispatchLocked = fullAutoStatusUnknown || Boolean(fullAutoRunForSession) || fullAutoControlPending
+  const fullAutoWorkUnsettled = Boolean(fullAutoRunForSession && (
+    FULL_AUTO_ACTIVE_STATES.has(fullAutoRunForSession.state)
+    || fullAutoRunForSession.progress.unresolved_work_count > 0
+  ))
+  const fullAutoMutationLocked = fullAutoStatusUnknown || fullAutoWorkUnsettled || fullAutoControlPending
+  const fullAutoManualDispatchLocked = fullAutoMutationLocked
   const hasPendingFullAutoControl = () => {
     const request = fullAutoControlRequestRef.current
     return Boolean(request && String(request.session_id) === String(id)
@@ -690,6 +694,13 @@ export default function SessionView({
           setFullAutoStatusResolved(true)
           setFullAutoStatusError('')
           return previous
+        }
+        const pendingControl = fullAutoControlRequestRef.current
+        if (view?.state === 'cancelled' && view.cancel_intent
+            && view.progress.unresolved_work_count === 0
+            && pendingControl?.run_id === view.run_id
+            && (pendingControl.action === 'cancel' || pendingControl.mode === 'reconcile_cancellation')) {
+          clearFullAutoControlRequest(pendingControl)
         }
         fullAutoRunRef.current = view
         setFullAutoSessionId(String(sessionId))
@@ -1912,8 +1923,8 @@ export default function SessionView({
           conflicts: planConflictMarkers,
           reviewedRevision,
         })) {
-          if (hasPlanConflictMarkers && reviewedRevision !== planRevision) {
-            setError('Cannot proceed to generation: approve the current plan revision to continue while resource markers remain.')
+          if (reviewedRevision !== planRevision) {
+            setError('Cannot proceed to generation: approve the current plan revision before continuing.')
           } else if (!plan?.takes?.length) {
             setError('Cannot proceed to generation: plan must contain at least one take.')
           } else if (!Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)) {
@@ -1923,7 +1934,6 @@ export default function SessionView({
           }
           return false
         }
-        if (!hasPlanConflictMarkers) setReviewedRevision(planRevision)
       }
     }
     setActiveStep(step)
@@ -3242,7 +3252,7 @@ export default function SessionView({
                                           : remedy === 'review_changes' ? 'Review changes'
                                             : remedy === 'reconcile_cancellation' ? 'Reconcile cancellation'
                                               : remedy === 'resume' ? 'Resume'
-                                                : remedy === 'cancel' ? 'Cancel Full Auto'
+                                                : remedy === 'cancel' ? 'Switch to manual'
                                                   : remedy === 'wait' ? 'Check again'
                                                     : 'Review status'}
                         </button>
@@ -3250,9 +3260,10 @@ export default function SessionView({
                     </div>
                   </div>
                 )}
-                {cancellationPending && (
+                {(cancellationPending || matchingRequest?.action === 'cancel'
+                  || matchingRequest?.mode === 'reconcile_cancellation') && (
                   <p role="status" className="muted" style={{ margin: '9px 0 0' }}>
-                    Cancellation intent is pending. Owned work must finish or be verified settled; Full Auto will not continue preparation, retry shots, resume generation, or dispatch new work while this intent remains.
+                    Manual transfer is pending. Manual controls stay locked until every owned attempt is verified settled. This cancellation flow does not resume Full Auto or dispatch new work.
                   </p>
                 )}
                 {fullAutoDuplicateReview && (
@@ -3312,8 +3323,9 @@ export default function SessionView({
                   ) : (
                     <>
                       {run.can_cancel && (
-                        <button type="button" onClick={createFullAutoCancellation} disabled={fullAutoStatusUnknown || fullAutoActionBusy}>
-                          {fullAutoActionBusy ? 'Cancelling…' : 'Cancel Full Auto'}
+                        <button type="button" onClick={createFullAutoCancellation} disabled={fullAutoStatusUnknown || fullAutoActionBusy}
+                                title="Request the existing replay-safe cancellation; manual controls unlock only after all owned work settles.">
+                          {fullAutoActionBusy ? 'Cancelling…' : 'Switch to manual'}
                         </button>
                       )}
                       {run.can_resume && (
@@ -3567,8 +3579,8 @@ export default function SessionView({
                         ? 'A reviewed adaptation is stale; save a new plan revision before proceeding'
                         : (activeStep === 'review' && planReviewStatus !== 'ready')
                           ? 'All take reviews must load successfully before proceeding'
-                        : (hasPlanConflictMarkers && reviewedRevision !== planRevision)
-                          ? 'Approve Review for the current plan revision before proceeding with resource markers'
+                        : reviewedRevision !== planRevision
+                          ? 'Approve Review for the current plan revision before proceeding'
                         : !plan?.takes?.length
                           ? 'Plan must contain at least one take'
                           : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
@@ -4850,6 +4862,31 @@ export default function SessionView({
                                           <div style={{ fontSize: 12 }}>{displaySnapshotField('wardrobe', d.wardrobe, 'no wardrobe description')}</div>
                                           <div style={{ fontWeight: 600, fontSize: 12, marginTop: 8 }}>Wardrobe coverage / detail</div>
                                           <div style={{ fontSize: 12 }}>{displaySnapshotField('wardrobe_coverage', t.wardrobe_coverage, 'no additional coverage detail')}</div>
+                                          {(() => {
+                                            const coverage = snap?.effective_state?.wardrobe_coverage
+                                            if (typeof coverage !== 'string' || !coverage.trim() || !snap) return null
+                                            const evidence = snap.provenance?.profile_coverage_evidence
+                                            if (!evidence) return <span className="badge">Manual coverage</span>
+                                            const lookVersion = versionText(evidence.look_version)
+                                            const profileRevision = versionText(evidence.profile_revision)
+                                            const stageIndex = evidence.derived_coverage?.stage_index
+                                            if (Number.isSafeInteger(stageIndex) && stageIndex >= 0
+                                                && lookVersion && profileRevision) {
+                                              return (
+                                                <span className="badge">
+                                                  Derived · saved look v{lookVersion} · profile revision {profileRevision} · stage {stageIndex + 1}
+                                                </span>
+                                              )
+                                            }
+                                            if (evidence.derived_coverage === null && lookVersion && profileRevision) {
+                                              return (
+                                                <span className="badge">
+                                                  Manual coverage · saved look v{lookVersion} · profile revision {profileRevision}
+                                                </span>
+                                              )
+                                            }
+                                            return <span className="badge warn">Coverage provenance unavailable</span>
+                                          })()}
                                           <div style={{ marginTop: 4 }}>
                                             <span className="badge" style={{ fontSize: 10 }}>
                                               {hasOwn(snap?.effective_state, 'scope')
@@ -5129,8 +5166,8 @@ export default function SessionView({
                             ? 'A reviewed adaptation is stale; save a new plan revision before proceeding'
                             : reviewBlocksFinalization
                               ? 'All take reviews must load successfully before proceeding'
-                              : (hasPlanConflictMarkers && reviewedRevision !== planRevision)
-                                ? 'Approve Review for the current plan revision before proceeding with resource markers'
+                              : reviewedRevision !== planRevision
+                                ? 'Approve Review for the current plan revision before proceeding'
                           : !plan?.takes?.length
                             ? 'Plan must contain at least one take'
                             : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)

@@ -570,6 +570,7 @@ describe('sessionPlan pure helpers (Task 5.2)', () => {
         planRevision: 2,
         planDirty: false,
         conflicts: [],
+        reviewedRevision: 2,
       })).toBe(false)
     })
 
@@ -586,6 +587,23 @@ describe('sessionPlan pure helpers (Task 5.2)', () => {
         planRevision: 2,
         planDirty: false,
         conflicts: [],
+        reviewedRevision: 2,
+      })).toBe(false)
+    })
+
+    it('requires explicit current-revision approval even when the plan has no resource markers', () => {
+      expect(canProceedToGeneration(validResourceSession, {
+        plan: validPlan,
+        planRevision: 2,
+        planDirty: false,
+        conflicts: [],
+      })).toBe(false)
+      expect(canProceedToGeneration(validResourceSession, {
+        plan: validPlan,
+        planRevision: 2,
+        planDirty: false,
+        conflicts: [],
+        reviewedRevision: 1,
       })).toBe(false)
     })
 
@@ -595,6 +613,7 @@ describe('sessionPlan pure helpers (Task 5.2)', () => {
         planRevision: 2,
         planDirty: false,
         conflicts: [],
+        reviewedRevision: 2,
       })).toBe(true)
     })
   })
@@ -1195,7 +1214,7 @@ describe('SessionView screen controller contract (createSessionViewController)',
     expect(controller.getState().canGenerate).toBe(false)
   })
 
-  it('allows entering generation after review, but keeps Run blocked when pending === 0', async () => {
+  it('requires explicit review approval before entering generation and still needs pending shots to Run', async () => {
     const mockApi = {
       get: async (path) => {
         if (path === '/api/sessions/202') {
@@ -1214,6 +1233,11 @@ describe('SessionView screen controller contract (createSessionViewController)',
           }
         }
       },
+      post: async (path, body) => {
+        expect(path).toBe('/api/sessions/202/plan/review/approve')
+        expect(body).toEqual({ plan_revision: 2 })
+        return { plan_revision: 2 }
+      },
     }
 
     const controller = createSessionViewController(202, { api: mockApi })
@@ -1224,12 +1248,17 @@ describe('SessionView screen controller contract (createSessionViewController)',
     expect(controller.navigateStep('takes')).toBe(true)
     expect(controller.navigateStep('review')).toBe(true)
 
-    // In Review step, proceeding to generation is permitted
+    // Navigation does not create a human approval.
     expect(controller.getState().activeStep).toBe('review')
-    expect(controller.getState().canProceedToGeneration).toBe(true)
-    expect(controller.isControlVisible('proceed_to_generation_button')).toBe(true)
+    expect(controller.getState().canProceedToGeneration).toBe(false)
+    expect(controller.isControlVisible('proceed_to_generation_button')).toBe(false)
     expect(controller.getState().canGenerate).toBe(false)
     expect(controller.isControlVisible('run_button')).toBe(false)
+    expect(controller.navigateStep('generation')).toBe(false)
+    expect(controller.getState().reviewedRevision).toBeNull()
+
+    expect((await controller.approveReviewAction()).ok).toBe(true)
+    expect(controller.getState().reviewedRevision).toBe(2)
 
     // Proceed to Generation from Review: transition succeeds
     expect(controller.navigateStep('generation')).toBe(true)
@@ -1267,12 +1296,17 @@ describe('SessionView screen controller contract (createSessionViewController)',
           }
         }
       },
+      post: async () => ({ plan_revision: 2 }),
     }
 
     const controller = createSessionViewController('202b', { api: mockApi })
     await controller.reload()
 
     controller.navigateStep('review')
+    expect(controller.navigateStep('generation')).toBe(false)
+    expect(controller.getState().canGenerate).toBe(false)
+    expect(controller.isControlVisible('run_button')).toBe(false)
+    expect((await controller.approveReviewAction()).ok).toBe(true)
     expect(controller.navigateStep('generation')).toBe(true)
     const state = controller.getState()
     expect(state.activeStep).toBe('generation')
@@ -1309,7 +1343,8 @@ describe('SessionView screen controller contract (createSessionViewController)',
           }
         }
       },
-      post: async () => {
+      post: async (path) => {
+        if (path === '/api/sessions/203/plan/review/approve') return { plan_revision: currentRev }
         currentRev = 2
         return { plan_revision: 2, conflicts: [] }
       },
@@ -1318,8 +1353,10 @@ describe('SessionView screen controller contract (createSessionViewController)',
     const controller = createSessionViewController(203, { api: mockApi })
     await controller.reload()
 
-    // Walk to Generation successfully
+    // Approval, not navigation, makes the exact plan revision eligible.
     controller.navigateStep('review')
+    expect(controller.navigateStep('generation')).toBe(false)
+    expect((await controller.approveReviewAction()).ok).toBe(true)
     controller.navigateStep('generation')
     expect(controller.getState().canGenerate).toBe(true)
     expect(controller.isControlVisible('run_button')).toBe(true)
@@ -1347,7 +1384,10 @@ describe('SessionView screen controller contract (createSessionViewController)',
     expect(state.canGenerate).toBe(false)
     expect(controller.isControlVisible('run_button')).toBe(false)
 
-    // Re-navigating to generation from review stamps new revision and re-authorizes Run
+    // The saved revision needs a new explicit approval before it can proceed.
+    expect(controller.navigateStep('generation')).toBe(false)
+    expect(controller.getState().error).toContain('approve the current plan revision')
+    expect((await controller.approveReviewAction()).ok).toBe(true)
     expect(controller.navigateStep('generation')).toBe(true)
     state = controller.getState()
     expect(state.reviewedRevision).toBe(2)
@@ -1429,12 +1469,14 @@ describe('SessionView screen controller contract (createSessionViewController)',
           }
         }
       },
+      post: async () => ({}),
     }
 
     const controller = createSessionViewController(205, { api: mockApi })
     await controller.reload()
 
     controller.navigateStep('review')
+    expect((await controller.approveReviewAction()).ok).toBe(true)
     expect(controller.navigateStep('generation')).toBe(false)
     expect(controller.getState().error).toContain('session has no workflow assigned')
     expect(controller.getState().canGenerate).toBe(false)

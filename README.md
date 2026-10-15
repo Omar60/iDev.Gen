@@ -232,8 +232,13 @@ and runbook are documented in [Operational rollback](docs/rollback.md). Full
 Auto selection, consent, and creation are available in Resources; SessionView
 now shows Full Auto progress and run controls. Real-generation validation still
 requires separate authorization.
-The existing manual workflow remains available for sessions without a
-nonterminal Full Auto owner.
+The existing manual workflow remains available. In a Full Auto-owned session,
+**Switch to manual** requests cancellation; pending, unknown, or unreachable work
+keeps ownership and manual controls locked. **Reconcile cancellation** performs
+read-only checks. After verified settlement, manual controls unlock and the
+cancelled run does not restart: prepare takes, review and approve the current
+revision, submit selected takes, then press **Run** separately. Navigating to the
+session does not approve or start generation.
 While a run is nonterminal or its work is unresolved, supported DELETE routes
 for its session, linked shots, model, or workflow return `409 full_auto_in_use`
 with affected session IDs; Cancel the run and wait for settlement before
