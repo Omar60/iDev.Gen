@@ -1,0 +1,15 @@
+# Full Auto Task 7.5 Visual Review
+
+All twenty outputs from the authorized live exercise were opened and compared with their recorded stage, coverage, accessory state and fixed framing. The sample is takes 1–5 at stage index 0, 6–10 at index 1, 11–15 at index 2, 16–19 at index 3, and take 20 at index 4. The private protocol references are `phase-trace.jsonl` and `terminal-runtime-verification-sanitized.json`. Images and stored prompt data were read from the local, gitignored `data/` directory and are excluded from tracked artifacts.
+
+The progressive wrist accessory is visible in all nineteen outputs from stages 0–3 and absent from the stage 4 output. Its color, stack count and wrist placement vary between images. The stage 4 prepared positive prompt and queued shot prompt contain no positive mention of the accessory, and the permanent appearance projection omits it; no final-prompt ownership contradiction was found.
+
+Take 7 (stage index 1) is a visible garment-fidelity mismatch: the rendered garments differ in pattern and material distribution from the stored stage. The stored wardrobe text appears verbatim in both prepared and queued prompts, so this is a pixel mismatch rather than a contradictory final prompt.
+
+Coverage is reported only where the relevant area is visible. At least one foot appears in takes 5, 12, 13, 18 and 19; the visible foot coverage agrees with the recorded covered state at stages 0 and 2 and uncovered state at stage 3. The other fifteen images crop out the feet, so their feet coverage is unverified. Poses, props and crops also obscure portions of other regions; this review does not claim that every recorded coverage region matches every image, nor certify regions not visible in the pixels.
+
+The run was bound to user-origin fixed `full_body` framing at preflight. The exact canonical framing sentence appears verbatim in one prepared positive prompt. Each take's saved framing line appears verbatim in both its prepared and queued positive prompt (20/20). Sixteen of those lines use the exact word `feet`; the other four use equivalent footwear, toe, shoe or sole endpoints (takes 1, 2, 9 and 12). Thus all twenty retain a positive full-body boundary instruction, although only one repeats the canonical sentence exactly. No explicit close or cropped-shot instruction was found in the final positives.
+
+Despite those framing directions, only five of twenty images show at least one foot, and none shows the subject head-to-toe with both feet visible. The other fifteen crop the feet out, often ending around the thighs or lower legs. This is a pixel-level framing mismatch despite the bound full-body intent and a consistent canvas size of 832 × 1216.
+
+These findings separate protocol success from pixel behavior. They document the take 7 garment mismatch, foot cropping, and regions that remain unverifiable; they do not certify exact garment reproduction or anatomy. No new runtime calls, generation, restart or reroll were made for this review. Task 7.5's visual review is documented; broader acceptance remains for Task 7.6.

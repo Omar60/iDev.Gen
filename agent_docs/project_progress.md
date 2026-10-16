@@ -2,33 +2,32 @@
 
 ## Accepted Position
 
-Deployment `full-auto-7-4-live-20261015` accepts only Task 7.4 of
-`automate-resource-session-full-auto`: 39/41 tasks complete. The user separately
-authorized twenty real takes, all five saved stages and forty assistant calls.
-The original run succeeded with twenty outputs and twenty distinct take, shot,
-attempt, prompt, prefix and filename identities. Twenty assistant reservations
-were consumed; recovery required no additional assistant calls or image rerolls.
+Deployment `full-auto-first-20261016` accepts only Task 7.5 of
+`automate-resource-session-full-auto`: 40/41 tasks complete. Executor and
+independent Tester opened all twenty existing Task 7.4 outputs across all five
+stages and checked their stored preparation, shot and attempt identities.
+The sanitized findings are in `docs/full-auto-task-7-5-visual-review.md`.
 
-## Recovery and Verification
+## Result and Verification
 
-The controlled backend stop exposed Windows output-subfolder matching and
-full-body Resume request-normalization defects. Internal Executor repaired the
-two responsible boundaries; independent Tester accepted the actual diff,
-renewal/drift regressions and live evidence. Supported cancellation reconciled
-the first completed attempt; unchanged-scope Resume finished the remaining
-nineteen targets under the original run and shot identities after a PC shutdown.
+The progressive accessory is visible in nineteen outputs and absent in the
+final output and its positive prompt. Only five images show at least one foot;
+none shows the complete subject with both feet. Take 7 has a garment pattern
+and material mismatch despite matching stored wardrobe and prepared/queued
+prompts. Cropped or obscured regions remain unverified. All twenty stored
+framing lines reach the prepared/queued prompts, but only one repeats the
+canonical full-body sentence exactly; no explicit cropped framing was found.
 
-Final full Python gate: 3,592 passed, two skipped, five warnings. Strict OpenSpec
-validation and diff checks passed. No frontend changes; frontend gates did not
-apply. The temporary shared checkpoint selection was restored after settlement.
-Private prompts, images, database backups and raw runtime evidence remain outside
-tracked artifacts. The sanitized protocol report is
-`docs/full-auto-task-7-4-acceptance.md`.
+Independent full Python gate: 3,592 passed, two skipped, five warnings.
+Document-only corrections were followed by passing privacy/control checks
+(12 tests), strict OpenSpec validation and diff checks. No frontend or runtime
+code changed; frontend tests/build did not apply. Main accepted the corrected
+report; closure documentation receives final affected checks before commit.
 
 ## Stop Boundary
 
-Tasks 7.5 and 7.6 remain unchecked. Protocol completion does not establish visual
-framing, anatomy, garment or accessory fidelity. No next task, archive or push.
-The provider credential exposed in a tool output still needs operator rotation;
-the user explicitly chose to continue before rotating it. No secret is included
-in repository documentation or the acceptance commit.
+Only Task 7.5 is newly checked. Task 7.6 remains pending and is not started.
+Visual review completion does not certify framing, anatomy or exact garment
+fidelity. No new runtime calls, generation, reroll, restart, archive or push.
+Private images and prompts stay in ignored local data, outside tracked artifacts.
+The credential-rotation limitation recorded by Task 7.4 remains unresolved.

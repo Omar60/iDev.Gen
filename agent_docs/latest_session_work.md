@@ -1,64 +1,55 @@
 # Latest Session Work
 
-## Task 7.4 Accepted Handoff
+## Task 7.5 Accepted Handoff
 
-Deployment `full-auto-7-4-live-20261015` continues from source baseline `cc95e2e`.
-The initial authorization pause was superseded by explicit live authorization and
-selection of a ready room, exact saved-look version/profile, twenty takes,
-portrait canvas, full-body intent and a forty-call assistant budget. Heavy intake
-was completed in bounded reads after the initial bulk read was truncated.
-Main owns architecture, scope, integration and acceptance; internal Executor
-FA74-LIVE-EXEC owns production/runtime repair and Tester FA74-LIVE-TEST owns
-independent verification. No external handoffs were used.
+Deployment `full-auto-first-20261016` selected the first unchecked task of
+`automate-resource-session-full-auto`, Task 7.5. Heavy intake covered the full
+project-document framework, repository instructions and change artifacts.
+The initial working tree was clean, with main forty commits ahead of origin.
+Main retained scope, integration and acceptance; internal FA75-EXP located
+evidence, FA75-EXEC produced and corrected the report, and FA75-TEST performed
+independent image, prompt and gate verification. No external handoffs were used.
 
-## Verified Runtime Result
+## Evidence and Findings
 
-The original real run reached `succeeded`, epoch two: twenty stable targets,
-twenty linked shots, twenty unique attempts, remote prompt IDs, output prefixes,
-filenames and valid 832 by 1216 PNGs. All five stages occur in counts 5/5/5/4/1.
-Accessory prompt presence follows 5/5/5/4/0; permanent appearance and the final
-stage prompt exclude the removed accessory. Twenty settled assistant reservations
-cover twenty distinct takes within the authorized forty-call limit.
+Both reviewers opened all twenty existing live outputs across stage counts
+5/5/5/4/1 and correlated unique preparation, shot and attempt links. All
+prepared/queued prompts match, and all images are 832 by 1216. Private protocol
+references remain `phase-trace.jsonl`,
+`terminal-runtime-verification-sanitized.json` and
+`checkpoint-restore-sanitized.json` in the local Task 7.4 operations bundle.
+The canonical public visual findings are in
+`docs/full-auto-task-7-5-visual-review.md`; Task 7.4 retains protocol/recovery
+history in its separate acceptance report.
 
-Stopping the owned backend during an acknowledged GPU attempt left its output
-available remotely. Windows history used backslashes in the relative subfolder;
-the repaired verifier normalizes separators while rejecting unsafe paths.
-Supported Cancel reconciliation adopted that same output with no replacement
-attempt. Resume originally mistook server-applied full-body framing for input
-drift; the repair binds raw selection to the immutable creation receipt while
-retaining current-plan continuity and renewal checks. A PC shutdown interrupted
-verification; the resumed backend confirmed unchanged scope, and supported Resume
-completed the nineteen unattempted targets without more assistant calls.
+The final accessory is absent from both pixels and positive prompt. Five
+images show at least one foot, none shows the complete subject with both feet,
+and take 7 has a visible garment-fidelity mismatch. Obscured regions remain
+unverified. Twenty stored framing lines reach their prompts, sixteen use the
+word feet and four use equivalent endpoints; only one repeats the canonical
+sentence verbatim. No explicit contradictory cropped instruction was found.
 
-Tester compared the first PNG with its pre-restart copy and independently checked
-all twenty PNG markers. Nineteen current ComfyUI history entries match graph,
-prompt, model, LoRA, dimensions and attempt identity. The first remote history
-entry did not survive the server restart; its retained PNG, marker and identical
-pre-restart bytes provide the historical evidence. The original attempt and shot
-rows remained unchanged. The temporary shared checkpoint was restored only after
-terminal settlement and an idle queue; the successful run remains readable.
+Tester rejected the first draft's broad coverage/prompt claims and imprecise
+storage description. Executor corrected them; main also required removing
+specific private wardrobe details. Tester accepted the corrected actual file
+and resolved the earlier fifteen-versus-sixteen count as differing criteria,
+rather than changing the underlying evidence.
 
 ## Verification and Closure
 
-Independent final full `.venv/Scripts/python.exe -m pytest`: 3,592 passed,
-two skipped, five warnings, exit zero. Strict OpenSpec validation and diff checks
-passed. No frontend files changed, so frontend gates did not apply. Earlier
-focused passes, the pre-repair full gate and interrupted full runs are not
-substitutes for this final gate. Detailed gate output remains in the external
-`FA74-live-final-pytest-resume.log`.
+Full `.venv/Scripts/python.exe -m pytest`: 3,592 passed, two skipped,
+five warnings, exit zero, 1325.72 seconds. The complete output is retained in
+the external `FA75-TEST-pytest-20261016.log`; quiet output did not give skip
+reasons. Warnings concern the register field and dependency deprecations.
+After report corrections, privacy/control passed twelve tests, strict OpenSpec
+validation passed and diff/content checks passed. No frontend files changed.
+Final closure-document checks and the acceptance commit follow main acceptance;
+Archivist owns the sealed Git handoff and Deployment Token Report.
 
-Runtime evidence remains outside the repository in the local FA74 operations
-bundle: `phase-trace.jsonl`, `terminal-runtime-verification-sanitized.json` and
-`checkpoint-restore-sanitized.json`, with private backups and original records.
-The public protocol report is `docs/full-auto-task-7-4-acceptance.md`.
-Only Task 7.4 is newly checked, giving 39/41 complete. Main owns the acceptance
-commit; Archivist owns the sealed Git handoff and Deployment Token Report.
+## Continuation Boundary
 
-## Remaining Limits
-
-No visual fidelity verdict was performed: Tasks 7.5 and 7.6 remain pending.
-The provider credential accidentally emitted in a tool output needs rotation;
-the user explicitly chose to continue with the configured credential. No secret,
-private prompt, image, database, configuration or build output belongs in Git.
-Do not create another live session, retry successful shots, advance tasks,
-archive the change or push without the applicable user instruction.
+Only Task 7.5 is newly complete, leaving Task 7.6 unchecked at 40/41.
+No next task, archive, push, new generation, reroll or runtime mutation is
+authorized by this closure. Visual mismatches remain documented, not repaired
+or certified. Private images, prompts, configuration and databases remain
+untracked; the prior credential-rotation limitation remains unresolved.

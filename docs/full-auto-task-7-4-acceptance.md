@@ -40,9 +40,9 @@ Strict OpenSpec validation and `git diff --check` passed. No frontend files
 changed, so frontend tests and build were not applicable. Independent review
 accepted the implementation, recovery behavior and retained live evidence.
 
-This report establishes protocol completion, not visual fidelity. Images were
-not visually assessed; framing, visible feet, anatomy, garment fidelity and
-accessory fidelity remain for Task 7.5, and overall acceptance remains for
-Task 7.6. One provider credential surfaced in an execution output during the
-exercise and still requires operator rotation; no credential or private runtime
-artifact is included here.
+At the Task 7.4 closure boundary, images had not been visually assessed. The
+subsequent [Task 7.5 visual review](full-auto-task-7-5-visual-review.md)
+documents image-level findings and regions that remain unverified. Overall
+acceptance remains for Task 7.6. One provider credential surfaced in an
+execution output during the exercise and still requires operator rotation; no
+credential or private runtime artifact is included here.

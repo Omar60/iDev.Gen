@@ -1,5 +1,20 @@
 # Project Diary
 
+## Full Auto Task 7.5 Visual Acceptance
+
+Inspect actual existing outputs independently and bind them to frozen stage,
+prompt and attempt evidence. Output production is separate from pixel fidelity:
+the review found feet cropping and a garment mismatch without a contradictory
+final accessory prompt. Report obscured regions as unverified rather than
+claiming universal coverage agreement. Distinguish bound framing intent, literal
+canonical wording and equivalent per-take framing. Resolve different word-count
+criteria against the same stored evidence. Keep private source wording out of
+the public report, including when explaining a real garment mismatch.
+
+Only 7.5 is accepted after the corrected report and independent gates; overall
+delta-scenario/manual acceptance remains Task 7.6. A document-only correction
+needs fresh affected checks, not an invented production repair or hidden reroll.
+
 ## Full Auto Task 7.4 Live Recovery
 
 - A legacy room selector is not proof of an eligible resource-v1 room. Resolve
