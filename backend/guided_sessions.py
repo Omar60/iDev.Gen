@@ -1344,12 +1344,70 @@ def compare_full_auto_resume_scope(
                 409, "full_auto_scope_unavailable",
                 "The saved Full Auto selection cannot be verified for Resume.",
             )
+        root_receipt = db.one(
+            "SELECT authorization_json, scope_digest, scope_issued_at "
+            "FROM full_auto_run_receipt WHERE run_id = ?",
+            run_id,
+        )
+        if root_receipt is None:
+            raise resource_full_auto.FullAutoRunError(
+                409, "full_auto_scope_unavailable",
+                "The original Full Auto authorization cannot be verified for Resume.",
+            )
+        try:
+            root_authorization = json.loads(root_receipt["authorization_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise resource_full_auto.FullAutoRunError(
+                409, "full_auto_scope_unavailable",
+                "The original Full Auto authorization cannot be verified for Resume.",
+            ) from exc
+        root_summary, _root_limits = resource_full_auto._validate_status_authorization(
+            root_authorization,
+        )
+        original_full_auto = body["full_auto"]
+        original_variation_policy = body.get("variation_policy")
+        original_framing = (
+            original_variation_policy.get("framing")
+            if isinstance(original_variation_policy, dict) else None
+        )
+        original_profile = root_summary.get("automation_profile")
+        original_request_bound = bool(
+            isinstance(original_profile, dict)
+            and original_full_auto.get("scope_digest") == root_receipt["scope_digest"]
+            and original_full_auto.get("scope_digest") == root_authorization["scope_digest"]
+            and original_full_auto.get("scope_issued_at") == root_receipt["scope_issued_at"]
+            and original_full_auto.get("scope_issued_at") == root_authorization["scope_issued_at"]
+            and original_full_auto.get("profile_revision") == root_authorization["profile_revision"]
+            and original_full_auto.get("profile_revision") == original_profile.get("revision")
+            and original_full_auto.get("profile_digest") == root_authorization["profile_digest"]
+            and original_full_auto.get("profile_digest") == original_profile.get("digest")
+            and resource_store.canonical_digest(_scope_request_body(body))
+            == root_summary.get("request_digest")
+        )
         body = dict(body)
         body["character_id"] = int(session["model_id"])
         body["photo_count"] = len(plan["takes"])
         body["brief"] = plan["authoring"]["brief"]
         body["mode"] = plan["authoring"]["mode"]
-        body["variation_policy"] = plan["authoring"]["variation_policy"]
+        plan_variation_policy = plan["authoring"]["variation_policy"]
+        body["variation_policy"] = plan_variation_policy
+        if (
+            original_request_bound
+            and original_full_auto.get("framing_intent") == "full_body"
+            and root_summary.get("framing_intent") == "full_body"
+            and saved_summary.get("framing_intent") == "full_body"
+            and original_framing == {"mode": "vary"}
+            and plan_variation_policy.get("framing") == {
+                "mode": "fixed",
+                "value": _FULL_BODY_FRAMING,
+                "value_origin": "user",
+            }
+        ):
+            # Preserve the raw creation digest; Full Auto reapplies fixed framing.
+            body["variation_policy"] = {
+                **plan_variation_policy,
+                "framing": original_framing,
+            }
         body["scene_anchor"] = plan["authoring"]["scene_anchor"]
         snapshot = plan["authoring"]["look_snapshot"]
         application = session_plan._load_session_profile_application(

@@ -1846,25 +1846,46 @@ class Runner:
         if not isinstance(image, dict):
             return False
         filename = image.get("filename")
-        subfolder = image.get("subfolder") or ""
+        subfolder = image.get("subfolder")
+        if subfolder is None:
+            subfolder = ""
         if (
-            image.get("type") != "output"
+            not isinstance(prefix, str)
+            or not prefix
+            or image.get("type") != "output"
             or not isinstance(filename, str)
             or not isinstance(subfolder, str)
             or not filename
             or "/" in filename
             or "\\" in filename
-            or "\\" in subfolder
+            or re.match(r"^[A-Za-z]:", filename)
         ):
             return False
-        prefix_path = PurePosixPath(prefix)
+
+        def safe_relative_path(
+            value: str, *, allow_empty: bool = False,
+        ) -> PurePosixPath | None:
+            normalized = value.replace("\\", "/")
+            if not normalized:
+                return PurePosixPath(".") if allow_empty else None
+            if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+                return None
+            if any(
+                part in {"", ".", ".."} or re.match(r"^[A-Za-z]:", part)
+                for part in normalized.split("/")
+            ):
+                return None
+            return PurePosixPath(normalized)
+
+        prefix_path = safe_relative_path(prefix)
+        subfolder_path = safe_relative_path(subfolder, allow_empty=True)
+        if prefix_path is None or subfolder_path is None:
+            return False
         filename_path = PurePosixPath(filename)
-        subfolder_path = PurePosixPath(subfolder)
         return (
             not filename_path.is_absolute()
             and len(filename_path.parts) == 1
             and not subfolder_path.is_absolute()
-            and all(part not in {".", ".."} for part in subfolder_path.parts)
             and subfolder_path == prefix_path.parent
             and filename.casefold().startswith(f"{prefix_path.name}_".casefold())
             and filename_path.suffix.casefold() == ".png"

@@ -200,6 +200,142 @@ def _control_body(status):
     }
 
 
+def _full_body_payload(seeded, anchor, saved, profile, *, photo_count=3):
+    payload = _payload(seeded, anchor, saved, profile, photo_count=photo_count)
+    payload["variation_policy"] = copy.deepcopy(task31.ALL_VARY)
+    payload["full_auto"]["framing_intent"] = "full_body"
+    return payload
+
+
+def _cancel_full_body_run_after_first_image(
+    client, seeded, monkeypatch, tmp_path,
+):
+    providers = ControlledTransport(tmp_path / "provider-output")
+    _connect(client, seeded, monkeypatch, tmp_path, providers)
+    anchor, _revision_id = _room_source()
+    saved = saved_looks.create({
+        "name": "Task 7.4 full-body resume",
+        "appearance": "A quiet portrait.",
+    })
+    published = _publish(client, saved, _ready_profile(saved), 0)
+    base = _full_body_payload(seeded, anchor, saved, published)
+    consent = task31._preflight(client, base)
+
+    second_shot_entered = threading.Event()
+    release_second_shot = threading.Event()
+    original_run_shot = Runner._run_shot
+    run_shot_calls = 0
+
+    async def hold_second_shot(self, session_id, shot, heartbeat=None):
+        nonlocal run_shot_calls
+        run_shot_calls += 1
+        if run_shot_calls == 2:
+            second_shot_entered.set()
+            if not await asyncio.to_thread(release_second_shot.wait, 10):
+                raise TimeoutError("The controlled second shot was not released.")
+        return await original_run_shot(self, session_id, shot, heartbeat)
+
+    monkeypatch.setattr(Runner, "_run_shot", hold_second_shot)
+    created_response, request = task31._create_from_preflight(client, base, consent)
+    assert created_response.status_code == 201, created_response.text
+    session_id = created_response.json()["session_id"]
+    run_id = created_response.json()["full_auto_run_id"]
+    try:
+        assert second_shot_entered.wait(timeout=10), "the second render boundary was not reached"
+        shots_before_cancel = [dict(row) for row in db.q(
+            "SELECT id, status FROM shot WHERE session_id = ? ORDER BY id",
+            session_id,
+        )]
+        assert [row["status"] for row in shots_before_cancel] == ["done", "pending", "pending"]
+        assert len(providers.comfy_prompts) == 1
+
+        current = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()
+        cancelled = client.post(
+            f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
+            json=_control_body(current),
+        )
+        assert cancelled.status_code in {200, 202}, cancelled.text
+    finally:
+        release_second_shot.set()
+
+    stopped = _wait_for_state(client, session_id, run_id, {"cancelled"})
+    assert stopped["progress"]["completed_count"] == 1
+    assert stopped["progress"]["unresolved_work_count"] == 0
+    assert len(providers.comfy_prompts) == 1
+    prepared_before = [dict(row) for row in db.q(
+        "SELECT id, take_id, final_prompt, effective_state, mapping_version, "
+        "compiler_version, provenance FROM prepared_take "
+        "WHERE session_id = ? ORDER BY take_id",
+        session_id,
+    )]
+    assert len(prepared_before) == 3
+    assert [row["id"] for row in db.q(
+        "SELECT id FROM shot WHERE session_id = ? ORDER BY id", session_id,
+    )] == [row["id"] for row in shots_before_cancel]
+    return {
+        "providers": providers,
+        "session_id": session_id,
+        "run_id": run_id,
+        "stopped": stopped,
+        "prepared_before": prepared_before,
+        "shots_before_cancel": shots_before_cancel,
+        "request": request,
+        "saved": saved,
+    }
+
+
+def _renew_expired_full_body_authorization(client, monkeypatch, run):
+    session_id, run_id = run["session_id"], run["run_id"]
+    root = db.one(
+        "SELECT authorization_expires_at FROM full_auto_run_receipt WHERE run_id = ?",
+        run_id,
+    )
+    future = (
+        datetime.fromisoformat(root["authorization_expires_at"])
+        + timedelta(seconds=1)
+    ).isoformat(timespec="seconds")
+    monkeypatch.setattr(db, "now", lambda: future)
+
+    renewal_quote_response = client.get(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume-preflight",
+    )
+    assert renewal_quote_response.status_code == 200, renewal_quote_response.text
+    renewal_quote = renewal_quote_response.json()
+    assert renewal_quote["changed"] is True
+    assert "request_digest" not in renewal_quote["changed_fields"]
+
+    current = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()
+    body = _control_body(current)
+    body.update({
+        "scope_digest": renewal_quote["scope_digest"],
+        "comparison_issued_at": renewal_quote["comparison_issued_at"],
+        "accept_changed_scope": True,
+    })
+    monkeypatch.setattr(main, "_schedule_full_auto_run", lambda *_args, **_kwargs: None)
+    resumed = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume",
+        json=body,
+    )
+    assert resumed.status_code == 202, resumed.text
+    assert resumed.json()["run_id"] == run_id
+    assert db.q(
+        "SELECT authorization_sequence FROM full_auto_run_authorization "
+        "WHERE run_id = ? ORDER BY authorization_sequence",
+        run_id,
+    ) == [{"authorization_sequence": 1}]
+
+    next_quote_response = client.get(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume-preflight",
+    )
+    assert next_quote_response.status_code == 200, next_quote_response.text
+    next_quote = next_quote_response.json()
+    assert next_quote["changed"] is False
+    assert next_quote["changed_fields"] == []
+    assert next_quote["old_scope"]["summary"] == next_quote["new_scope"]["summary"]
+    assert len(run["providers"].comfy_prompts) == 1
+    return next_quote
+
+
 def _assert_full_row_transition(before: dict, after: dict, allowed_fields, *, expected=None):
     """Compare every stored column and permit only named lifecycle changes."""
     assert set(before) == set(after)
@@ -438,6 +574,167 @@ def test_successful_run_with_consumed_image_budget_has_no_budget_blocker(
     assert result["can_resume"] is False
     assert result["retry_control"]["can_retry_failed_shots"] is False
     assert len(providers.comfy_prompts) == 2
+
+
+def test_full_body_vary_request_resumes_generated_prefix_without_duplicate_dispatch(
+    client, seeded, monkeypatch, tmp_path,
+):
+    run = _cancel_full_body_run_after_first_image(
+        client, seeded, monkeypatch, tmp_path,
+    )
+    providers = run["providers"]
+    session_id, run_id = run["session_id"], run["run_id"]
+    assert run["request"]["variation_policy"]["framing"] == {"mode": "vary"}
+
+    before_comparison = _all_rows()
+    response = client.get(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume-preflight",
+    )
+
+    assert response.status_code == 200, response.text
+    comparison = response.json()
+    assert comparison["changed"] is False
+    assert comparison["changed_fields"] == []
+    assert comparison["old_scope"]["summary"] == comparison["new_scope"]["summary"]
+    assert _all_rows() == before_comparison
+
+    assistant_calls_before_resume = list(providers.assistant_calls)
+    current = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()
+    resume_body = _control_body(current)
+    resume_body.update({
+        "scope_digest": comparison["scope_digest"],
+        "comparison_issued_at": comparison["comparison_issued_at"],
+        "accept_changed_scope": False,
+    })
+    resumed = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume",
+        json=resume_body,
+    )
+    assert resumed.status_code == 202, resumed.text
+    assert resumed.json()["run_id"] == run_id
+    assert resumed.json()["session_id"] == session_id
+
+    completed = _wait_for_state(client, session_id, run_id, {"succeeded"})
+
+    assert completed["progress"]["completed_count"] == 3
+    assert completed["progress"]["unresolved_work_count"] == 0
+    assert providers.assistant_calls == assistant_calls_before_resume
+    assert len(providers.comfy_prompts) == 3
+    prompt_ids = [item["prompt_id"] for item in providers.comfy_prompts]
+    assert len(prompt_ids) == len(set(prompt_ids))
+    shots_after_resume = [dict(row) for row in db.q(
+        "SELECT id, status FROM shot WHERE session_id = ? ORDER BY id",
+        session_id,
+    )]
+    assert [row["id"] for row in shots_after_resume] == [
+        row["id"] for row in run["shots_before_cancel"]
+    ]
+    assert all(row["status"] == "done" for row in shots_after_resume)
+    prepared_after_resume = [dict(row) for row in db.q(
+        "SELECT id, take_id, final_prompt, effective_state, mapping_version, "
+        "compiler_version, provenance FROM prepared_take "
+        "WHERE session_id = ? ORDER BY take_id",
+        session_id,
+    )]
+    assert prepared_after_resume == run["prepared_before"]
+
+
+def test_full_body_vary_request_remains_unchanged_after_expiry_renewal(
+    client, seeded, monkeypatch, tmp_path,
+):
+    run = _cancel_full_body_run_after_first_image(
+        client, seeded, monkeypatch, tmp_path,
+    )
+
+    quote = _renew_expired_full_body_authorization(client, monkeypatch, run)
+
+    assert quote["old_scope"]["summary"]["request_digest"] == quote["new_scope"]["summary"]["request_digest"]
+    assert quote["new_scope"]["summary"]["effective_framing"] == {
+        "mode": "fixed",
+        "value": "Full body, head to toe, both feet visible, with space above the head and below the feet.",
+        "value_origin": "user",
+    }
+    assert len(run["providers"].assistant_calls) == 3
+    assert len(run["providers"].comfy_prompts) == 1
+
+
+@pytest.mark.parametrize(
+    ("drift", "expected_code"),
+    [
+        ("framing", "framing_conflict"),
+        ("pose", "full_auto_continuity_requires_new_session"),
+        ("model", "full_auto_continuity_requires_new_session"),
+        ("profile", "profile_frozen"),
+    ],
+)
+def test_full_body_generated_history_refuses_current_input_drift_after_renewal_without_writes(
+    client, seeded, monkeypatch, tmp_path, drift, expected_code,
+):
+    run = _cancel_full_body_run_after_first_image(
+        client, seeded, monkeypatch, tmp_path,
+    )
+    session_id, run_id = run["session_id"], run["run_id"]
+    _renew_expired_full_body_authorization(client, monkeypatch, run)
+    if drift in {"framing", "pose"}:
+        row = db.one("SELECT plan_json FROM session_plan WHERE session_id = ?", session_id)
+        plan = json.loads(row["plan_json"])
+        plan["authoring"]["variation_policy"][drift] = {
+            "mode": "fixed",
+            "value": "Waist-up portrait." if drift == "framing" else "A crouched pose.",
+            "value_origin": "user",
+        }
+        db.run(
+            "UPDATE session_plan SET plan_json = ? WHERE session_id = ?",
+            json.dumps(plan, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+            session_id,
+        )
+    elif drift == "model":
+        model_id = db.one(
+            "SELECT model_id FROM session WHERE id = ?", session_id,
+        )["model_id"]
+        db.run(
+            "UPDATE model SET name = ? WHERE id = ?",
+            "Changed model binding", model_id,
+        )
+    else:
+        saved = run["saved"]
+        profile2 = _publish(
+            client, saved, _set_profile_revision(_ready_profile(saved), 2), 1,
+        )
+        before_profile_change = _all_rows()
+        profile_change = client.post(
+            f"/api/sessions/{session_id}/plan/apply-automation-profile",
+            json={
+                "expected_revision": 1,
+                "look_key": saved["key"],
+                "version": saved["version"],
+                "content_digest": saved["content_digest"],
+                "profile_revision": profile2["profile_revision"],
+                "profile_digest": profile2["profile_digest"],
+                "decisions": {"look": "replace", "initial_wardrobe": "replace"},
+            },
+        )
+        task31._assert_error(profile_change, 409, expected_code)
+        assert _all_rows() == before_profile_change
+        before_comparison = _all_rows()
+        unchanged = client.get(
+            f"/api/sessions/{session_id}/full-auto/{run_id}/resume-preflight",
+        )
+        assert unchanged.status_code == 200, unchanged.text
+        assert unchanged.json()["changed"] is False
+        assert unchanged.json()["old_scope"]["summary"] == unchanged.json()["new_scope"]["summary"]
+        assert _all_rows() == before_comparison
+        assert len(run["providers"].comfy_prompts) == 1
+        return
+    before_comparison = _all_rows()
+
+    response = client.get(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume-preflight",
+    )
+
+    task31._assert_error(response, 409, expected_code)
+    assert _all_rows() == before_comparison
+    assert len(run["providers"].comfy_prompts) == 1
 
 
 def test_room_translation_drift_fences_held_response_and_preserves_prepared_prefix(

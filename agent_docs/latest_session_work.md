@@ -1,51 +1,64 @@
 # Latest Session Work
 
-## Task 7.3 Accepted Handoff
+## Task 7.4 Accepted Handoff
 
-Deployment `full-auto-7-3-20261015` handles only Task 7.3 of
-`automate-resource-session-full-auto`, from clean baseline `bda57e0`.
-Heavy intake covered project documentation, repository instructions, proposal,
-design, tasks, delta specs and relevant gate/isolation code. Main owns scope,
-architecture, integration and acceptance. Internal Executor FA73-EXEC inspected
-operational readiness and found no justified production change. Independent
-Tester FA73-TEST executed all five required gates. No external agents or handoffs.
+Deployment `full-auto-7-4-live-20261015` continues from source baseline `cc95e2e`.
+The initial authorization pause was superseded by explicit live authorization and
+selection of a ready room, exact saved-look version/profile, twenty takes,
+portrait canvas, full-body intent and a forty-call assistant budget. Heavy intake
+was completed in bounded reads after the initial bulk read was truncated.
+Main owns architecture, scope, integration and acceptance; internal Executor
+FA74-LIVE-EXEC owns production/runtime repair and Tester FA74-LIVE-TEST owns
+independent verification. No external handoffs were used.
 
-Main accepted the observed outputs. Only 7.3 is newly checked: 38/41 complete.
-The deliverable is gate evidence and closure documentation, with no runtime,
-test, dependency or configuration changes.
+## Verified Runtime Result
 
-## Independent Gate Evidence
+The original real run reached `succeeded`, epoch two: twenty stable targets,
+twenty linked shots, twenty unique attempts, remote prompt IDs, output prefixes,
+filenames and valid 832 by 1216 PNGs. All five stages occur in counts 5/5/5/4/1.
+Accessory prompt presence follows 5/5/5/4/0; permanent appearance and the final
+stage prompt exclude the removed accessory. Twenty settled assistant reservations
+cover twenty distinct takes within the authorized forty-call limit.
 
-All commands exited zero on the unchanged production/test baseline:
+Stopping the owned backend during an acknowledged GPU attempt left its output
+available remotely. Windows history used backslashes in the relative subfolder;
+the repaired verifier normalizes separators while rejecting unsafe paths.
+Supported Cancel reconciliation adopted that same output with no replacement
+attempt. Resume originally mistook server-applied full-body framing for input
+drift; the repair binds raw selection to the immutable creation receipt while
+retaining current-plan continuity and renewal checks. A PC shutdown interrupted
+verification; the resumed backend confirmed unchanged scope, and supported Resume
+completed the nineteen unattempted targets without more assistant calls.
 
-| Gate | Observed result | External log |
-| --- | --- | --- |
-| `.venv/Scripts/python.exe -m pytest` | 3,573 passed, two skipped, five warnings; 1,230.27s | `%TEMP%/fa73-python-pytest.log` |
-| `npm --prefix frontend test` | 36 files, 667 tests passed | `%TEMP%/fa73-frontend-test.log` |
-| `npm --prefix frontend run build` | Passed; 764.68 kB JS chunk warning | `%TEMP%/fa73-frontend-build.log` |
-| `openspec validate automate-resource-session-full-auto --strict --no-interactive` | Change valid | `%TEMP%/fa73-openspec-validate.log` |
-| `git diff --check` | Passed, no output | `%TEMP%/fa73-git-diff-check.log` |
+Tester compared the first PNG with its pre-restart copy and independently checked
+all twenty PNG markers. Nineteen current ComfyUI history entries match graph,
+prompt, model, LoRA, dimensions and attempt identity. The first remote history
+entry did not survive the server restart; its retained PNG, marker and identical
+pre-restart bytes provide the historical evidence. The original attempt and shot
+rows remained unchanged. The temporary shared checkpoint was restored only after
+terminal settlement and an idle queue; the successful run remains readable.
 
-Python 3.12.14 and pytest 9.1.1 are recorded in
-`%TEMP%/fa73-python-environment.log`. The complete Python gate includes privacy
-and control/whitespace checks. Its two skip reasons were not printed by the
-configured quiet run and are not inferred from source. Five Python warnings
-cover the model field and dependency deprecations; frontend tests also emitted
-Node localStorage ExperimentalWarnings. No initial gate failed or was weakened.
+## Verification and Closure
 
-## Closure and Remaining Limits
+Independent final full `.venv/Scripts/python.exe -m pytest`: 3,592 passed,
+two skipped, five warnings, exit zero. Strict OpenSpec validation and diff checks
+passed. No frontend files changed, so frontend gates did not apply. Earlier
+focused passes, the pre-repair full gate and interrupted full runs are not
+substitutes for this final gate. Detailed gate output remains in the external
+`FA74-live-final-pytest-resume.log`.
 
-Main updated only the Task 7.3 checkbox and the three canonical deployment-state
-documents. Tester accepted the exact documentation-only diff: 38/41 complete,
-7.4 through 7.6 unchecked, and no runtime changes. Affected privacy/control checks
-passed 46 cases; strict OpenSpec and diff checks passed again. Logs are
-`%TEMP%/fa73-doc-privacy-control.log`, `%TEMP%/fa73-doc-openspec.log` and
-`%TEMP%/fa73-doc-git-diff-check.log`. Git emitted only LF/CRLF conversion notices.
-Main owns the isolated acceptance commit; Archivist seals its read-only Git
-handoff and reports the exact six-column Deployment Token Report.
+Runtime evidence remains outside the repository in the local FA74 operations
+bundle: `phase-trace.jsonl`, `terminal-runtime-verification-sanitized.json` and
+`checkpoint-restore-sanitized.json`, with private backups and original records.
+The public protocol report is `docs/full-auto-task-7-4-acceptance.md`.
+Only Task 7.4 is newly checked, giving 39/41 complete. Main owns the acceptance
+commit; Archivist owns the sealed Git handoff and Deployment Token Report.
 
-Fixture data/configuration and fake ComfyUI boundaries isolate automated tests.
-Ignored frontend build output stays untracked. Automated success does not prove
-real-provider/GPU behavior, framing, garment fidelity or visual acceptance.
-Task 7.4 through 7.6 remain unchecked; separate live authorization and selected
-inputs/budget are required before the live exercise. No advance, archive or push.
+## Remaining Limits
+
+No visual fidelity verdict was performed: Tasks 7.5 and 7.6 remain pending.
+The provider credential accidentally emitted in a tool output needs rotation;
+the user explicitly chose to continue with the configured credential. No secret,
+private prompt, image, database, configuration or build output belongs in Git.
+Do not create another live session, retry successful shots, advance tasks,
+archive the change or push without the applicable user instruction.

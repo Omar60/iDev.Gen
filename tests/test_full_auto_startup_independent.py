@@ -626,9 +626,12 @@ def test_startup_reuses_a_committed_partial_shot_link(
     assert world["fake"].attempts == len(targets)
 
 
-@pytest.mark.parametrize("crash_point", ["before_ack", "after_ack"])
+@pytest.mark.parametrize(
+    ("crash_point", "windows_history_subfolder"),
+    [("before_ack", False), ("after_ack", False), ("after_ack", True)],
+)
 def test_startup_reconciles_a_known_remote_attempt_without_reposting(
-    restartable_world, monkeypatch, crash_point,):
+    restartable_world, monkeypatch, crash_point, windows_history_subfolder,):
     world = restartable_world
     session_id, run_id, _revision, targets, owner, queue_calls, original_queue = _begin_execution(
         world, monkeypatch,
@@ -667,6 +670,17 @@ def test_startup_reconciles_a_known_remote_attempt_without_reposting(
     assert attempt_before["filename_prefix"].startswith(f"idevgen/{session_id}/{shot_before['id']}_")
     assert queue_calls[0] == 1
     assert len(targets) == 4
+    if windows_history_subfolder:
+        assert crash_point == "after_ack"
+        completed = asyncio.run(world["fake"].history(attempt_before["prompt_id"]))
+        assert completed["status"]["completed"] is True
+        image = world["fake"].prompt_records[attempt_before["prompt_id"]]["outputs"]["8"]["images"][0]
+        posix_source = world["fake"].output_dir / image["subfolder"] / image["filename"]
+        image["subfolder"] = image["subfolder"].replace("/", "\\")
+        windows_source = world["fake"].output_dir / image["subfolder"] / image["filename"]
+        if posix_source.resolve() != windows_source.resolve():
+            windows_source.parent.mkdir(parents=True, exist_ok=True)
+            posix_source.replace(windows_source)
     _expire_run(run_id)
     _expire_runner()
     monkeypatch.setattr(world["fake"], "queue_prompt", count_after_restart)

@@ -2,28 +2,33 @@
 
 ## Accepted Position
 
-Deployment `full-auto-7-3-20261015` accepts only Task 7.3 of
-`automate-resource-session-full-auto`, from clean baseline `bda57e0`.
-Main inspected the specification, actual repository state and independent gate
-output. Only 7.3 is newly checked: 38/41 tasks are complete. No production or test
-change was necessary for this verification-only task.
+Deployment `full-auto-7-4-live-20261015` accepts only Task 7.4 of
+`automate-resource-session-full-auto`: 39/41 tasks complete. The user separately
+authorized twenty real takes, all five saved stages and forty assistant calls.
+The original run succeeded with twenty outputs and twenty distinct take, shot,
+attempt, prompt, prefix and filename identities. Twenty assistant reservations
+were consumed; recovery required no additional assistant calls or image rerolls.
 
-## Independent Acceptance
+## Recovery and Verification
 
-Tester FA73-TEST ran the complete project-venv Python suite with Python 3.12.14
-and pytest 9.1.1: 3,573 passed, two skipped and five warnings in 1,230.27 seconds.
-Frontend: 667 tests across 36 files passed; production build passed with a
-764.68 kB JavaScript chunk warning. Strict OpenSpec validation and diff checks
-passed. Full logs remain outside the repository under `%TEMP%/fa73-*`.
-The Python log records skip counts without reasons; do not infer which skip
-conditions ran. Deprecation, model-field and Node localStorage warnings remain.
-Tester also accepted the documentation-only closure diff, with 46 affected
-privacy/control checks and repeated strict OpenSpec/diff checks passing.
+The controlled backend stop exposed Windows output-subfolder matching and
+full-body Resume request-normalization defects. Internal Executor repaired the
+two responsible boundaries; independent Tester accepted the actual diff,
+renewal/drift regressions and live evidence. Supported cancellation reconciled
+the first completed attempt; unchanged-scope Resume finished the remaining
+nineteen targets under the original run and shot identities after a PC shutdown.
+
+Final full Python gate: 3,592 passed, two skipped, five warnings. Strict OpenSpec
+validation and diff checks passed. No frontend changes; frontend gates did not
+apply. The temporary shared checkpoint selection was restored after settlement.
+Private prompts, images, database backups and raw runtime evidence remain outside
+tracked artifacts. The sanitized protocol report is
+`docs/full-auto-task-7-4-acceptance.md`.
 
 ## Stop Boundary
 
-Only the task checkbox and Heavy closure documents change. Main owns acceptance
-and the isolated acceptance commit; Archivist owns the sealed read-only Git and
-Deployment Token Report handoff. Task 7.4 through 7.6 remain unchecked. Real
-generation and visual acceptance require separate authorization and inputs; no
-live generation, next task, archive or push is included.
+Tasks 7.5 and 7.6 remain unchecked. Protocol completion does not establish visual
+framing, anatomy, garment or accessory fidelity. No next task, archive or push.
+The provider credential exposed in a tool output still needs operator rotation;
+the user explicitly chose to continue before rotating it. No secret is included
+in repository documentation or the acceptance commit.

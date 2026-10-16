@@ -1,5 +1,25 @@
 # Project Diary
 
+## Full Auto Task 7.4 Live Recovery
+
+- A legacy room selector is not proof of an eligible resource-v1 room. Resolve
+  the exact ready resource revision before proposing live Full Auto inputs.
+- Windows ComfyUI history may return backslashes for a relative output folder.
+  Normalize separators for correlation while rejecting traversal, drives and
+  absolute paths; retain graph, server and metadata checks before adoption.
+- Full-body normalization changes the effective plan, not the original request.
+  Resume must authenticate raw selection against its immutable creation receipt
+  and compare current effective inputs against the current grant, including
+  after renewal. Do not remove continuity checks to hide normalization drift.
+- Preserve failed live recovery and interrupted gates as evidence. Supported
+  Cancel/adopt/Resume retained the original image and completed only remaining
+  initial attempts; the final independent full suite passed after both repairs.
+- Inspect only selected non-secret configuration fields. A faulty sanitizer
+  exposed a provider credential in a tool output; operator rotation remains
+  necessary even when the user authorizes continuing before rotation.
+- Protocol success is separate from visual acceptance. Only 7.4 is accepted;
+  initial/intermediate/final image fidelity belongs to 7.5.
+
 ## Full Auto Task 7.3 Gate Acceptance
 
 Treat a gate-only task as verification, without manufacturing a runtime change.

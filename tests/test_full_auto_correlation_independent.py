@@ -12,6 +12,7 @@ import db
 import main
 from backend.comfy import execution_capability_evidence
 from backend import resource_full_auto
+from runner import Runner
 import test_full_auto_submission_independent as submission
 
 
@@ -51,6 +52,53 @@ def test_unknown_server_version_does_not_enable_client_prompt_uuid():
 
     assert evidence["advertised_client_prompt_id"] is True
     assert evidence["client_prompt_id"] is False
+
+
+@pytest.mark.parametrize("subfolder", ["idevgen/429", r"idevgen\429"])
+def test_attempt_output_prefix_accepts_relative_posix_and_windows_subfolders(subfolder):
+    image = {
+        "filename": "take_00001_00001_.png",
+        "subfolder": subfolder,
+        "type": "output",
+    }
+
+    assert Runner._image_matches_attempt_prefix(image, "idevgen/429/take_00001")
+
+
+@pytest.mark.parametrize(
+    ("prefix", "subfolder"),
+    [
+        ("idevgen/429/take_00001", r"idevgen\..\idevgen\429"),
+        ("/idevgen/429/take_00001", "/idevgen/429"),
+        ("C:/idevgen/429/take_00001", "C:/idevgen/429"),
+        ("idevgen/C:/429/take_00001", "idevgen/C:/429"),
+        (r"\\server\share\idevgen\429\take_00001", r"\\server\share\idevgen\429"),
+        (r"\\?\C:\idevgen\429\take_00001", r"\\?\C:\idevgen\429"),
+        ("idevgen/../429/take_00001", "idevgen/../429"),
+    ],
+)
+def test_attempt_output_prefix_rejects_traversal_and_absolute_subfolders(prefix, subfolder):
+    image = {
+        "filename": "take_00001_00001_.png",
+        "subfolder": subfolder,
+        "type": "output",
+    }
+
+    assert not Runner._image_matches_attempt_prefix(image, prefix)
+
+
+@pytest.mark.parametrize(
+    ("filename", "prefix"),
+    [
+        ("../take_00001_00001_.png", "idevgen/429/take_00001"),
+        (r"..\take_00001_00001_.png", "idevgen/429/take_00001"),
+        ("C:take_00001_00001_.png", "C:take_00001"),
+    ],
+)
+def test_attempt_output_prefix_rejects_path_like_filenames(filename, prefix):
+    image = {"filename": filename, "subfolder": "idevgen/429", "type": "output"}
+
+    assert not Runner._image_matches_attempt_prefix(image, prefix)
 
 
 def test_uuid_png_recovery_collects_the_same_shot_after_lost_ack(
