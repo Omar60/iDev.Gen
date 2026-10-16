@@ -5285,7 +5285,8 @@ async def _run_full_auto_preparation(
                     take_id: index for index, take_id in enumerate(progress["target_ids"])
                 }
                 if any(
-                    target_positions[item["target_ids"][0]] > remaining_start
+                    item["target_ids"]
+                    and target_positions[item["target_ids"][0]] > remaining_start
                     for item in progress["children"]
                 ):
                     raise resource_full_auto.FullAutoRunError(

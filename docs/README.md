@@ -12,6 +12,8 @@
   were measured on.
 - [Task 7.1 Full Auto browser walkthrough](task-7-1-browser-walkthrough.md) — isolated
   40-take browser journey, synthetic provider boundary, and acceptance evidence.
+- [Task 7.2 Full Auto recovery walkthrough](task-7-2-recovery-walkthrough.md) — connected
+  conflict, cancellation, browser-reopen, and backend-restart journeys.
 - [Asking for candidates](catalogue-candidate-prompt.md) — the request that writes new
   component wordings, and the one that writes a reading vocabulary.
 - [Known limitations](known-limitations.md) — what the tool deliberately does not do yet.

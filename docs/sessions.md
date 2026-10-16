@@ -1811,6 +1811,13 @@ again every 15 seconds; verified settlement becomes `cancelled`. The run never
 enters `active` or dispatches work. After settled cancellation, an otherwise
 eligible continuation Resume restores only linked targets that never had an
 execution attempt, under their existing shot IDs; completed outputs remain.
+If an explicit resource refresh advances the plan revision during this handoff,
+Resume compares and requires acceptance of the changed scope. It can rebase the
+preparation checkpoint only while the same ordered targets remain in the
+pre-link preparation phase; historical children, operations, grants, and
+reservations stay intact. These limits apply to this changed-input rebase: a
+changed target set blocks it, while linked or generated Full Auto history
+requires a new session.
 Attempt retries are separate explicit Resume actions. In the Session page,
 blocked cancellation appears as **Reconcile cancellation** and offers no
 generation action until settlement. Resume compares old and current scope and

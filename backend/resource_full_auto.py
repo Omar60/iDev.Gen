@@ -19,7 +19,7 @@ import re
 import secrets
 import threading
 import uuid
-from typing import Literal
+from typing import Callable, Literal
 
 import db
 from backend import resource_planning
@@ -2074,7 +2074,11 @@ def public_run_status(session_id: int, run_id: str) -> dict:
         blocker_code = authority_issue
     if blocker_code is None and unresolved:
         blocker_code = "run_work_unsettled"
-    if blocker_code is None and (assistant_budget_blocked or image_remaining == 0):
+    if (
+        blocker_code is None
+        and row["state"] != "succeeded"
+        and (assistant_budget_blocked or image_remaining == 0)
+    ):
         blocker_code = "budget_exhausted"
     message, remedies = _BLOCKER_REMEDIES.get(
         blocker_code,
@@ -3862,10 +3866,61 @@ def require_resumable_prepare_child(
     return {"progress": progress, "child": child, "child_start": child_start}
 
 
+def _authorized_prepare_plan_revisions(run_id: str, run_row: dict) -> set[int]:
+    """Return revisions bound to this run's immutable creation and renewal grants."""
+    session_id = int(run_row["session_id"])
+    current_authorization(run_id, session_id=session_id)
+    authorized: set[int] = set()
+    root_request = db.one(
+        "SELECT response_json FROM guided_session_request WHERE session_id = ?",
+        session_id,
+    )
+    if root_request is not None:
+        try:
+            response = json.loads(root_request["response_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise _invalid_saved_preparation() from exc
+        root_revision = response.get("plan_revision") if isinstance(response, dict) else None
+        if (
+            type(response) is not dict
+            or response.get("session_id") != session_id
+            or response.get("full_auto_run_id") != run_id
+            or type(root_revision) is not int
+            or root_revision <= 0
+        ):
+            raise _invalid_saved_preparation()
+        authorized.add(root_revision)
+    for replacement in db.q(
+        "SELECT plan_revision FROM full_auto_run_authorization "
+        "WHERE run_id = ? ORDER BY authorization_sequence",
+        run_id,
+    ):
+        revision = replacement["plan_revision"]
+        if type(revision) is not int or revision <= 0:
+            raise _invalid_saved_preparation()
+        authorized.add(revision)
+    if not authorized:
+        # Low-level legacy fixtures may construct a run directly without the
+        # guided-creation response or replacement chain. They can account only
+        # for their current revision; production guided runs always have the
+        # immutable creation response.
+        authorized.add(int(run_row["plan_revision"]))
+    if int(run_row["plan_revision"]) not in authorized:
+        raise _invalid_saved_preparation()
+    return authorized
+
+
 def _read_prepare_progress(run_id: str) -> dict:
     row = db.one("SELECT * FROM full_auto_prepare_progress WHERE run_id = ?", run_id)
     if row is None:
         raise FullAutoRunError(409, "prepare_checkpoint_missing", "Full Auto preparation has no saved target checkpoint.")
+    run_row = _run_row(run_id)
+    if run_row is None:
+        raise _invalid_saved_preparation()
+    authorized_revisions = _authorized_prepare_plan_revisions(run_id, run_row)
+    progress_revision = row["plan_revision"]
+    if type(progress_revision) is not int or progress_revision not in authorized_revisions:
+        raise _invalid_saved_preparation()
     targets = _prepare_json_list(row["target_ids_json"], field_name="targets")
     completed = _prepare_json_list(row["completed_ids_json"], field_name="progress")
     if (
@@ -3875,11 +3930,17 @@ def _read_prepare_progress(run_id: str) -> dict:
     ):
         raise FullAutoRunError(500, "run_state_invalid", "Saved Full Auto preparation progress is invalid.")
     children = []
+    historical_children = []
     target_positions = {take_id: index for index, take_id in enumerate(targets)}
-    previous_child_end: int | None = None
+    previous_child_end_by_revision: dict[int, int] = {}
+    previous_batch_revision: int | None = None
     for child in db.q(
-        "SELECT batch_index, operation_id, target_ids_json FROM full_auto_prepare_child "
-        "WHERE run_id = ? ORDER BY batch_index",
+        "SELECT child.batch_index, child.operation_id, child.target_ids_json, "
+        "operation.session_id, operation.plan_revision, operation.kind, "
+        "operation.full_auto_run_id "
+        "FROM full_auto_prepare_child child JOIN authoring_operation operation "
+        "ON operation.operation_id = child.operation_id "
+        "WHERE child.run_id = ? ORDER BY child.batch_index",
         run_id,
     ):
         child_targets = _prepare_json_list(child["target_ids_json"], field_name="child targets")
@@ -3890,27 +3951,174 @@ def _read_prepare_progress(run_id: str) -> dict:
             or len(child_targets) > 20
             or type(child["operation_id"]) is not str
             or not child["operation_id"]
+            or type(child["plan_revision"]) is not int
+            or child["plan_revision"] not in authorized_revisions
+            or type(child["session_id"]) is not int
+            or child["session_id"] != int(run_row["session_id"])
+            or child["kind"] != "prepare_takes"
+            or child["full_auto_run_id"] != run_id
+            or (
+                previous_batch_revision is not None
+                and child["plan_revision"] < previous_batch_revision
+            )
         ):
             raise FullAutoRunError(500, "run_state_invalid", "Saved Full Auto child preparation is invalid.")
         child_start = target_positions.get(child_targets[0])
+        previous_child_end = previous_child_end_by_revision.get(child["plan_revision"])
         if (
             child_start is None
             or targets[child_start:child_start + len(child_targets)] != child_targets
             or (previous_child_end is not None and child_start != previous_child_end)
         ):
             raise FullAutoRunError(500, "run_state_invalid", "Saved Full Auto child ranges overlap or are out of order.")
-        previous_child_end = child_start + len(child_targets)
-        children.append({
+        previous_child_end_by_revision[child["plan_revision"]] = child_start + len(child_targets)
+        previous_batch_revision = child["plan_revision"]
+        history_item = {
             "batch_index": child["batch_index"],
             "operation_id": child["operation_id"],
             "target_ids": child_targets,
-        })
+            "plan_revision": child["plan_revision"],
+        }
+        historical_children.append(history_item)
+        if child["plan_revision"] == progress_revision:
+            children.append(history_item)
+        else:
+            # Keep the public coordinator's child count as the global batch
+            # index while preventing it from selecting an old-revision child.
+            children.append({
+                "batch_index": child["batch_index"],
+                "operation_id": child["operation_id"],
+                "target_ids": [],
+                "plan_revision": child["plan_revision"],
+            })
     return {
+        "plan_revision": progress_revision,
         "target_ids": targets,
         "completed_take_ids": completed,
         "children": children,
+        "historical_children": historical_children,
         "remaining_take_ids": targets[len(completed):],
     }
+
+
+def _verified_prepared_prefix(
+    session_id: int,
+    plan_revision: int,
+    target_ids: list[str],
+) -> list[str]:
+    """Read the current-revision snapshots as a prefix only when their evidence verifies."""
+    from backend import resource_preparation
+    from backend import session_plan
+
+    validated: list[str] = []
+    validation_cache: dict = {}
+    for take_id in target_ids:
+        snapshot = session_plan._prepared_take_row(session_id, plan_revision, take_id)
+        if snapshot is None or snapshot["status"] not in (
+            session_plan.PREPARED_TAKE_STATUS_READY,
+            session_plan.PREPARED_TAKE_STATUS_GENERATED,
+        ):
+            break
+        try:
+            resource_preparation.validate_authoring_prepared_evidence(
+                session_id, plan_revision, take_id,
+                row=snapshot, _predecessor_validation_cache=validation_cache,
+            )
+        except session_plan.AuthoringEvidenceInvalid:
+            break
+        validated.append(take_id)
+    return validated
+
+
+def _rebase_prepare_progress_for_resume(
+    run_row: dict,
+    plan_revision: int,
+    target_ids: list[str],
+    *,
+    final_validation: Callable[[], tuple[str, dict, ResumeEligibility, str]],
+) -> tuple[str, dict, ResumeEligibility, str]:
+    """Rebase a pre-link checkpoint after explicitly accepting stable changed scope."""
+    progress_row = db.one(
+        "SELECT * FROM full_auto_prepare_progress WHERE run_id = ?",
+        run_row["run_id"],
+    )
+    if progress_row is None:
+        return final_validation()
+    phase = run_row["resume_phase"] or run_row["phase"]
+    if phase != "prepare":
+        raise FullAutoRunError(
+            409, "full_auto_continuity_requires_new_session",
+            "Changed Full Auto inputs cannot rebase after preparation has advanced beyond the pre-link phase.",
+        )
+    if (
+        progress_row["plan_revision"] != int(run_row["plan_revision"])
+        or progress_row["target_ids_json"] != _canonical_json(target_ids)
+    ):
+        raise FullAutoRunError(
+            409, "prepare_checkpoint_changed",
+            "The saved Full Auto targets cannot be rebased to a different ordered plan.",
+        )
+    if any((
+        db.one(
+            "SELECT 1 FROM full_auto_submission_receipt WHERE run_id = ? LIMIT 1",
+            run_row["run_id"],
+        ),
+        db.one(
+            "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ? LIMIT 1",
+            run_row["run_id"],
+        ),
+        db.one(
+            "SELECT 1 FROM full_auto_execution_attempt WHERE run_id = ? LIMIT 1",
+            run_row["run_id"],
+        ),
+        db.one(
+            "SELECT 1 FROM prepared_take WHERE session_id = ? "
+            "AND (status = 'generated' OR linked_shot_id IS NOT NULL) LIMIT 1",
+            int(run_row["session_id"]),
+        ),
+        db.one(
+            "SELECT 1 FROM full_auto_deletion_uncertain_admission WHERE run_id = ? LIMIT 1",
+            run_row["run_id"],
+        ),
+    )):
+        raise FullAutoRunError(
+            409, "full_auto_continuity_requires_new_session",
+            "Generated or linked Full Auto history cannot continue under changed inputs; create a new session.",
+        )
+
+    progress = _read_prepare_progress(run_row["run_id"])
+    _validated_prepare_accounting(
+        run_row, progress_row, progress, target_ids,
+    )
+    for child in progress["historical_children"]:
+        operation = db.one(
+            "SELECT state FROM authoring_operation WHERE operation_id = ?",
+            child["operation_id"],
+        )
+        if operation is None or operation["state"] in {"active", "cancel_requested"}:
+            raise FullAutoRunError(
+                409, "run_work_unsettled",
+                "A registered Full Auto preparation child must settle before scope correction.",
+            )
+
+    verified_prefix = _verified_prepared_prefix(
+        int(run_row["session_id"]), plan_revision, target_ids,
+    )
+    now_text, comparison, eligibility, next_state = final_validation()
+    updated = db.run(
+        "UPDATE full_auto_prepare_progress SET plan_revision = ?, "
+        "completed_ids_json = ?, updated_at = ? WHERE run_id = ? "
+        "AND plan_revision = ? AND target_ids_json = ? AND completed_ids_json = ?",
+        plan_revision, _canonical_json(verified_prefix), now_text,
+        run_row["run_id"], progress_row["plan_revision"],
+        progress_row["target_ids_json"], progress_row["completed_ids_json"],
+    )
+    if updated != 1:
+        raise FullAutoRunError(
+            409, "prepare_checkpoint_changed",
+            "The Full Auto preparation checkpoint changed during scope correction.",
+        )
+    return now_text, comparison, eligibility, next_state
 
 
 def _authoritative_plan_targets(session_id: int, photo_count: int) -> tuple[int, list[str]]:
@@ -3965,7 +4173,8 @@ def _validated_prepare_accounting(
         raise _invalid_saved_preparation()
     target_set = set(authoritative_targets)
     started = set(progress["completed_take_ids"])
-    child_ids = {child["operation_id"] for child in progress["children"]}
+    history_children = progress.get("historical_children", progress["children"])
+    child_ids = {child["operation_id"] for child in history_children}
     linked_operation_ids = {
         row["operation_id"] for row in db.q(
             "SELECT operation_id FROM authoring_operation WHERE full_auto_run_id = ? AND kind = 'prepare_takes'",
@@ -3974,11 +4183,15 @@ def _validated_prepare_accounting(
     }
     if child_ids != linked_operation_ids:
         raise _invalid_saved_preparation()
-    seen_child_targets: set[str] = set()
-    for child in progress["children"]:
+    seen_child_targets_by_revision: dict[int, set[str]] = {}
+    authorized_revisions = _authorized_prepare_plan_revisions(run_id, run_row)
+    for child in history_children:
         child_targets = child["target_ids"]
+        child_revision = child.get("plan_revision", progress_row["plan_revision"])
+        seen_child_targets = seen_child_targets_by_revision.setdefault(child_revision, set())
         if (
-            any(target not in target_set or target in seen_child_targets for target in child_targets)
+            child_revision not in authorized_revisions
+            or any(target not in target_set or target in seen_child_targets for target in child_targets)
         ):
             raise _invalid_saved_preparation()
         seen_child_targets.update(child_targets)
@@ -3993,7 +4206,7 @@ def _validated_prepare_accounting(
             or type(operation["session_id"]) is not int
             or operation["session_id"] != session_id
             or type(operation["plan_revision"]) is not int
-            or operation["plan_revision"] != progress_row["plan_revision"]
+            or operation["plan_revision"] != child_revision
             or operation["kind"] != "prepare_takes"
             or operation["full_auto_run_id"] != run_id
         ):
@@ -5377,7 +5590,11 @@ def register_prepare_child(
             or operation["full_auto_run_fencing_token"] != claim.fencing_token
         ):
             raise FullAutoRunError(409, "prepare_child_owner_invalid", "The authoring operation is not owned by this Full Auto run.")
-        next_index = len(progress["children"])
+        next_index = int(db.one(
+            "SELECT COALESCE(MAX(batch_index), -1) + 1 AS next_index "
+            "FROM full_auto_prepare_child WHERE run_id = ?",
+            claim.run_id,
+        )["next_index"])
         timestamp = _now_text(None)
         row = require_prepare_claim(claim, now_text=timestamp)
         db.run(
@@ -6697,7 +6914,177 @@ def resume_run(
                             503, "resource_planning_disabled",
                             "Full Auto authorization renewal is disabled by configuration.",
                         )
+                    current_plan, current_targets = _authoritative_plan_targets(
+                        int(row["session_id"]),
+                        int(comparison["_authorization"]["summary"]["photo_count"]),
+                    )
+                    if current_plan != int(comparison["plan_revision"]):
+                        raise FullAutoRunError(
+                            409, "resume_comparison_stale",
+                            "The session plan changed during Resume; refresh the comparison.",
+                        )
+                    phase = row["resume_phase"] or row["phase"]
+                    if phase not in _MAIN_PHASES:
+                        raise FullAutoRunError(
+                            409, "run_reconciliation_required",
+                            "The Full Auto run phase must be reconciled before resuming.",
+                        )
+                    if row["lease_expires_at"] is not None and _timestamp(
+                        row["lease_expires_at"], field_name="run lease",
+                    ) > _timestamp(timestamp, field_name="current time"):
+                        raise FullAutoRunError(
+                            409, "run_already_claimed",
+                            "The Full Auto run already has an owner.",
+                        )
+
+                    expected_identity = (
+                        run_id, int(row["session_id"]), int(row["revision"]),
+                        int(row["epoch"]), int(row["fencing_token"]), row["state"],
+                        bool(row["cancel_intent"]), row["phase"], row["resume_phase"],
+                        int(row["plan_revision"]),
+                    )
+
+                    def validate_scope_renewal_boundary() -> tuple[str, dict, ResumeEligibility, str]:
+                        from backend import guided_sessions
+
+                        def validate_live_run(current_row: dict, check_at: str) -> None:
+                            current_identity = (
+                                current_row["run_id"], int(current_row["session_id"]),
+                                int(current_row["revision"]), int(current_row["epoch"]),
+                                int(current_row["fencing_token"]), current_row["state"],
+                                bool(current_row["cancel_intent"]), current_row["phase"],
+                                current_row["resume_phase"], int(current_row["plan_revision"]),
+                            )
+                            if current_identity != expected_identity:
+                                raise FullAutoRunError(
+                                    409, "run_revision_stale",
+                                    "The Full Auto run changed during scope correction; refresh its current state.",
+                                )
+                            _check_run_session_identity(run_id, int(row["session_id"]))
+                            _check_control_cas(
+                                current_row, body["expected_run_revision"],
+                                body["expected_plan_revision"],
+                            )
+                            if current_row["lease_expires_at"] is not None and _timestamp(
+                                current_row["lease_expires_at"], field_name="run lease",
+                            ) > _timestamp(check_at, field_name="current time"):
+                                raise FullAutoRunError(
+                                    409, "run_already_claimed",
+                                    "The Full Auto run already has an owner.",
+                                )
+
+                        checked_at = _now_text(None)
+                        if not resource_planning.is_enabled():
+                            raise FullAutoRunError(
+                                503, "resource_planning_disabled",
+                                "Full Auto authorization renewal is disabled by configuration.",
+                            )
+                        current_row = _require_run(run_id)
+                        validate_live_run(current_row, checked_at)
+                        fresh_comparison = guided_sessions.compare_full_auto_resume_scope(
+                            run_id, config=config, now_text=checked_at,
+                            comparison_issued_at=comparison_issued_at,
+                        )
+                        if (
+                            not hmac.compare_digest(fresh_comparison["scope_digest"], scope_digest)
+                            or not hmac.compare_digest(
+                                fresh_comparison["scope_digest"], comparison["scope_digest"],
+                            )
+                            or fresh_comparison["run_revision"] != expected_identity[2]
+                            or fresh_comparison["plan_revision"] != body["expected_plan_revision"]
+                            or not fresh_comparison["changed"]
+                        ):
+                            raise FullAutoRunError(
+                                409, "resume_comparison_stale",
+                                "The accepted Full Auto scope changed during Resume; refresh the comparison.",
+                            )
+                        authorization = fresh_comparison.get("_authorization")
+                        if not isinstance(authorization, dict):
+                            raise FullAutoRunError(
+                                409, "full_auto_authorization_invalid",
+                                "The renewed Full Auto authorization could not be verified.",
+                            )
+                        summary, _limits = _validate_status_authorization(authorization)
+                        dependency_issue = _bound_dependency_issue(authorization)
+                        if dependency_issue is not None:
+                            raise _authority_error(dependency_issue)
+                        current_plan_revision, fresh_targets = _authoritative_plan_targets(
+                            int(current_row["session_id"]), summary["photo_count"],
+                        )
+                        if (
+                            current_plan_revision != body["expected_plan_revision"]
+                            or fresh_targets != current_targets
+                        ):
+                            raise FullAutoRunError(
+                                409, "resume_comparison_stale",
+                                "The session plan changed during Resume; refresh the comparison.",
+                            )
+                        fresh_eligibility = _current_resume_eligibility(
+                            current_row, fresh_comparison, now_text=checked_at,
+                        )
+
+                        # Prefix and accounting verification can take long enough
+                        # for the quote or run lease to expire. Re-read mutable
+                        # control state and the live gate at the last boundary.
+                        final_at = _now_text(None)
+                        current_row = _require_run(run_id)
+                        validate_live_run(current_row, final_at)
+                        issued_at = _timestamp(
+                            comparison_issued_at,
+                            field_name="Resume comparison timestamp",
+                        )
+                        quote_age = _timestamp(final_at, field_name="current time") - issued_at
+                        if (
+                            quote_age < timedelta(0)
+                            or quote_age > guided_sessions._FULL_AUTO_SCOPE_MAX_AGE
+                        ):
+                            raise FullAutoRunError(
+                                409, "resume_comparison_stale",
+                                "The Full Auto comparison expired; refresh it before resuming.",
+                            )
+                        if _timestamp(
+                            authorization["authorization_expires_at"],
+                            field_name="authorization expiry",
+                        ) <= _timestamp(final_at, field_name="current time"):
+                            raise FullAutoRunError(
+                                409, "authorization_expired",
+                                "The renewed Full Auto authorization has expired.",
+                            )
+                        if not resource_planning.is_enabled():
+                            raise FullAutoRunError(
+                                503, "resource_planning_disabled",
+                                "Full Auto authorization renewal is disabled by configuration.",
+                            )
+                        final_next_state = _resume_eligibility(
+                            current_row, fresh_eligibility,
+                            current_plan_revision=current_plan_revision,
+                            scope_accepted=True,
+                        )
+                        return final_at, fresh_comparison, fresh_eligibility, final_next_state
+
+                    if int(comparison["plan_revision"]) != int(row["plan_revision"]):
+                        timestamp, comparison, eligibility, next_state = (
+                            _rebase_prepare_progress_for_resume(
+                                row, int(comparison["plan_revision"]), current_targets,
+                                final_validation=validate_scope_renewal_boundary,
+                            )
+                        )
+                    else:
+                        timestamp, comparison, eligibility, next_state = (
+                            validate_scope_renewal_boundary()
+                        )
+
+                    if not resource_planning.is_enabled():
+                        raise FullAutoRunError(
+                            503, "resource_planning_disabled",
+                            "Full Auto authorization renewal is disabled by configuration.",
+                        )
                     grant = current_authorization(run_id, session_id=int(row["session_id"]))
+                    if grant["authorization_digest"] != comparison["_previous_authorization_digest"]:
+                        raise FullAutoRunError(
+                            409, "resume_comparison_stale",
+                            "The Full Auto authorization changed during Resume; refresh the comparison.",
+                        )
                     authorization = comparison["_authorization"]
                     if not isinstance(authorization, dict):
                         raise FullAutoRunError(

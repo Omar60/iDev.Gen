@@ -2,32 +2,35 @@
 
 ## Accepted Position
 
-Deployment `full-auto-7-1-20261015` accepts only Task 7.1 of
-`automate-resource-session-full-auto`, from clean baseline `1315654`.
-Main reviewed the actual harness, regression and documentation and accepted
-independent browser/persistence evidence and completed gates. Only 7.1 is newly
-checked: 36 of 41 tasks are complete. Task 7.2 remains unstarted.
+Deployment `full-auto-7-2-20261015` accepts only Task 7.2 of
+`automate-resource-session-full-auto`, from clean baseline `da689ff`.
+Main accepted the actual diff and independent evidence; only 7.2 is newly checked,
+so 37/41 tasks are complete. No subsequent task, archive, push or live generation
+is included. The user paused and resumed before acceptance; uncommitted work was
+preserved and internal Heavy role separation retained.
 
 ## Delivered Scope
 
-A disposable browser demo and network-free forty-take regression retain the
-real scheduler, preparation, policy approval, submission and runner, replacing
-only external HTTP providers. A linked walkthrough documents reproducible
-version/profile selection, consent, stages, expected evidence and cleanup.
-No product code or frontend source changed.
+Connected isolated journeys exercise accessory correction, source/provider drift,
+duplicate review, cancellation, lease fencing, browser close/reopen, backend
+process restart and ambiguous ComfyUI acknowledgement. They preserve full-row
+history and use the real service pipeline with synthetic HTTP providers.
 
-## Verification and Stop Boundary
+Repairs rebase the current pre-link preparation cursor on accepted corrected
+scope for the same ordered targets, preserve historical children/grants/budgets,
+and recheck live authority after prefix validation. Successful runs no longer
+project a false derived budget blocker. No schema or authorization-shape change.
+The linked recovery walkthrough documents reproduction and evidence limits.
 
-Independent browser acceptance reached 40/40 successful outputs from one
-Generate action without intermediate actions. Exact look v1/profile 1 remained
-bound despite v2 existing; two preparation batches and all three stages passed.
-Independent Python rerun: 3,559 passed, two skipped, five warnings in 1,169.19s.
-The first complete run failed an unchanged budget-renewal error-code assertion;
-focused and module reproductions and the final full run passed without edits.
-Its cause remains unconfirmed. Frontend: 667 passed; build and strict OpenSpec
-passed. Final documentation/privacy/diff checks precede the acceptance commit.
+## Independent Acceptance and Stop Boundary
 
-The disposable process, listener and temporary tree were removed. CUA exposed
-no independent HTTP request counter; observed browser actions and persisted
-receipts corroborate consent. Synthetic 2x2 images prove protocol completion,
-not visual fidelity. No live generation, next task, archive or push is included.
+Final project-venv Python: 3,573 passed, two skipped, five warnings in 1,123.47s.
+Fourteen journeys/probes and 57 content/documentation checks passed. Frontend:
+667 tests across 36 files passed; build passed with the existing size warning.
+Strict OpenSpec, links and diff checks passed. Chrome close/reopen recovered the
+same run with three outputs and no budget alert. Real process restart adopted
+corroborated remote output without replay. Owned demos and listeners were cleaned.
+
+Synthetic 2x2 PNGs prove no visual fidelity or real-provider/GPU behavior.
+Task 7.3 onward remains unchecked. Main owns the isolated acceptance commit;
+Archivist performs the sealed read-only Git and Deployment Token Report handoff.

@@ -1,7 +1,9 @@
 """Start an isolated browser demo for the Task 7.1 Full Auto journey."""
 from __future__ import annotations
 
+import asyncio
 import argparse
+import inspect
 import json
 import os
 from pathlib import Path
@@ -29,12 +31,20 @@ REGIONS = ("chest", "hips", "legs", "feet")
 def isolated_async_client_factory(handler, original_client=None):
     """Keep every backend HTTP client on one rejecting in-process transport."""
     original = original_client or httpx.AsyncClient
-    transport = httpx.MockTransport(handler)
+
+    class IsolatedAsyncTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            response = handler(request)
+            if inspect.isawaitable(response):
+                response = await response
+            if not isinstance(response, httpx.Response):
+                raise RuntimeError("The isolated provider must return an HTTPX response.")
+            return response
 
     def create_client(*args, **kwargs):
         if kwargs.get("transport") is not None:
             raise RuntimeError("The isolated Full Auto demo owns all outbound HTTP transports.")
-        kwargs["transport"] = transport
+        kwargs["transport"] = IsolatedAsyncTransport()
         return original(*args, **kwargs)
 
     return create_client
@@ -162,6 +172,33 @@ class SyntheticTransport:
             "outputs": {save_node_id: {"images": [image]}},
         }
         return self._response(request, 200, {"prompt_id": prompt_id, "number": len(self.comfy_prompts)})
+
+
+class BrowserGateTransport(SyntheticTransport):
+    """Pause the first writer response until the browser-close demo is released."""
+
+    def __init__(self, output_dir: Path, entered_marker: Path, release_marker: Path):
+        super().__init__(output_dir)
+        self.entered_marker = entered_marker
+        self.release_marker = release_marker
+        self.paused = False
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        if (
+            not self.paused
+            and request.url.host == "synthetic-assistant.invalid"
+            and request.method == "POST"
+            and request.url.path.endswith("/chat/completions")
+        ):
+            self.paused = True
+            self.entered_marker.parent.mkdir(parents=True, exist_ok=True)
+            self.entered_marker.touch()
+            deadline = time.monotonic() + 120
+            while not self.release_marker.exists():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("The browser-close assistant gate was not released.")
+                await asyncio.sleep(0.05)
+        return super().__call__(request)
 
 
 def _graph() -> dict:
@@ -301,6 +338,10 @@ def _arguments(argv=None):
         "--port", type=int, default=DEFAULT_PORT,
         help="loopback port for the disposable backend; exits if occupied",
     )
+    parser.add_argument(
+        "--hold-first-assistant", action="store_true",
+        help="pause the first synthetic writer response until its temp release marker appears",
+    )
     return parser.parse_args(argv)
 
 
@@ -433,7 +474,13 @@ def main_cli(argv=None) -> int:
         seeded = _seed(backend_main)
         db.conn().close()
         db._conn = None
-        providers = SyntheticTransport(output_dir)
+        if args.hold_first_assistant:
+            entered_marker = root / "assistant-entered.marker"
+            release_marker = root / "assistant-release.marker"
+            providers = BrowserGateTransport(output_dir, entered_marker, release_marker)
+        else:
+            entered_marker = release_marker = None
+            providers = SyntheticTransport(output_dir)
         original_async_client = httpx.AsyncClient
         httpx.AsyncClient = isolated_async_client_factory(providers, original_async_client)
 
@@ -460,6 +507,13 @@ def main_cli(argv=None) -> int:
         print("Set the count to 40 and click 'Generate without pauses' once.", flush=True)
         print("The look has three stages: bracelet worn, bracelet aside, and bracelet removed.", flush=True)
         print("Synthetic assistant and ComfyUI requests use an in-process HTTPX transport; unexpected hosts fail closed.", flush=True)
+        if entered_marker is not None:
+            print(
+                "The first writer response will pause after its POST until the release marker is created.",
+                flush=True,
+            )
+            print(f"Writer request reached marker: {entered_marker}", flush=True)
+            print(f"Create this file after closing the browser tab: {release_marker}", flush=True)
         print("Press Ctrl+C to stop; temporary config, database and images are removed after backend shutdown.", flush=True)
         while server_thread.is_alive():
             server_thread.join(timeout=0.5)

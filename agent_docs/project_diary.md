@@ -1,5 +1,30 @@
 # Project Diary
 
+## Full Auto Task 7.2 Recovery Acceptance
+
+Main accepted only Task 7.2 after independent connected journeys, real browser
+close/reopen, process restart and the complete post-fix gate passed. A user pause
+and resume preserved uncommitted work and internal role separation.
+An initial process probe incorrectly required zero assistant retransmissions
+after a lost response. Assistant recovery may consume the remaining authorized
+call allowance; that does not establish forbidden GPU replay. The persistent
+ledger must observe ComfyUI `/prompt` and bind attempt/shot/graph/prefix identity
+to prove ambiguous generation recovery. Do not repair production for that false
+assertion. Runtime consumed-source drift is distinct from preflight drift and
+provider drift; retain explicit coverage of each relevant boundary.
+
+Changed-scope Resume must rebase the current preparation cursor while preserving
+historical children, operations, snapshots, grants and consumed reservations.
+Authenticate accepted revisions with existing creation/renewal evidence rather
+than widening the closed authorization. Current child selection must skip
+historical revisions without resetting global batch indices. Revalidate live
+enablement and quote time after expensive prefix checks: independent injection
+caught a 202 response and four-table mutation after disablement. The repair now
+rejects disablement and quote expiry with complete rollback. Zero remaining image
+allowance after success is not a derived blocker. Synthetic output demonstrates
+protocol behavior, not rendered fidelity. Final independent Python: 3,573 passed,
+two skipped, five warnings; frontend: 667 passed. Only Task 7.2 is newly accepted.
+
 ## Full Auto Task 7.1 Browser Acceptance
 
 Ordinary API fixtures disable the coordinator scheduler; restore the real
