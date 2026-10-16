@@ -2,32 +2,27 @@
 
 ## Accepted Position
 
-Deployment `full-auto-first-20261016` accepts only Task 7.5 of
-`automate-resource-session-full-auto`: 40/41 tasks complete. Executor and
-independent Tester opened all twenty existing Task 7.4 outputs across all five
-stages and checked their stored preparation, shot and attempt identities.
-The sanitized findings are in `docs/full-auto-task-7-5-visual-review.md`.
+Deployment `full-auto-7-6-20261016` accepts only Task 7.6 of
+`automate-resource-session-full-auto`: 41/41 tasks complete. The scenario-level
+acceptance report is `docs/full-auto-task-7-6-acceptance.md`. Independent review
+matched all 223 delta scenarios, including repeated titles, to the report and
+checked the retained manual journey against actual code and test assertions.
 
 ## Result and Verification
 
-The progressive accessory is visible in nineteen outputs and absent in the
-final output and its positive prompt. Only five images show at least one foot;
-none shows the complete subject with both feet. Take 7 has a garment pattern
-and material mismatch despite matching stored wardrobe and prepared/queued
-prompts. Cropped or obscured regions remain unverified. All twenty stored
-framing lines reach the prepared/queued prompts, but only one repeats the
-canonical full-body sentence exactly; no explicit cropped framing was found.
-
-Independent full Python gate: 3,592 passed, two skipped, five warnings.
-Document-only corrections were followed by passing privacy/control checks
-(12 tests), strict OpenSpec validation and diff checks. No frontend or runtime
-code changed; frontend tests/build did not apply. Main accepted the corrected
-report; closure documentation receives final affected checks before commit.
+Internal Executor produced and repaired the report; independent Tester verified
+its evidence classifications, source links and five tables. Main accepted the
+corrected scope and conclusions. No production or test changes were required.
+Full Python passed 3,592 tests with two skips and five warnings; frontend passed
+667 tests in 36 files, build and strict OpenSpec passed. Explicit historical
+rollback checks passed three tests against disposable restored data. Report
+privacy/control checks passed 46 tests. Closure-document privacy/control tests, strict OpenSpec and diff checks passed
+before the acceptance commit and Archivist's sealed reporting handoff.
 
 ## Stop Boundary
 
-Only Task 7.5 is newly checked. Task 7.6 remains pending and is not started.
-Visual review completion does not certify framing, anatomy or exact garment
-fidelity. No new runtime calls, generation, reroll, restart, archive or push.
-Private images and prompts stay in ignored local data, outside tracked artifacts.
-The credential-rotation limitation recorded by Task 7.4 remains unresolved.
+All tasks are checked, but this change remains unarchived. No next task, push,
+new generation, runtime mutation or live downgrade is authorized. The report
+separates local automated contracts from retained live protocol and visual
+evidence. Foot cropping, the take 7 garment mismatch and occluded coverage remain
+documented limitations; the earlier credential-rotation action remains unresolved.

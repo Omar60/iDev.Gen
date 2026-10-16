@@ -1511,3 +1511,19 @@ The final complete suite passed without changing or weakening the race test.
 - Keep the conservative backend signature and copy validation. Correct the
   automatic serialization boundary rather than accepting invalid empty choices
   or weakening the preparation and review gates.
+
+## Full Auto Task 7.6 Scenario Acceptance
+
+An exhaustive scenario inventory is a completeness check, not proof of each
+assertion. Independent review must bind evidence to the actual boundary: creation
+alone does not prove execution, a component does not prove backend durability,
+and a fake API journey does not prove a rendered browser. Preserve duplicate
+titles with their capability and parent requirement. The corrected report covers
+all 223 delta scenarios and retains explicit manual controls and ownership gates.
+
+Distinguish contract disposition from pixel fidelity: reporting cropped output
+without a compliance claim or hidden reroll can satisfy the reporting contract
+while image framing remains visibly wrong. Keep accepted historical browser/live
+evidence separate from current isolated gates. Disposable historical-source
+startup is rollback evidence, not a live or in-place downgrade. Only Task 7.6 is
+newly accepted; all 41 tasks are complete, with no automatic archive or push.
