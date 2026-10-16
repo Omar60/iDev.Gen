@@ -1,5 +1,17 @@
 # Project Diary
 
+## Full Auto Task 7.3 Gate Acceptance
+
+Treat a gate-only task as verification, without manufacturing a runtime change.
+The independent full project-venv suite passed 3,573 tests with two skips and five
+warnings; frontend passed 667 tests, build and strict OpenSpec also passed.
+Retain complete output outside the repository and inspect exit codes and actual
+summaries. Quiet pytest output reported no skip reasons; source skip branches
+do not establish which conditions produced those markers. Existing warnings are
+limits to report, not permission for unrelated dependency or bundle cleanup.
+After closure-document changes, recheck their affected content and exact task
+scope. Gate success does not complete separately authorized live/visual tasks.
+
 ## Full Auto Task 7.2 Recovery Acceptance
 
 Main accepted only Task 7.2 after independent connected journeys, real browser

@@ -2,35 +2,28 @@
 
 ## Accepted Position
 
-Deployment `full-auto-7-2-20261015` accepts only Task 7.2 of
-`automate-resource-session-full-auto`, from clean baseline `da689ff`.
-Main accepted the actual diff and independent evidence; only 7.2 is newly checked,
-so 37/41 tasks are complete. No subsequent task, archive, push or live generation
-is included. The user paused and resumed before acceptance; uncommitted work was
-preserved and internal Heavy role separation retained.
+Deployment `full-auto-7-3-20261015` accepts only Task 7.3 of
+`automate-resource-session-full-auto`, from clean baseline `bda57e0`.
+Main inspected the specification, actual repository state and independent gate
+output. Only 7.3 is newly checked: 38/41 tasks are complete. No production or test
+change was necessary for this verification-only task.
 
-## Delivered Scope
+## Independent Acceptance
 
-Connected isolated journeys exercise accessory correction, source/provider drift,
-duplicate review, cancellation, lease fencing, browser close/reopen, backend
-process restart and ambiguous ComfyUI acknowledgement. They preserve full-row
-history and use the real service pipeline with synthetic HTTP providers.
+Tester FA73-TEST ran the complete project-venv Python suite with Python 3.12.14
+and pytest 9.1.1: 3,573 passed, two skipped and five warnings in 1,230.27 seconds.
+Frontend: 667 tests across 36 files passed; production build passed with a
+764.68 kB JavaScript chunk warning. Strict OpenSpec validation and diff checks
+passed. Full logs remain outside the repository under `%TEMP%/fa73-*`.
+The Python log records skip counts without reasons; do not infer which skip
+conditions ran. Deprecation, model-field and Node localStorage warnings remain.
+Tester also accepted the documentation-only closure diff, with 46 affected
+privacy/control checks and repeated strict OpenSpec/diff checks passing.
 
-Repairs rebase the current pre-link preparation cursor on accepted corrected
-scope for the same ordered targets, preserve historical children/grants/budgets,
-and recheck live authority after prefix validation. Successful runs no longer
-project a false derived budget blocker. No schema or authorization-shape change.
-The linked recovery walkthrough documents reproduction and evidence limits.
+## Stop Boundary
 
-## Independent Acceptance and Stop Boundary
-
-Final project-venv Python: 3,573 passed, two skipped, five warnings in 1,123.47s.
-Fourteen journeys/probes and 57 content/documentation checks passed. Frontend:
-667 tests across 36 files passed; build passed with the existing size warning.
-Strict OpenSpec, links and diff checks passed. Chrome close/reopen recovered the
-same run with three outputs and no budget alert. Real process restart adopted
-corroborated remote output without replay. Owned demos and listeners were cleaned.
-
-Synthetic 2x2 PNGs prove no visual fidelity or real-provider/GPU behavior.
-Task 7.3 onward remains unchecked. Main owns the isolated acceptance commit;
-Archivist performs the sealed read-only Git and Deployment Token Report handoff.
+Only the task checkbox and Heavy closure documents change. Main owns acceptance
+and the isolated acceptance commit; Archivist owns the sealed read-only Git and
+Deployment Token Report handoff. Task 7.4 through 7.6 remain unchecked. Real
+generation and visual acceptance require separate authorization and inputs; no
+live generation, next task, archive or push is included.

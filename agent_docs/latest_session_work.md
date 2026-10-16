@@ -1,72 +1,51 @@
 # Latest Session Work
 
-## Task 7.2 Accepted Handoff
+## Task 7.3 Accepted Handoff
 
-Deployment `full-auto-7-2-20261015` handles only Task 7.2 of
-`automate-resource-session-full-auto`, from clean baseline `da689ff`.
-Heavy intake read project documentation, instructions and all named change
-artifacts. Main owns architecture/acceptance; internal Executor implemented and
-repaired, Tester independently verified, Archivist documented. The user paused
-and resumed before acceptance; work was preserved. No external handoffs/agents.
-Main accepted the final diff and gates. Only 7.2 is newly checked: 37/41 complete.
+Deployment `full-auto-7-3-20261015` handles only Task 7.3 of
+`automate-resource-session-full-auto`, from clean baseline `bda57e0`.
+Heavy intake covered project documentation, repository instructions, proposal,
+design, tasks, delta specs and relevant gate/isolation code. Main owns scope,
+architecture, integration and acceptance. Internal Executor FA73-EXEC inspected
+operational readiness and found no justified production change. Independent
+Tester FA73-TEST executed all five required gates. No external agents or handoffs.
 
-## Delivered Behavior and Evidence
+Main accepted the observed outputs. Only 7.3 is newly checked: 38/41 complete.
+The deliverable is gate evidence and closure documentation, with no runtime,
+test, dependency or configuration changes.
 
-- Connected synthetic-provider journeys cover accessory ownership refusal and
-  correction, preflight/runtime source and provider drift, duplicate review,
-  cancellation, expired-owner fencing, browser closure and backend restart.
-- A persistent synthetic ComfyUI ledger survives backend process death after
-  accepting /prompt but before ACK. Recovery must succeed with the existing
-  attempt, shot and output; it cannot pass by remaining blocked or replaying POST.
-- Complete row comparisons preserve immutable receipts, snapshots, operations,
-  profile evidence and reservations; legitimate mutable transitions are explicit.
-- Corrected-scope pre-link Resume rebases the current preparation checkpoint for
-  unchanged ordered targets while retaining historical children and budget use.
-  Existing creation/renewal evidence authenticates historical revisions; no schema
-  or closed authorization JSON extension. Generated continuity remains protected.
-- Final-boundary validation prevents disablement or quote expiry during lengthy
-  prefix checks from committing a checkpoint, grant, run or action receipt.
-- Successful terminal runs with zero remaining image attempts show no false
-  derived budget blocker. Real stored/dependency/unsettled blockers remain.
-- docs/task-7-2-recovery-walkthrough.md provides regression and browser commands;
-  docs/sessions.md scopes the changed-input rebase separately from continuation.
+## Independent Gate Evidence
 
-## Independent Gates
+All commands exited zero on the unchanged production/test baseline:
 
-Tester FA72-TEST completed project-venv python -m pytest: 3,573 passed, two skipped,
- five warnings in 1,123.47 seconds. Log:
-%TEMP%/fa72-final-python-full-suite.log.
-The earlier complete 3,571-pass run predates the final repair and is not the final
-acceptance gate. Executor's cancelled broad run at 25 percent is not a pass.
+| Gate | Observed result | External log |
+| --- | --- | --- |
+| `.venv/Scripts/python.exe -m pytest` | 3,573 passed, two skipped, five warnings; 1,230.27s | `%TEMP%/fa73-python-pytest.log` |
+| `npm --prefix frontend test` | 36 files, 667 tests passed | `%TEMP%/fa73-frontend-test.log` |
+| `npm --prefix frontend run build` | Passed; 764.68 kB JS chunk warning | `%TEMP%/fa73-frontend-build.log` |
+| `openspec validate automate-resource-session-full-auto --strict --no-interactive` | Change valid | `%TEMP%/fa73-openspec-validate.log` |
+| `git diff --check` | Passed, no output | `%TEMP%/fa73-git-diff-check.log` |
 
-The final two journey/probe modules passed 14 cases; privacy/control/documentation
-passed 57. Logs: %TEMP%/fa72-independent-final-affected.log and
-%TEMP%/fa72-final-privacy-control-docs.log. Frontend: 667/667 tests across 36 files;
-build passed with the existing >500KB bundle warning. Strict OpenSpec, new links
-and git diff --check passed; Git emitted only LF/CRLF conversion notices.
+Python 3.12.14 and pytest 9.1.1 are recorded in
+`%TEMP%/fa73-python-environment.log`. The complete Python gate includes privacy
+and control/whitespace checks. Its two skip reasons were not printed by the
+configured quiet run and are not inferred from source. Five Python warnings
+cover the model field and dependency deprecations; frontend tests also emitted
+Node localStorage ExperimentalWarnings. No initial gate failed or was weakened.
 
-Tester physically closed Chrome while the first synthetic assistant HTTP response
-was held, reopened the same session/run, released it and observed succeeded with
-3/3 outputs and zero failed/pending. No budget alert appeared despite zero remaining
-image allowance. Both demos removed temporary data and released listeners;
-Ctrl+C returned console exit code 1 despite verified cleanup.
+## Closure and Remaining Limits
 
-## Retained Failures and Limits
+Main updated only the Task 7.3 checkbox and the three canonical deployment-state
+documents. Tester accepted the exact documentation-only diff: 38/41 complete,
+7.4 through 7.6 unchecked, and no runtime changes. Affected privacy/control checks
+passed 46 cases; strict OpenSpec and diff checks passed again. Logs are
+`%TEMP%/fa73-doc-privacy-control.log`, `%TEMP%/fa73-doc-openspec.log` and
+`%TEMP%/fa73-doc-git-diff-check.log`. Git emitted only LF/CRLF conversion notices.
+Main owns the isolated acceptance commit; Archivist seals its read-only Git
+handoff and reports the exact six-column Deployment Token Report.
 
-An initial probe incorrectly forbade bounded assistant recovery after a lost
-response. Three assistant calls for two takes did not establish GPU replay;
-Main rejected production repair for that false assertion. The corrected process
-case observes ComfyUI /prompt, not assistant call counts.
-
-The room-drift journey independently exposed a stale revision checkpoint causing
-500 run_state_invalid. A later adversarial probe independently exposed four-table
-Resume writes after planning disablement during prefix validation. Both have
-passing regressions after repair; quote expiry also rejects with full rollback.
-Raw focused failure logs remain outside the repository under fa72-/FA72- prefixes.
-
-All outputs are synthetic 2x2 PNGs. No live provider/GPU generation or visual
-fidelity acceptance occurred. Task 7.3 through 7.6 stay unchecked; no automatic
-advance, archive or push. Main stages only owned task and closure files and creates
-the acceptance commit after final documentation checks. Archivist pause_archive_72
-is the single reporting owner for the sealed Git handoff and six-column Deployment
-Token Report; no repository changes follow report sealing.
+Fixture data/configuration and fake ComfyUI boundaries isolate automated tests.
+Ignored frontend build output stays untracked. Automated success does not prove
+real-provider/GPU behavior, framing, garment fidelity or visual acceptance.
+Task 7.4 through 7.6 remain unchecked; separate live authorization and selected
+inputs/budget are required before the live exercise. No advance, archive or push.
