@@ -571,15 +571,292 @@ def _canonicalize_automation_profile_provenance(value: object, revision: int) ->
 def _canonicalize_automation_profile_state(value: object, revision: int) -> dict:
     if type(value) is not dict or set(value) != {"regions", "provenance"}:
         _invalid()
-    regions = value["regions"]
+    return {
+        "regions": _canonicalize_automation_profile_regions(value["regions"]),
+        "provenance": _canonicalize_automation_profile_provenance(value["provenance"], revision),
+    }
+
+
+def _canonicalize_automation_profile_regions(regions: object) -> dict:
     if type(regions) is not dict or set(regions) != set(_AUTOMATION_PROFILE_REGIONS):
         _invalid()
     if any(type(regions[region]) is not str or regions[region] not in _AUTOMATION_PROFILE_COVERAGE
            for region in _AUTOMATION_PROFILE_REGIONS):
         _invalid()
+    return {region: regions[region] for region in _AUTOMATION_PROFILE_REGIONS}
+
+
+def _validate_unicode_partition(appearance: str, spans: list[tuple[object, object, object]]) -> None:
+    try:
+        appearance.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        _invalid()
+    offset = 0
+    for start, end, text in spans:
+        if (
+            type(start) is not int
+            or type(end) is not int
+            or start != offset
+            or not start < end <= len(appearance)
+            or not isinstance(text, str)
+            or text != appearance[start:end]
+        ):
+            _invalid()
+        offset = end
+    if offset != len(appearance):
+        _invalid()
+
+
+_PROSPECTIVE_PROFILE_FIELDS = {
+    "schema_version", "draft_content_digest", "appearance_segments",
+    "garment_coverage", "baseline_coverage", "inventory_complete",
+}
+
+
+def canonicalize_prospective_automation_source(appearance: object, garments: object) -> dict:
+    """Validate the exact pending appearance and ordered garment definitions."""
+    if not isinstance(appearance, str) or len(appearance) > 4000 or type(garments) is not list or len(garments) > 64:
+        _invalid()
+    try:
+        appearance.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        _invalid()
+    canonical_garments = []
+    seen_keys: set[str] = set()
+    for garment in garments:
+        if type(garment) is not dict or set(garment) != {"key", "wording", "aside"}:
+            _invalid()
+        key = garment["key"]
+        wording, aside = garment["wording"], garment["aside"]
+        if (
+            (key is not None and not _valid_profile_key(key))
+            or not _valid_wording(wording)
+            or len(wording) > 1000
+            or not _valid_wording(aside, allow_empty=True)
+            or len(aside) > 1000
+            or (key is not None and key in seen_keys)
+        ):
+            _invalid()
+        canonical = {"wording": wording, "aside": aside}
+        if key is not None:
+            canonical["key"] = key
+            seen_keys.add(key)
+        canonical_garments.append(canonical)
+    source = {"appearance": appearance, "garments": canonical_garments}
     return {
-        "regions": {region: regions[region] for region in _AUTOMATION_PROFILE_REGIONS},
-        "provenance": _canonicalize_automation_profile_provenance(value["provenance"], revision),
+        **source,
+        "draft_content_digest": _portable_digest({"schema_version": 1, **source}),
+    }
+
+
+def canonicalize_prospective_automation_profile(
+    value: object,
+    appearance: object,
+    garments: object,
+) -> dict:
+    """Validate an editable, unsaved profile against its exact current draft."""
+    source = canonicalize_prospective_automation_source(appearance, garments)
+    if type(value) is not dict or set(value) != _PROSPECTIVE_PROFILE_FIELDS:
+        _invalid()
+    if (
+        type(value["schema_version"]) is not int
+        or value["schema_version"] != 1
+        or not _valid_sha256(value["draft_content_digest"])
+        or value["draft_content_digest"] != source["draft_content_digest"]
+    ):
+        _invalid()
+
+    raw_segments = value["appearance_segments"]
+    if type(raw_segments) is not list or len(raw_segments) > 512:
+        _invalid()
+    if any(type(item) is not dict for item in raw_segments):
+        _invalid()
+    _validate_unicode_partition(
+        source["appearance"],
+        [(item.get("start"), item.get("end"), item.get("text")) for item in raw_segments],
+    )
+    segments = []
+    seen_segment_ids: set[str] = set()
+    for item in raw_segments:
+        if type(item) is not dict or set(item) != {"segment_id", "start", "end", "text", "owner"}:
+            _invalid()
+        segment_id, owner = item["segment_id"], item["owner"]
+        if not _valid_profile_key(segment_id) or segment_id in seen_segment_ids:
+            _invalid()
+        if owner == "permanent" or owner is None:
+            canonical_owner = owner
+        elif type(owner) is dict and set(owner) == {"garment_index"}:
+            index = owner["garment_index"]
+            if type(index) is not int or not 0 <= index < len(source["garments"]):
+                _invalid()
+            canonical_owner = {"garment_index": index}
+        else:
+            _invalid()
+        segments.append({
+            "segment_id": segment_id,
+            "start": item["start"],
+            "end": item["end"],
+            "text": item["text"],
+            "owner": canonical_owner,
+        })
+        seen_segment_ids.add(segment_id)
+
+    raw_coverage = value["garment_coverage"]
+    if type(raw_coverage) is not list or len(raw_coverage) > len(source["garments"]):
+        _invalid()
+    coverage = []
+    seen_indices: set[int] = set()
+    for entry in raw_coverage:
+        if type(entry) is not dict or set(entry) != {"garment_index", "states"}:
+            _invalid()
+        index, states = entry["garment_index"], entry["states"]
+        if (
+            type(index) is not int
+            or not 0 <= index < len(source["garments"])
+            or index in seen_indices
+            or type(states) is not dict
+            or not states
+            or set(states) - {"worn", "aside"}
+            or any(type(fact) is not dict or set(fact) != {"regions"} for fact in states.values())
+            or ("aside" in states and not source["garments"][index]["aside"])
+        ):
+            _invalid()
+        coverage.append({
+            "garment_index": index,
+            "states": {
+                state: {
+                    "regions": _canonicalize_automation_profile_regions(fact["regions"])
+                }
+                for state, fact in sorted(states.items())
+            },
+        })
+        seen_indices.add(index)
+
+    baseline = value["baseline_coverage"]
+    canonical_baseline = None
+    if baseline is not None:
+        if type(baseline) is not dict or set(baseline) != {"regions"}:
+            _invalid()
+        canonical_baseline = {
+            "regions": _canonicalize_automation_profile_regions(baseline["regions"]),
+        }
+    inventory = value["inventory_complete"]
+    if inventory is not None and type(inventory) is not bool:
+        _invalid()
+
+    return {
+        "schema_version": 1,
+        "draft_content_digest": source["draft_content_digest"],
+        "appearance_segments": segments,
+        "garment_coverage": sorted(coverage, key=lambda item: item["garment_index"]),
+        "baseline_coverage": canonical_baseline,
+        "inventory_complete": inventory,
+    }
+
+
+def map_prospective_automation_profile(
+    value: object,
+    appearance: object,
+    garments: object,
+    saved: dict,
+) -> dict:
+    """Resolve ordered draft indices to the immutable saved snapshot identities."""
+    draft = canonicalize_prospective_automation_profile(value, appearance, garments)
+    if (
+        type(saved) is not dict
+        or set(saved) != {"key", "version", "name", "content_digest", "appearance", "outfit"}
+        or not _valid_profile_key(saved.get("key"))
+        or type(saved.get("version")) is not int
+        or saved["version"] < 1
+        or not _valid_name(saved.get("name"))
+        or not _valid_sha256(saved.get("content_digest"))
+        or not isinstance(saved.get("appearance"), str)
+        or (saved.get("outfit") is not None and type(saved.get("outfit")) is not dict)
+    ):
+        _invalid()
+    try:
+        authoritative_saved = get_version(saved["key"], saved["version"])
+    except SavedLookError as exc:
+        if exc.code == "look_not_found":
+            _invalid()
+        raise
+    history = _history(saved["key"])
+    if authoritative_saved != saved:
+        _invalid()
+    source = canonicalize_prospective_automation_source(appearance, garments)
+    final_garments = [] if saved["outfit"] is None else saved["outfit"].get("garments")
+    if (
+        saved.get("appearance") != source["appearance"]
+        or (
+            saved["outfit"] is not None
+            and (
+                type(saved["outfit"]) is not dict
+                or set(saved["outfit"]) != {"outfit_key", "garments"}
+                or not _valid_profile_key(saved["outfit"].get("outfit_key"))
+            )
+        )
+        or type(final_garments) is not list
+        or (saved["outfit"] is not None and not final_garments)
+        or len(final_garments) != len(source["garments"])
+        or saved["content_digest"] != _portable_digest({
+            "appearance": saved["appearance"],
+            "outfit": saved["outfit"],
+        })
+    ):
+        _invalid()
+    identity_map = {}
+    seen_final_keys: set[str] = set()
+    for index, (source_garment, final_garment) in enumerate(zip(source["garments"], final_garments)):
+        source_key = source_garment.get("key")
+        original = None if source_key is None else _known_garment(source_key, history)
+        if source_key is not None and (
+            original is None
+            or not _valid_profile_key(original["key"])
+        ):
+            _invalid()
+        definition_unchanged = source_key is not None and (
+            original["wording"] == source_garment["wording"]
+            and original["aside"] == source_garment["aside"]
+        )
+        if (
+            type(final_garment) is not dict
+            or set(final_garment) != {"key", "wording", "aside"}
+            or not _valid_profile_key(final_garment["key"])
+            or final_garment["key"] in seen_final_keys
+            or final_garment["wording"] != source_garment["wording"]
+            or final_garment["aside"] != source_garment["aside"]
+            or (definition_unchanged and source_key != final_garment["key"])
+            or (source_key is not None and not definition_unchanged and source_key == final_garment["key"])
+        ):
+            _invalid()
+        identity_map[index] = final_garment["key"]
+        seen_final_keys.add(final_garment["key"])
+
+    mapped_coverage = {}
+    for entry in draft["garment_coverage"]:
+        key = identity_map[entry["garment_index"]]
+        mapped_coverage[key] = entry["states"]
+    return {
+        "schema_version": 1,
+        "draft_content_digest": draft["draft_content_digest"],
+        "look": {
+            "key": saved["key"],
+            "version": saved["version"],
+            "content_digest": saved["content_digest"],
+        },
+        "appearance_segments": [
+            {
+                **segment,
+                "owner": (
+                    f"garment:{identity_map[segment['owner']['garment_index']]}"
+                    if type(segment["owner"]) is dict else segment["owner"]
+                ),
+            }
+            for segment in draft["appearance_segments"]
+        ],
+        "garment_coverage": mapped_coverage,
+        "baseline_coverage": draft["baseline_coverage"],
+        "inventory_complete": draft["inventory_complete"],
     }
 
 
@@ -610,18 +887,20 @@ def _canonicalize_automation_profile(value: object, saved: dict, revision: int) 
         _invalid()
 
     appearance = saved["appearance"]
-    try:
-        appearance.encode("utf-8", errors="strict")
-    except UnicodeEncodeError:
-        _invalid()
     if type(value["appearance_segments"]) is not list:
         _invalid()
+    if any(type(segment) is not dict for segment in value["appearance_segments"]):
+        _invalid()
+    _validate_unicode_partition(
+        appearance,
+        [(segment.get("start"), segment.get("end"), segment.get("text"))
+         for segment in value["appearance_segments"]],
+    )
     garment_keys = {
         garment["key"] for garment in saved["outfit"]["garments"]
     } if saved["outfit"] is not None else set()
     segments = []
     segment_ids: set[str] = set()
-    offset = 0
     for segment in value["appearance_segments"]:
         if type(segment) is not dict or set(segment) != {
             "segment_id", "start", "end", "text", "owner", "provenance",
@@ -633,12 +912,6 @@ def _canonicalize_automation_profile(value: object, saved: dict, revision: int) 
         if (
             not _valid_profile_key(segment_id)
             or segment_id in segment_ids
-            or type(start) is not int
-            or type(end) is not int
-            or start != offset
-            or not start < end <= len(appearance)
-            or not isinstance(segment["text"], str)
-            or segment["text"] != appearance[start:end]
             or not isinstance(owner, str)
         ):
             _invalid()
@@ -658,9 +931,6 @@ def _canonicalize_automation_profile(value: object, saved: dict, revision: int) 
             ),
         })
         segment_ids.add(segment_id)
-        offset = end
-    if offset != len(appearance):
-        _invalid()
 
     garment_coverage = value["garment_coverage"]
     if type(garment_coverage) is not dict or set(garment_coverage) - garment_keys:

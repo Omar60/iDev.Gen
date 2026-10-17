@@ -1,41 +1,37 @@
 # Project Progress
 
-## Current Deployment: Integrated Look Automation Planning
+## Current Deployment: Prospective Look Automation
 
-Deployment `look-auto-profile-20261017` uses Medium for
-`create-automation-profiles-with-looks`. Proposal, design, three delta specs and
-tasks are complete; implementation is 0/16 tasks. No production code or tests
-were modified. The planning boundary in `openspec-propose` requires presenting
-these artifacts before a later user request starts apply.
+Deployment `look-proposals-g1-20261017` uses Heavy internal Codex for
+`create-automation-profiles-with-looks`. Main accepted only Group 1, Tasks
+1.1-1.3, after independent code/diff review and verification. Progress is 3/16.
+Executor owned production and repair; Tester independently reproduced and
+verified the historical-key and private-model-metadata corrections.
 
-## Goal and Design
+## Implemented Boundary
 
-Save a reviewed principal look and its first exact automation-profile revision
-together, using one integrated review of appearance ownership, coverage,
-inventory, baseline and confirmed removal order. Keep explicit normal-only
-saving when automation facts are incomplete. New guided creation can visibly
-select a sole ready exact profile; multiple ready revisions require choice.
+Closed prospective profiles bind exact pending appearance, ordered garment
+wording and worn/aside states with a separate draft digest. Mapping resolves
+actual immutable saved identities without publishing a profile. Manual proposals
+use structured assistance and safe transient evidence with a 24-hour expiry.
+Photo extraction has an opt-in companion while preserving the historical empty
+request/result and ordinary proposals when automation is unavailable.
 
-Reuse the existing complete removal arc: initially all listed items are worn,
-successive stages remove them in order, an applicable last-item aside stage is
-intermediate, and the final take has no listed garment or accessory remaining.
-Unknown facts and covering baselines remain blockers; prompts cannot certify
-rendered fidelity. No historical backfill or portable-v1 change is planned.
+Suggestions remain unaccepted and unknown facts remain unknown. Neither path
+creates a look, accepted profile or session. The browser still saves ordinary
+looks. Combined save and integrated review remain unimplemented.
 
 ## Verification and Continuation
 
-Strict OpenSpec validation and documentation privacy/control checks passed.
-No implementation or real-generation verification is claimed. The initial
-working tree was clean on main, 47 commits ahead of origin/main; there was no
-active OpenSpec change before this proposal. No commit or push was made.
+Independent task checks passed: 1.1 (46), 1.2 (14), 1.3 (34). The complete
+project-interpreter Python suite passed 3,640 tests with two skips and 18 warnings.
+A new photo test leaked a staged row into other modules; scoped teardown fixed
+the reproduced isolation failure. The final full rerun passed after that repair.
+Privacy/control checks passed 46 tests; strict OpenSpec and diff checks passed.
+No frontend files changed. Isolated fixtures and fake providers were used; no
+real configuration/data, network provider or GPU generation was exercised.
 
-After a later apply request, start with Task 1.1 and the exact design/specs.
-Preserve the one-task boundary when the user selects a task. Do not mark any
-implementation task complete from planning validation.
-
-## Previous Accepted Baseline
-
-Saved-look archival and Full Auto are already present in the current source
-and main specifications; their changes are archived. Historical gate counts and
-visual limitations belong to their acceptance reports, including
-`docs/full-auto-task-7-6-acceptance.md`, rather than proving this new feature.
+The user authorized a final acceptance commit after the original no-commit
+instruction. No push, sync or archive is authorized. Group 1 is complete; stop
+here. A later authorized apply starts Group 2 at Task 2.1 and must reuse the
+prospective contracts without treating suggestions as accepted provenance.

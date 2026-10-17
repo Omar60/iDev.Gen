@@ -67,6 +67,74 @@ explicit vision model when the key has access. The transport separates provider
 reasoning from JSON output; it does not extract JSON from prose or accept
 partial objects. See [Setup](getting-started.md#setup) for model selection.
 
+## Prospective automation suggestions
+
+The backend can prepare editable automation suggestions before a look is saved.
+This operation creates no look version, accepted profile, garment identity,
+outfit, or session. Suggestions do not accept their own facts or choose garment
+order. Keep uncertain ownership as `null` and uncertain coverage as `unknown`;
+the assistant never decides the all-garments-absent baseline or inventory
+completeness.
+
+For a manually entered draft, call `POST /api/looks/automation-proposals` with
+the exact current appearance and ordered garment definitions:
+
+```json
+{
+  "appearance": "Short dark hair and a silver necklace.",
+  "garments": [
+    {"key": null, "wording": "a white shirt", "aside": "the shirt folded over one arm"},
+    {"key": "existing-garment-key", "wording": "blue jeans", "aside": ""}
+  ]
+}
+```
+
+The response includes an opaque `proposal_id`, `draft_content_digest`, the
+prospective profile, a safe `request_projection`, and `expires_at`. The digest
+binds schema version 1, the exact appearance, and the exact ordered garment
+definitions, including any existing key supplied by the form. It identifies
+this pending draft; it is distinct from the saved look's final `content_digest`,
+which is computed from its immutable appearance and outfit snapshot after
+server-assigned identities exist.
+
+The prospective profile is a closed object with `schema_version`,
+`draft_content_digest`, `appearance_segments`, `garment_coverage`,
+`baseline_coverage`, and `inventory_complete`. Appearance segments partition
+the original text using zero-based, half-open Unicode scalar offsets. An owner
+is `permanent`, `null`, or `{"garment_index": n}`. Coverage entries use the
+same ordered garment indices and `worn`/`aside` states; each state records
+`chest`, `hips`, `legs`, and `feet` as `full`, `partial`, `none`, or `unknown`.
+The provider must leave baseline and inventory completeness `null`. The exact
+source list and indices let the server map reviewed facts to the final saved
+garment keys later, including a new key when wording changes.
+
+Manual proposals and their source digest, validated candidate, and safe request
+projection are usable for 24 hours. Expired records are purged on lookup or the
+next proposal request. The projection contains the
+configured model, allowed request parameters, and a digest of structured
+messages; it does not retain endpoint text, credentials, prompt text, or image
+bytes. Expired proposals cannot be reused.
+
+Photo extraction keeps its historical `{}` request and response shape. To opt
+in, call `POST /api/looks/photo-stages/{photo_id}/extract` with
+`{"include_automation": true}`. The response keeps the ordinary appearance,
+garment, uncertainty, and proposal fields and adds `automation`. A ready
+companion contains the ordinary photo proposal ID, a server-computed
+`draft_content_digest`, and a prospective profile. The provider returns no
+digest: the server attaches it only after validating the exact ordinary
+appearance and ordered garment list. If the ordinary photo proposal is valid
+but the companion candidate is malformed, extraction retains that look
+proposal and marks automation `unavailable`. If the combined provider request
+fails, extraction retries the historical ordinary request and returns a valid
+look proposal with automation `unavailable`. An invalid ordinary proposal keeps
+the existing extraction error behavior. The photo companion and its redacted
+request evidence expire with the existing staged proposal; neither image bytes
+nor a data URI are included in that evidence.
+
+The current browser editor does not yet show this combined automation review or
+save. Users can continue to describe and save ordinary looks manually; the
+prospective API leaves any suggestions unaccepted for a later review.
+
 In **Shared Choices** on an authoring-v1 session, load an exact saved-look
 version, explicitly choose which appearance and wardrobe fields to replace or
 keep, and apply it through the plan revision CAS. The selected version is copied

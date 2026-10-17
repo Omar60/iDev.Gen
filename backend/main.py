@@ -62,6 +62,7 @@ from backend import guided_sessions
 from backend import authoring_operations
 from backend import resource_full_auto
 from backend import saved_looks
+from backend import look_automation
 from backend import photo_staging
 from backend import photo_extraction
 from backend import resource_planning
@@ -1538,6 +1539,21 @@ class ApplySavedLookProfileIn(BaseModel):
     decisions: dict[str, Literal["replace", "keep"]]
 
 
+class LookAutomationProposalGarmentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    key: str | None = Field(default=None, min_length=1, max_length=128)
+    wording: str = Field(min_length=1, max_length=1000)
+    aside: str = Field(default="", max_length=1000)
+
+
+class LookAutomationProposalIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    appearance: str = Field(max_length=4000)
+    garments: list[LookAutomationProposalGarmentIn] = Field(max_length=64)
+
+
 def _automation_profile_error(exc: saved_looks.SavedLookError) -> JSONResponse:
     messages = {
         "invalid_look": "Automation profile request is invalid.",
@@ -1549,6 +1565,10 @@ def _automation_profile_error(exc: saved_looks.SavedLookError) -> JSONResponse:
         "automation_profile_not_found": "Automation profile was not found.",
         "automation_profile_stale": "Saved look or automation profile changed; reload it and try again.",
         "appearance_ownership_unaccepted": "Appearance ownership has not been accepted.",
+        "automation_proposal_failed": "The assistant could not produce a usable automation proposal.",
+        "automation_proposal_stale": "Automation proposal is stale or belongs to different look content.",
+        "automation_proposal_expired": "Automation proposal has expired; request fresh suggestions.",
+        "automation_proposal_invalid": "Stored automation proposal is invalid.",
     }
     return _stable_error(
         exc.status_code, exc.code,
@@ -1557,7 +1577,9 @@ def _automation_profile_error(exc: saved_looks.SavedLookError) -> JSONResponse:
 
 
 class PhotoLookExtractIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    include_automation: bool = False
 
 
 class PhotoLookGarmentReviewIn(BaseModel):
@@ -1590,6 +1612,20 @@ class PhotoLookReviewIn(BaseModel):
 @app.get("/api/looks")
 def list_saved_looks():
     return saved_looks.list_latest()
+
+
+@_request_limited_post("/api/looks/automation-proposals")
+async def propose_look_automation(payload: LookAutomationProposalIn):
+    """Return editable automation suggestions for exact, unsaved look text."""
+    _require_saved_look_writes()
+    try:
+        result = await look_automation.propose_manual(
+            payload.model_dump(), CONFIG, enhance.run_structured,
+            is_resource_planning_enabled,
+        )
+        return JSONResponse(content=result, status_code=200)
+    except saved_looks.SavedLookError as exc:
+        return _automation_profile_error(exc)
 
 
 @app.delete("/api/looks/{look_key:path}")
@@ -1802,6 +1838,7 @@ async def extract_look_from_photo_stage(photo_id: str, payload: PhotoLookExtract
             CONFIG,
             enhance.run_structured,
             is_resource_planning_enabled,
+            include_automation=payload.include_automation,
         )
         return JSONResponse(content=result, status_code=200)
     except photo_staging.PhotoStageError as exc:

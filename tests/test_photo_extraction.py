@@ -64,6 +64,48 @@ def _proposal():
     }
 
 
+def _automation_candidate(ordinary):
+    appearance = ordinary["appearance"]
+    regions = {name: "unknown" for name in ("chest", "hips", "legs", "feet")}
+    return {
+        "schema_version": 1,
+        "appearance_segments": [
+            {
+                "segment_id": "segment-1",
+                "start": 0,
+                "end": len(appearance),
+                "text": appearance,
+                "owner": None,
+            }
+        ],
+        "garment_coverage": [
+            {"garment_index": index, "states": {"worn": {"regions": regions}}}
+            for index, _wording in enumerate(ordinary["garments"])
+        ],
+        "baseline_coverage": None,
+        "inventory_complete": None,
+    }
+
+
+def _install_opt_in_provider(monkeypatch, config, output):
+    async def fake_run(_config, _instruction, image_uri, request_evidence=None):
+        if request_evidence is not None:
+            request_evidence.update({
+                "messages": [
+                    {"role": "system", "content": "Return a saved-look proposal."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "Describe only visible content."},
+                        {"type": "image_url", "image_url": {"url": image_uri}},
+                    ]},
+                ],
+                "model": config["llm_vision_model"],
+                "parameters": {"response_format": {"type": "json_object"}},
+            })
+        return output
+
+    monkeypatch.setattr(main.enhance, "run_structured", fake_run)
+
+
 class _Response:
     def __init__(self, status_code, body=None, text=""):
         self.status_code = status_code
@@ -117,7 +159,6 @@ def test_photo_extraction_redacts_actual_fallback_request_and_saves_reviewed_evi
     assert transmitted == "data:image/png;base64," + base64.b64encode(image).decode("ascii")
     assert db.one("SELECT COUNT(*) AS n FROM saved_look_version")["n"] == 0
     assert client.get(f"/api/looks/photo-stages/{photo_id}/preview").content == image
-
     proposal_row = db.one("SELECT * FROM photo_look_proposal WHERE photo_id = ?", photo_id)
     request_projection = json.loads(proposal_row["request_projection_json"])
     image_part = request_projection["messages"][1]["content"][1]
@@ -154,7 +195,7 @@ def test_photo_extraction_redacts_actual_fallback_request_and_saves_reviewed_evi
         "appearance": "short dark hair",
         "garments": [
             {"wording": "a blue cardigan", "aside": ""},
-                {"wording": "a white shirt"},
+            {"wording": "a white shirt"},
         ],
         "unresolved_decisions": [{"id": "u1", "action": "omit"}],
         "review_confirmed": True,
@@ -216,6 +257,215 @@ def test_photo_extraction_redacts_actual_fallback_request_and_saves_reviewed_evi
     assert client.get(
         f"/api/looks/{look['key']}/versions/{look['version']}/photo-evidence"
     ).status_code == 200
+
+
+def test_opt_in_photo_automation_is_source_bound_transient_and_preserves_unknowns(client, monkeypatch):
+    config = _config(monkeypatch)
+    ordinary = _proposal()
+    output = {**ordinary, "automation": _automation_candidate(ordinary)}
+    _install_opt_in_provider(monkeypatch, config, output)
+    uploaded = _upload(client)
+    photo_id = uploaded.json()["photo_id"]
+
+    response = client.post(
+        f"/api/looks/photo-stages/{photo_id}/extract",
+        json={"include_automation": True},
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["appearance"] == ordinary["appearance"]
+    assert result["garments"] == ordinary["garments"]
+    automation = result["automation"]
+    assert automation["status"] == "ready"
+    assert automation["proposal_id"] == result["proposal_id"]
+    assert automation["profile"]["baseline_coverage"] is None
+    assert automation["profile"]["inventory_complete"] is None
+    assert all(
+        fact["regions"]["chest"] == "unknown"
+        for item in automation["profile"]["garment_coverage"]
+        for fact in item["states"].values()
+    )
+    restored = photo_extraction.get_automation_proposal(
+        photo_id, automation["proposal_id"], automation["draft_content_digest"],
+    )
+    assert restored["profile"] == automation["profile"]
+    assert db.one("SELECT COUNT(*) AS n FROM saved_look_version")["n"] == 0
+    assert db.one("SELECT COUNT(*) AS n FROM saved_look_automation_profile")["n"] == 0
+    assert db.one("SELECT COUNT(*) AS n FROM session")["n"] == 0
+    evidence = db.one(
+        "SELECT request_projection_json FROM photo_look_automation_proposal WHERE proposal_id = ?",
+        automation["proposal_id"],
+    )["request_projection_json"]
+    assert config["llm_key"] not in evidence
+    assert config["llm_url"] not in evidence
+    assert "data:image" not in evidence
+    assert "base64" not in evidence
+
+
+@pytest.mark.parametrize("failure", ["extra_approval", "candidate_approval", "wrong_digest"])
+def test_invalid_photo_companion_retains_the_ordinary_look_proposal(client, monkeypatch, failure):
+    config = _config(monkeypatch)
+    ordinary = _proposal()
+    candidate = _automation_candidate(ordinary)
+    output = {**ordinary, "automation": candidate}
+    if failure == "extra_approval":
+        output["accepted"] = True
+    elif failure == "candidate_approval":
+        output["automation"]["accepted"] = True
+    else:
+        output["automation"]["draft_content_digest"] = "0" * 64
+    _install_opt_in_provider(monkeypatch, config, output)
+    photo_id = _upload(client).json()["photo_id"]
+
+    response = client.post(
+        f"/api/looks/photo-stages/{photo_id}/extract",
+        json={"include_automation": True},
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["appearance"] == ordinary["appearance"]
+    assert result["garments"] == ordinary["garments"]
+    assert result["automation"]["status"] == "unavailable"
+    assert result["automation"]["reason"] == "invalid_candidate"
+    assert db.one(
+        "SELECT state FROM photo_look_proposal WHERE proposal_id = ?", result["proposal_id"],
+    )["state"] == "ready"
+    assert db.one(
+        "SELECT state FROM photo_look_automation_proposal WHERE proposal_id = ?", result["proposal_id"],
+    )["state"] == "unavailable"
+
+
+def test_photo_companion_provider_failure_falls_back_to_ordinary_proposal(client, monkeypatch):
+    config = _config(monkeypatch)
+    ordinary = _proposal()
+    calls = []
+
+    async def fake_run(_config, instruction, image_uri, request_evidence=None):
+        calls.append(instruction.instruction)
+        if len(calls) == 1:
+            raise RuntimeError("invented provider failure")
+        if request_evidence is not None:
+            request_evidence.update({
+                "messages": [
+                    {"role": "system", "content": "Return an ordinary proposal."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "Visible look description."},
+                        {"type": "image_url", "image_url": {"url": image_uri}},
+                    ]},
+                ],
+                "model": config["llm_vision_model"],
+                "parameters": {"response_format": {"type": "json_object"}},
+            })
+        return ordinary
+
+    monkeypatch.setattr(main.enhance, "run_structured", fake_run)
+    photo_id = _upload(client).json()["photo_id"]
+
+    response = client.post(
+        f"/api/looks/photo-stages/{photo_id}/extract",
+        json={"include_automation": True},
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["appearance"] == ordinary["appearance"]
+    assert result["garments"] == ordinary["garments"]
+    assert result["automation"]["status"] == "unavailable"
+    assert result["automation"]["reason"] == "provider_failed"
+    assert len(calls) == 2
+    assert "automation" in calls[0]
+    assert "automation" not in calls[1]
+
+
+def test_opt_in_photo_automation_is_disabled_before_provider_dispatch(client, monkeypatch):
+    config = _config(monkeypatch)
+    photo_id = _upload(client).json()["photo_id"]
+    config["resource_planning_enabled"] = False
+    called = []
+
+    async def should_not_run(*_args, **_kwargs):
+        called.append(True)
+        raise AssertionError("vision transport ran while automation was disabled")
+
+    monkeypatch.setattr(main.enhance, "run_structured", should_not_run)
+
+    response = client.post(
+        f"/api/looks/photo-stages/{photo_id}/extract",
+        json={"include_automation": True},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "resource_planning_disabled"
+    assert called == []
+    assert db.one("SELECT COUNT(*) AS n FROM photo_look_proposal")["n"] == 0
+
+
+def test_photo_automation_proposal_rejects_wrong_photo_or_source_digest(client, monkeypatch):
+    config = _config(monkeypatch)
+    ordinary = _proposal()
+    _install_opt_in_provider(monkeypatch, config, {
+        **ordinary, "automation": _automation_candidate(ordinary),
+    })
+    photo_id = _upload(client).json()["photo_id"]
+    result = client.post(
+        f"/api/looks/photo-stages/{photo_id}/extract",
+        json={"include_automation": True},
+    ).json()
+    other_photo_id = _upload(client, _image_bytes(color=(2, 190, 100))).json()["photo_id"]
+
+    with pytest.raises(photo_extraction.PhotoExtractionError) as wrong_photo:
+        photo_extraction.get_automation_proposal(
+            other_photo_id, result["proposal_id"], result["automation"]["draft_content_digest"],
+        )
+    with pytest.raises(photo_extraction.PhotoExtractionError) as wrong_digest:
+        photo_extraction.get_automation_proposal(
+            photo_id, result["proposal_id"], "0" * 64,
+        )
+
+    assert wrong_photo.value.status_code == 409
+    assert wrong_digest.value.status_code == 409
+
+
+def test_photo_automation_proposal_is_fenced_by_a_newer_extraction_attempt(client, monkeypatch):
+    config = _config(monkeypatch)
+    ordinary = _proposal()
+    _install_opt_in_provider(monkeypatch, config, {
+        **ordinary, "automation": _automation_candidate(ordinary),
+    })
+    photo_id = _upload(client).json()["photo_id"]
+    result = client.post(
+        f"/api/looks/photo-stages/{photo_id}/extract",
+        json={"include_automation": True},
+    ).json()
+    _image, metadata = photo_staging.read_staged_photo(photo_id)
+    assert photo_extraction._start_attempt(photo_id, "f" * 32, metadata) == 2
+
+    with pytest.raises(photo_extraction.PhotoExtractionError) as stale:
+        photo_extraction.get_automation_proposal(
+            photo_id, result["proposal_id"], result["automation"]["draft_content_digest"],
+        )
+
+    assert stale.value.status_code == 409
+    assert stale.value.code == "photo_proposal_stale"
+
+
+def test_opt_in_photo_extraction_still_rejects_invalid_ordinary_content(client, monkeypatch):
+    config = _config(monkeypatch)
+    _install_opt_in_provider(monkeypatch, config, {
+        "appearance": "valid", "garments": [""], "unresolved": [],
+    })
+    photo_id = _upload(client).json()["photo_id"]
+
+    response = client.post(
+        f"/api/looks/photo-stages/{photo_id}/extract",
+        json={"include_automation": True},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "vision_request_failed"
+    assert db.one("SELECT COUNT(*) AS n FROM photo_look_automation_proposal")["n"] == 0
 
 
 def json_module_dumps(value):

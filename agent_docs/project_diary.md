@@ -1,5 +1,26 @@
 # Project Diary
 
+## Prospective Look Automation Acceptance
+
+Keep draft identity distinct from final saved snapshot identity. Photo models
+cannot reliably hash their own generated source; derive that digest server-side.
+Authenticate mapping against the exact stored snapshot and resolve reusable keys
+from target immutable history before the mutable catalogue. A valid historical
+look must not depend on a surviving catalogue row. Sanitize every retained
+metadata field, including configured model identifiers, before persistence.
+
+Assistant suggestions carry no acceptance or provenance. Preserve unknown
+ownership/coverage and leave baseline/inventory for explicit later review.
+Separate ordinary photo validity from automation validity; retry the historical
+request only for combined provider-call failure. Independent tests caught both
+historical-key and metadata-safety gaps before Group 1 acceptance. Only Tasks
+1.1-1.3 are implemented; integrated saving remains a later boundary.
+
+A test helper imported from another module does not import its autouse cleanup.
+Track and clean each test's own staged photos explicitly. An ordered reproduction
+proved the Group 1 isolation defect before scoped teardown fixed it; preserve
+the failed full run separately from the final passing run.
+
 ## Integrated Look Automation Planning
 
 A saved profile revision is not proof of Full Auto readiness: appearance
@@ -14,7 +35,7 @@ The existing Full Auto stage arc already removes the confirmed inventory in
 order and ends empty, with a last-item aside stage before that endpoint. Reuse
 it and test the connected save-to-final-prompt journey. Do not create another
 removal algorithm or confuse prompt correctness with image fidelity. Proposal
-completion is planning evidence only; implementation tasks remain unchecked.
+completion alone is planning evidence; see the accepted Group 1 boundary above.
 
 ## Saved Look Archive Tombstone
 

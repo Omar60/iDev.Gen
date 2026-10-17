@@ -1,33 +1,47 @@
 # Latest Session Work
 
-## Current Handoff: Integrated Look Automation Planning
+## Current Handoff: Group 1 Accepted
 
-Deployment `look-auto-profile-20261017` follows Medium. The user requested saving
-the automation profile with the reviewed principal look and progressive removal
-through a final state with no listed garments or accessories. The complete
-framework intake and two bounded read-only support packages are finished; main
-retained architecture and planning decisions.
+Deployment `look-proposals-g1-20261017` used Heavy internal Codex for only
+Tasks 1.1-1.3 of `create-automation-profiles-with-looks`. Main completed framework
+intake and retained architecture, scope and acceptance. G1-EXEC implemented and
+repaired; G1-TEST reviewed actual production/diff and added adversarial tests.
 
-The change is `openspec/changes/create-automation-profiles-with-looks/`:
-proposal, design, three delta specs and 16 unchecked implementation tasks.
-Strict OpenSpec validation passed. Documentation privacy/control checks passed
-with exit zero; the existing EnhanceIn register-field warning remains. No
-production code or tests changed and no live provider/GPU work ran.
+The backend validates a closed prospective schema and exact draft digest,
+maps ordered indices to authenticated saved snapshot keys, proposes manual
+facts through structured assistance with safe 24-hour transient evidence, and
+supports explicit photo automation companions. Historical `{}` extraction stays
+compatible. A malformed companion retains valid ordinary output; a failed
+combined provider call retries ordinary extraction. Neither path creates looks,
+accepted profiles or sessions. Baseline/inventory remain unknown in provider
+suggestions. The photo digest is computed server-side. `docs/looks.md` owns the
+canonical API contract.
 
-The main decisions are one integrated review and atomic save using the existing
-look/profile services; prospective ordered garment indices mapped to real saved
-keys; server-constructed accepted user provenance; durable exact save replay;
-normal-only saving when facts remain incomplete; and sole-ready-profile selection
-scoped to new guided creation. Keep the canonical full-interval removal arc,
-including last-item aside and the later empty endpoint. Require enough takes and
-explicit inventory/baseline facts rather than inventing coverage.
+Independent review found and corrected historical mapping dependence on mutable
+catalogue rows and endpoint leakage through model metadata. Mapping now uses
+the authenticated saved version and target history; retained model metadata is
+sanitized. Regressions also observe no open transaction during remote calls and
+feature disablement before persistence. No required correction remains.
 
-Read `design.md` before implementation. Task 1.1 is first; all 16 tasks remain
-unchecked. The openspec-propose skill requires presenting the artifacts and
-waiting for a subsequent apply request, so this deployment closes paused after
-planning. Do not infer implementation or rendered fidelity from artifact checks.
-No commit or push was made. Initial Git state was clean on main, 47 commits
-ahead of origin/main. No earlier active OpenSpec change was present.
+Independent gates: task checks 46/14/34 passed; complete project-venv Python suite
+3,640 passed, two skipped, 18 warnings; privacy/control 46 passed; strict OpenSpec
+and `git diff --check` passed. Final full run took 375.93 seconds. The skips were the opt-in 500-take benchmark and unavailable symlinks. No frontend files changed. Logs remain outside the
+repository as temporary `g1-*.log` files. No real provider, GPU, runtime config or
+data mutation was used. These checks establish contracts, not image fidelity.
+
+A diagnostic full-suite repeat failed three stage-count assertions. Ordered
+reproduction proved that a new independent photo test left a staged photo.
+A baseline-scoped cleanup fixture fixed that isolation defect without changing
+assertions or production; the ordered reproduction passed 7/7 and the final
+complete suite above passed after the repair. Warnings concern Pydantic field
+shadowing and Starlette/httpx/AnyIO deprecations.
+
+Only 1.1-1.3 are complete (3/16). The user subsequently authorized an acceptance
+commit; no push, sync or archive follows. Final documentation checks passed.
+Create the isolated acceptance commit, finish Archivist reporting, then stop. The next authorized work is
+Group 2, Task 2.1; combined saving and browser integration remain pending.
+Manual proposal expiry is enforced at lookup and opportunistic cleanup; photo
+companions follow their staged proposal lifecycle.
 
 ## Historical Saved Look Archive Handoff
 

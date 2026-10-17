@@ -167,6 +167,14 @@ Verified baseline from the repository layout and application entry points.
   owns their expiry and cleanup. `backend/session_plan.py` applies a selected
   version and a signed, reviewed wardrobe progression to an authoring-v1 plan
   through compare-and-swap, recording exact profile evidence when used.
+  `backend/look_automation.py` validates unaccepted candidates for exact manual
+  drafts and stores only a safe request projection in an additive 24-hour
+  proposal table. `backend/photo_extraction.py` can attach a companion to its
+  stage-bound proposal; the server computes its draft digest after validating
+  the ordinary proposal. Accepted mapping validates the saved snapshot and
+  resolves garment indices from that look's immutable history before the live
+  catalogue fallback. The browser editor does not yet review or save these
+  candidates.
   `frontend/src/appearanceOwnership.js` maps browser UTF-16 selection offsets to
   exact Unicode-scalar spans; `frontend/src/views/Looks.jsx` provides saved-look
   editing, JSON import/export, and photo review.

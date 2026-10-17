@@ -89,6 +89,11 @@ exact saved-look version, so ownership and coverage facts are recorded once
 rather than per take. Its workflow and manual application are documented in
 [Saved looks](docs/looks.md#reusable-automation-profiles); exact profile
 read/write APIs are in [the API reference](docs/looks.md#automation-profile-api).
+The backend also exposes `POST /api/looks/automation-proposals` for transient,
+unaccepted suggestions on exact manual draft content. Photo extraction accepts
+an explicit `include_automation` option while preserving its historical empty
+request and response. These proposals create no look or profile; the current
+browser editor still saves ordinary looks without a combined profile review.
 
 In Looks, **Archive** removes a look from active lists while retaining its
 versions and session history. Archived looks cannot be edited or selected for

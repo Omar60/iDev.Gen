@@ -346,6 +346,21 @@ CREATE TABLE IF NOT EXISTS saved_look_automation_profile (
     PRIMARY KEY (look_key, look_version, profile_revision)
 );
 
+-- Short-lived, unaccepted assistant suggestions for exact pending look text.
+-- These records never allocate a look, catalogue identity or profile revision.
+CREATE TABLE IF NOT EXISTS saved_look_automation_proposal (
+    proposal_id            TEXT PRIMARY KEY CHECK (length(proposal_id) = 32),
+    draft_content_digest   TEXT NOT NULL CHECK (length(draft_content_digest) = 64),
+    source_json            TEXT NOT NULL,
+    request_projection_json TEXT NOT NULL,
+    profile_json           TEXT NOT NULL,
+    created_at             TEXT NOT NULL,
+    expires_at             TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_saved_look_automation_proposal_expiry
+    ON saved_look_automation_proposal(expires_at);
+
 CREATE TRIGGER IF NOT EXISTS saved_look_automation_profile_immutable
 BEFORE UPDATE ON saved_look_automation_profile
 BEGIN
@@ -477,6 +492,23 @@ CREATE TABLE IF NOT EXISTS photo_look_proposal (
     CHECK ((state IN ('pending', 'failed') AND request_projection_json IS NULL AND output_json IS NULL)
         OR (state = 'ready' AND request_projection_json IS NOT NULL AND output_json IS NOT NULL))
 );
+
+-- The opt-in automation candidate belongs to the same photo proposal and is
+-- removed by its existing stage/proposal cleanup lifecycle.
+CREATE TABLE IF NOT EXISTS photo_look_automation_proposal (
+    proposal_id             TEXT PRIMARY KEY REFERENCES photo_look_proposal(proposal_id) ON DELETE CASCADE,
+    photo_id                TEXT NOT NULL,
+    draft_content_digest    TEXT NOT NULL CHECK (length(draft_content_digest) = 64),
+    state                   TEXT NOT NULL CHECK (state IN ('ready', 'unavailable')),
+    request_projection_json TEXT NOT NULL,
+    profile_json            TEXT,
+    created_at              TEXT NOT NULL,
+    CHECK ((state = 'ready' AND profile_json IS NOT NULL)
+        OR (state = 'unavailable' AND profile_json IS NULL))
+);
+
+CREATE INDEX IF NOT EXISTS ix_photo_look_automation_proposal_photo
+    ON photo_look_automation_proposal(photo_id, proposal_id);
 
 CREATE INDEX IF NOT EXISTS ix_photo_look_proposal_stage_generation
     ON photo_look_proposal(photo_id, generation);

@@ -16,6 +16,7 @@ import enhance
 from backend import photo_staging
 from backend import saved_looks
 from backend import resource_planning
+from backend import look_automation
 
 _PROPOSAL_ID = re.compile(r"^[0-9a-f]{32}$")
 _UNRESOLVED_ID = re.compile(r"^u[1-9][0-9]{0,2}$")
@@ -110,9 +111,18 @@ def _validate_output(value: object, config: dict, image_uri: str) -> dict:
     unresolved = value["unresolved"]
     if not isinstance(appearance, str) or len(appearance) > 4000:
         _fail(502, "vision_request_failed", invalid)
+    try:
+        appearance.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        _fail(502, "vision_request_failed", invalid)
     if not isinstance(garments, list) or len(garments) > 64:
         _fail(502, "vision_request_failed", invalid)
     if any(not isinstance(item, str) or not item.strip() or len(item) > 1000 for item in garments):
+        _fail(502, "vision_request_failed", invalid)
+    try:
+        for wording in garments:
+            wording.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
         _fail(502, "vision_request_failed", invalid)
     if not isinstance(unresolved, list) or len(unresolved) > 32:
         _fail(502, "vision_request_failed", invalid)
@@ -130,6 +140,10 @@ def _validate_output(value: object, config: dict, image_uri: str) -> dict:
             or not detail.strip()
             or len(detail) > 1000
         ):
+            _fail(502, "vision_request_failed", invalid)
+        try:
+            detail.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
             _fail(502, "vision_request_failed", invalid)
         ids.add(identity)
         normalized_unresolved.append({"id": identity, "detail": detail})
@@ -270,6 +284,7 @@ def _publish_attempt(
     request_projection: dict,
     output: dict,
     writes_enabled,
+    automation_record: dict | None = None,
 ) -> dict:
     failure = None
     published = False
@@ -320,6 +335,20 @@ def _publish_attempt(
                     json.dumps(output, ensure_ascii=False, separators=(",", ":")),
                     photo_id, proposal_id,
                 )
+                if automation_record is not None:
+                    db.run(
+                        """INSERT INTO photo_look_automation_proposal
+                           (proposal_id, photo_id, draft_content_digest, state,
+                            request_projection_json, profile_json, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        automation_record["proposal_id"],
+                        automation_record["photo_id"],
+                        automation_record["draft_content_digest"],
+                        automation_record["state"],
+                        automation_record["request_projection_json"],
+                        automation_record["profile_json"],
+                        automation_record["created_at"],
+                    )
                 published = True
     if failure is not None:
         raise failure
@@ -333,7 +362,14 @@ def _publish_attempt(
     }
 
 
-async def extract(photo_id: str, config: dict, run_structured, writes_enabled) -> dict:
+async def extract(
+    photo_id: str,
+    config: dict,
+    run_structured,
+    writes_enabled,
+    *,
+    include_automation: bool = False,
+) -> dict:
     """Ask for a proposal without holding a database transaction over HTTP."""
     def live_writes_enabled() -> bool:
         return _writes_enabled(config) and bool(writes_enabled())
@@ -353,7 +389,19 @@ async def extract(photo_id: str, config: dict, run_structured, writes_enabled) -
         raise PhotoExtractionError(503, "resource_planning_disabled", "Saved-look writing is disabled.")
     generation = _start_attempt(photo_id, proposal_id, image, live_writes_enabled)
     request_evidence: dict[str, object] = {}
-    instruction = enhance.EnhanceIn(instruction=_EXTRACTION_INSTRUCTION, image=image_uri)
+    instruction_text = _EXTRACTION_INSTRUCTION
+    if include_automation:
+        instruction_text = instruction_text.replace(
+            "return exactly one JSON object with exactly these keys:",
+            "return one JSON object with these ordinary look keys and the automation field described below:",
+        ).replace(
+            "Do not include confidence scores or any other keys.",
+            "Do not include confidence scores or fields beyond the ordinary look fields and the specified automation field.",
+        ) + "\n\n" + look_automation._PHOTO_INSTRUCTION
+    instruction = enhance.EnhanceIn(instruction=instruction_text, image=image_uri)
+    automation_record = None
+    automation_response = None
+    companion_provider_failed = False
     try:
         if not live_writes_enabled():
             raise PhotoExtractionError(
@@ -361,25 +409,63 @@ async def extract(photo_id: str, config: dict, run_structured, writes_enabled) -
                 "resource_planning_disabled",
                 "Saved-look writing is disabled.",
             )
-        output = await run_structured(
-            config,
-            instruction,
-            image_uri,
-            request_evidence=request_evidence,
-        )
+        try:
+            output = await run_structured(
+                config,
+                instruction,
+                image_uri,
+                request_evidence=request_evidence,
+            )
+        except Exception:
+            if not include_automation:
+                raise
+            if not live_writes_enabled():
+                raise PhotoExtractionError(
+                    503,
+                    "resource_planning_disabled",
+                    "Saved-look writing is disabled.",
+                )
+            # A combined structured response may fail only because the extra
+            # companion shape was not supported. Retry the historical look
+            # extraction independently so a valid ordinary proposal survives.
+            companion_provider_failed = True
+            request_evidence.clear()
+            output = await run_structured(
+                config,
+                enhance.EnhanceIn(instruction=_EXTRACTION_INSTRUCTION, image=image_uri),
+                image_uri,
+                request_evidence=request_evidence,
+            )
         if not live_writes_enabled():
             raise PhotoExtractionError(
                 503,
                 "resource_planning_disabled",
                 "Saved-look writing is disabled.",
             )
-        proposal = _validate_output(output, config, image_uri)
+        if include_automation:
+            base_output = (
+                {key: output[key] for key in _PROPOSAL_KEYS if key in output}
+                if type(output) is dict else output
+            )
+            proposal = _validate_output(base_output, config, image_uri)
+        else:
+            proposal = _validate_output(output, config, image_uri)
         request_projection = _redact_request_evidence(
             request_evidence,
             image_uri=image_uri,
             image=image,
             config=config,
         )
+        if include_automation:
+            automation_record, automation_response = look_automation.prepare_photo_companion(
+                None if companion_provider_failed else output,
+                proposal,
+                request_projection,
+                config,
+                proposal_id,
+                photo_id,
+                "provider_failed" if companion_provider_failed else "invalid_candidate",
+            )
     except HTTPException:
         _discard_attempt(photo_id, proposal_id)
         raise
@@ -394,7 +480,7 @@ async def extract(photo_id: str, config: dict, run_structured, writes_enabled) -
             "The vision provider could not produce a usable look proposal.",
         ) from None
     try:
-        return _publish_attempt(
+        result = _publish_attempt(
             photo_id,
             proposal_id,
             generation,
@@ -402,9 +488,85 @@ async def extract(photo_id: str, config: dict, run_structured, writes_enabled) -
             request_projection,
             proposal,
             live_writes_enabled,
+            automation_record,
         )
+        if automation_response is not None:
+            result["automation"] = automation_response
+        return result
     finally:
         _discard_attempt(photo_id, proposal_id)
+
+
+def get_automation_proposal(photo_id: str, proposal_id: str, draft_content_digest: str) -> dict:
+    """Read an opt-in candidate only from its live, exact photo proposal."""
+    if not _PROPOSAL_ID.fullmatch(proposal_id) or not saved_looks._valid_sha256(draft_content_digest):
+        _fail(422, "photo_proposal_invalid", "Photo automation proposal identity is invalid.")
+    stage = db.one("SELECT * FROM look_photo_stage WHERE photo_id = ?", photo_id)
+    if stage is None or stage["state"] != "staged":
+        raise _stage_error(stage)
+    if datetime.now(timezone.utc) >= photo_staging._parse_iso(stage["expires_at"]):
+        _fail(410, "photo_stage_expired", "This photo stage has expired.")
+    row = db.one(
+        """SELECT a.*, p.generation, p.state AS proposal_state,
+                  p.image_sha256, p.output_json
+           FROM photo_look_automation_proposal AS a
+           JOIN photo_look_proposal AS p ON p.proposal_id = a.proposal_id
+           WHERE a.proposal_id = ? AND a.photo_id = ? AND p.photo_id = ?""",
+        proposal_id, photo_id, photo_id,
+    )
+    if row is None or row["proposal_state"] != "ready" or row["image_sha256"] != stage["source_sha256"]:
+        _fail(409, "photo_proposal_stale", "The photo automation proposal is stale or belongs to another photo.")
+    latest = db.one(
+        "SELECT COALESCE(MAX(generation), 0) AS generation FROM photo_look_proposal WHERE photo_id = ?",
+        photo_id,
+    )["generation"]
+    if row["generation"] != latest or row["draft_content_digest"] != draft_content_digest:
+        _fail(409, "photo_proposal_stale", "The photo automation proposal is stale or belongs to another photo.")
+    try:
+        ordinary = json.loads(row["output_json"])
+        source = saved_looks.canonicalize_prospective_automation_source(
+            ordinary["appearance"],
+            [{"key": None, "wording": wording, "aside": ""} for wording in ordinary["garments"]],
+        )
+        if source["draft_content_digest"] != draft_content_digest:
+            raise ValueError("source digest mismatch")
+        request_projection = json.loads(row["request_projection_json"])
+        if (
+            type(request_projection) is not dict
+            or set(request_projection) != {"model", "parameters", "messages_digest"}
+            or not isinstance(request_projection["model"], str)
+            or type(request_projection["parameters"]) is not dict
+            or set(request_projection["parameters"]) - _REQUEST_PARAMETER_KEYS
+            or not saved_looks._valid_sha256(request_projection["messages_digest"])
+        ):
+            raise ValueError("invalid request evidence")
+        _check_safe_strings(request_projection, {})
+        profile = None
+        if row["state"] == "ready":
+            profile = saved_looks.canonicalize_prospective_automation_profile(
+                json.loads(row["profile_json"]),
+                source["appearance"], [
+                    {"key": item.get("key"), "wording": item["wording"], "aside": item["aside"]}
+                    for item in source["garments"]
+                ],
+            )
+        elif row["state"] != "unavailable":
+            raise ValueError("unknown proposal state")
+    except (
+        KeyError, TypeError, ValueError, json.JSONDecodeError,
+        saved_looks.SavedLookError, PhotoExtractionError,
+    ):
+        _fail(500, "photo_proposal_invalid", "Stored photo automation proposal is invalid.")
+    result = {
+        "proposal_id": proposal_id,
+        "photo_id": photo_id,
+        "draft_content_digest": draft_content_digest,
+        "status": row["state"],
+        "request_projection": request_projection,
+    }
+    if profile is not None:
+        result["profile"] = profile
+    return result
 
 
 def save_review(photo_id: str, review: dict, config: dict, create_look, save_stage) -> dict:
