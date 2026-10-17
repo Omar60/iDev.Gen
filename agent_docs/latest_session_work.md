@@ -1,5 +1,21 @@
 # Latest Session Work
 
+## Saved Look Archive Handoff
+
+Deployment `saved-look-delete-20261016` implemented and verified OpenSpec change
+`archive-saved-looks` (8/8 tasks). Looks now offers a confirmed Archive action.
+The API hides the look from active lists and refuses later writes/selections,
+while exact history, import-receipt replay, session snapshots and active Full
+Auto dependencies remain intact. No restore browser or action is included.
+
+Final gates: full Python 3,602 passed, two skipped, five warnings; frontend 670
+passed in 36 files; frontend build and strict OpenSpec validation passed. The
+bundle-size advisory is unchanged. One intermediate full run exposed test-key
+collision from the permanent tombstone; the test now uses a unique identity,
+the three related import/export modules pass together, and the final full suite
+passes. The working tree remains uncommitted and the OpenSpec change remains
+unarchived. Do not commit, push, or begin another task without explicit authority.
+
 ## Task 7.6 Accepted Handoff
 
 Deployment `full-auto-7-6-20261016` selected only the first unchecked task of

@@ -49,6 +49,8 @@ h3 { font-size: 14px; margin: 0 0 8px; }
 .looks-layout { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 2fr); gap: 14px; margin-top: 14px; align-items: start; }
 .looks-list { display: grid; gap: 6px; margin-top: 10px; }
 .looks-list button { width: 100%; text-align: left; }
+.looks-list-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.looks-list-item > button:last-child { width: auto; text-align: center; }
 .looks-garment { border: 1px solid var(--line); border-radius: 8px; margin: 10px 0; padding: 10px; }
 .looks-garment-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 

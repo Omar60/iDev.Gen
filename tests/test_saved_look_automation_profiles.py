@@ -103,6 +103,29 @@ def test_profile_schema_is_additive_and_recreated_on_reopen(tmp_path, monkeypatc
     assert saved_looks.get_version(saved["key"], saved["version"]) == before
 
 
+def test_archived_look_retains_exact_profile_but_refuses_new_profile_revisions(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = _saved_look()
+    published = _publish(saved, _profile(saved))
+
+    saved_looks.archive(saved["key"])
+
+    assert saved_looks.get_automation_profile(
+        saved["key"], saved["version"], published["profile_revision"],
+        saved["content_digest"], published["profile_digest"],
+    ) == published
+    with pytest.raises(saved_looks.SavedLookError) as error:
+        _publish(saved, _profile(saved, revision=2), expected_revision=1)
+    assert error.value.status_code == 409
+    assert error.value.code == "look_archived"
+    assert db.one(
+        "SELECT COUNT(*) AS count FROM saved_look_automation_profile WHERE look_key = ?",
+        saved["key"],
+    )["count"] == 1
+
+
 def test_profile_revisions_are_immutable_digest_bound_and_exactly_readable(
     tmp_path, monkeypatch,
 ):

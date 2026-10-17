@@ -374,6 +374,21 @@ def test_missing_and_corrupt_look_versions_have_stable_zero_write_failures(
     ) is None
 
 
+def test_archived_look_cannot_be_applied_to_an_existing_session(client, seeded):
+    session_id, _ = _session_with_authoring_plan(
+        client, seeded, "archived saved-look application",
+    )
+    look = _create_look(client, "Retired look", "Retained appearance.", [])
+    assert client.delete(f"/api/looks/{look['key']}").status_code == 200
+    before = _stored_plan_row(session_id)
+
+    response = _apply(client, session_id, look, revision=1)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "look_archived"
+    assert _stored_plan_row(session_id) == before
+
+
 def test_same_content_identity_and_version_changes_freeze_after_generation(
     client, seeded,
 ):

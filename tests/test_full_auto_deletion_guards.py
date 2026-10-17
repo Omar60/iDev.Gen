@@ -233,6 +233,28 @@ def test_settled_run_allows_library_removal_and_keeps_session_snapshot(
         )
 
 
+def test_archiving_look_keeps_active_full_auto_dependencies_valid(client, seeded, monkeypatch):
+    session_id, run_id, _revision, _targets = _create_active_run(
+        client, seeded, monkeypatch,
+    )
+    ids = _bound_ids(run_id)
+    look_key, version = ids["look"]
+    before_run = db.one("SELECT * FROM full_auto_run WHERE run_id = ?", run_id)
+
+    archived = client.delete(f"/api/looks/{look_key}")
+
+    assert archived.status_code == 200, archived.text
+    assert not any(item["key"] == look_key for item in client.get("/api/looks").json())
+    assert client.get(f"/api/looks/{look_key}/versions/{version}").status_code == 200
+    assert db.one(
+        "SELECT 1 FROM saved_look_automation_profile WHERE look_key = ? "
+        "AND look_version = ? AND profile_revision = ?",
+        *ids["profile"][:3],
+    ) is not None
+    assert db.one("SELECT * FROM full_auto_run WHERE run_id = ?", run_id) == before_run
+    assert client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").status_code == 200
+
+
 def test_delete_race_orders_with_create_and_cancel_are_serializable(
     client, seeded, monkeypatch,
 ):

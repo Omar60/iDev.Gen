@@ -344,6 +344,27 @@ def test_manual_saved_look_creation_uses_exact_snapshot_without_profile_or_run(
     )
 
 
+def test_guided_creation_rejects_an_archived_saved_look_without_allocating(client, seeded, monkeypatch):
+    _forbid_external_work(monkeypatch)
+    saved = _make_look()
+    archived = client.delete(f"/api/looks/{saved['key']}")
+    assert archived.status_code == 200, archived.text
+    payload = {
+        "request_id": str(uuid.uuid4()),
+        "character_id": seeded["model_id"],
+        "scene_anchor": _room_anchor(),
+        "photo_count": 2,
+        "mode": "manual",
+        "saved_look": _saved_look_wire(saved),
+    }
+    before = _allocation_counts()
+
+    response = client.post("/api/sessions/guided", json=payload)
+
+    _assert_error(response, 409, "look_archived")
+    assert _allocation_counts() == before
+
+
 @pytest.mark.parametrize("photo_count", [1, 500])
 def test_full_auto_accepts_count_endpoints_with_single_appearance_stage(
     client, seeded, monkeypatch, photo_count,

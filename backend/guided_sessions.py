@@ -464,10 +464,12 @@ def _safe_full_auto_error(exc: Exception) -> GuidedSessionError:
 
 def _selected_saved_look(selection: dict[str, Any]) -> dict:
     try:
-        saved = saved_looks.get_version(selection["look_key"], selection["version"])
+        saved = saved_looks.get_active_version(selection["look_key"], selection["version"])
     except saved_looks.SavedLookError as exc:
         if exc.code == "look_not_found":
             raise GuidedSessionError(404, "look_not_found", "Saved look was not found.") from exc
+        if exc.code == "look_archived":
+            raise GuidedSessionError(409, "look_archived", exc.message) from exc
         raise GuidedSessionError(500, "saved_look_invalid", "The selected saved look could not be read.") from exc
     if saved["content_digest"] != selection["content_digest"]:
         raise GuidedSessionError(

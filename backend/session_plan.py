@@ -4540,7 +4540,7 @@ def apply_saved_look(
             )
         # Preset versions are immutable and this read verifies their stored
         # digest; no browser-supplied appearance or garment data is accepted.
-        saved = saved_looks.get_version(look_key, version)
+        saved = saved_looks.get_active_version(look_key, version)
         profile_application = None
         if profile_revision is not None:
             profile_application = saved_looks.get_reviewed_appearance_projection(

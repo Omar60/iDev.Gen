@@ -81,6 +81,7 @@ describe('Looks manual editor', () => {
     versions = {}
     window.location.hash = ''
     vi.restoreAllMocks()
+    window.confirm = vi.fn()
     vi.spyOn(api, 'get').mockImplementation(async (path) => {
       if (path === '/api/looks') return summaries
       if (path === '/api/wardrobe') return inventory
@@ -188,6 +189,78 @@ describe('Looks manual editor', () => {
     expect(body).not.toHaveProperty('outfit_key')
     expect(container.textContent).not.toContain('garment-one-piece')
     expect(container.textContent).not.toContain('garment-earrings')
+  })
+
+  it('cancels archiving without changing the selected look or sending a request', async () => {
+    summaries = [summary('look-studio', 1, 'Studio look')]
+    versions['look-studio:1'] = savedLook({ version: 1 })
+    await render()
+    await click(button('Studio look · version 1'))
+    const del = vi.spyOn(api, 'del')
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+    await click(button('Archive Studio look'))
+
+    expect(del).not.toHaveBeenCalled()
+    expect(button('Studio look · version 1')).toBeTruthy()
+    expect(field('Look name').value).toBe('Studio look')
+  })
+
+  it('archives the selected look and ignores a stale list response', async () => {
+    summaries = [summary('look-studio', 1, 'Studio look')]
+    versions['look-studio:1'] = savedLook({ version: 1 })
+    let resolveStaleList
+    const staleList = new Promise((resolve) => { resolveStaleList = resolve })
+    let listReads = 0
+    const get = vi.spyOn(api, 'get').mockImplementation(async (path) => {
+      if (path === '/api/looks') {
+        listReads += 1
+        return listReads === 1 ? summaries : staleList
+      }
+      if (path === '/api/wardrobe') return inventory
+      if (path === '/api/config') return { llm_ok: false }
+      const match = path.match(/^\/api\/looks\/([^/]+)\/versions\/(\d+)$/)
+      if (match) return versions[`${decodeURIComponent(match[1])}:${Number(match[2])}`]
+      if (path === '/api/comfy/status') return { online: false, output_dir_ok: true }
+      if (path === '/api/components?all=1') return []
+      throw new Error(`Unexpected GET ${path}`)
+    })
+    const del = vi.spyOn(api, 'del').mockImplementation(async (path) => {
+      expect(path).toBe('/api/looks/look-studio')
+      return { key: 'look-studio', archived: true }
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await render()
+    await click(button('Studio look · version 1'))
+    await click(button('Refresh'))
+
+    await click(button('Archive Studio look'))
+
+    expect(del).toHaveBeenCalledTimes(1)
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('Its versions and session history will be kept.'))
+    expect(button('Studio look · version 1')).toBeFalsy()
+    expect(field('Look name')).toBeFalsy()
+    expect(container.textContent).toContain('Archived Studio look. Its versions and session history are retained.')
+    await act(async () => {
+      resolveStaleList([summary('look-studio', 1, 'Studio look')])
+      await staleList
+    })
+    expect(button('Studio look · version 1')).toBeFalsy()
+  })
+
+  it('keeps a look in the library and reports an archive failure', async () => {
+    summaries = [summary('look-studio', 1, 'Studio look')]
+    const del = vi.spyOn(api, 'del').mockRejectedValue(Object.assign(
+      new Error('The look is protected.'), { status: 409 },
+    ))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await render()
+
+    await click(button('Archive Studio look'))
+
+    expect(del).toHaveBeenCalledTimes(1)
+    expect(button('Studio look · version 1')).toBeTruthy()
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('The look is protected.')
   })
 
   it('loads history and saves an edit as a new immutable version using the latest expected version', async () => {

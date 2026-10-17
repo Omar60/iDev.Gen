@@ -23,6 +23,10 @@ def _look_export_path(look_key: str, version: int) -> str:
     return f"{_look_path(look_key, version)}/export"
 
 
+def _look_archive_path(look_key: str) -> str:
+    return f"/api/looks/{quote(look_key, safe='')}"
+
+
 def _insert_historical_look(look_key: str) -> dict:
     appearance = "Historical appearance."
     outfit = None
@@ -201,6 +205,74 @@ def test_versions_preserve_legacy_rows_name_only_content_and_historical_reads(cl
             "UPDATE saved_look_version SET name = ? WHERE look_key = ? AND version = 1",
             "mutated", v1["key"],
         )
+
+
+def test_archive_hides_a_look_and_preserves_every_exact_version(client):
+    first = client.post("/api/looks", json={"name": "Archive history", "appearance": "First."})
+    assert first.status_code == 200, first.text
+    version_one = first.json()
+    second = client.post(f"/api/looks/{version_one['key']}/versions", json={
+        "expected_version": 1,
+        "name": "Archive history",
+        "appearance": "Second.",
+    })
+    assert second.status_code == 200, second.text
+    version_two = second.json()
+
+    archived = client.delete(_look_archive_path(version_one["key"]))
+
+    assert archived.status_code == 200, archived.text
+    assert archived.json() == {"key": version_one["key"], "archived": True}
+    assert client.get("/api/looks").json() == []
+    assert client.get(_look_path(version_one["key"], 1)).json() == version_one
+    assert client.get(_look_path(version_one["key"], 2)).json() == version_two
+    assert client.get(_look_export_path(version_one["key"], 1)).status_code == 200
+    assert db.one(
+        "SELECT COUNT(*) AS count FROM saved_look_version WHERE look_key = ?",
+        version_one["key"],
+    )["count"] == 2
+    assert db.one(
+        "SELECT COUNT(*) AS count FROM saved_look_archive WHERE look_key = ?",
+        version_one["key"],
+    )["count"] == 1
+    assert client.delete(_look_archive_path(version_one["key"])).json() == archived.json()
+
+    blocked = client.post(f"/api/looks/{version_one['key']}/versions", json={
+        "expected_version": 2,
+        "name": "Invisible version",
+        "appearance": "Third.",
+    })
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "look_archived"
+    assert db.one(
+        "SELECT COUNT(*) AS count FROM saved_look_version WHERE look_key = ?",
+        version_one["key"],
+    )["count"] == 2
+
+
+def test_archive_rejects_unknown_keys_and_disabled_writes(client, monkeypatch):
+    archive_count = db.one("SELECT COUNT(*) AS count FROM saved_look_archive")["count"]
+    missing = client.delete(_look_archive_path("missing-look"))
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "look_not_found"
+    assert db.one("SELECT COUNT(*) AS count FROM saved_look_archive")["count"] == archive_count
+
+    created = client.post("/api/looks", json={"name": "Protected look"})
+    assert created.status_code == 200, created.text
+    look = created.json()
+    monkeypatch.delenv("IDEVGEN_RESOURCE_PLANNING_ENABLED", raising=False)
+    monkeypatch.setitem(main.CONFIG, "resource_planning_enabled", False)
+
+    disabled = client.delete(_look_archive_path(look["key"]))
+
+    assert disabled.status_code == 503
+    assert disabled.json()["detail"]["code"] == "resource_planning_disabled"
+    assert client.get("/api/looks").json() == [{
+        "key": look["key"],
+        "version": 1,
+        "name": "Protected look",
+        "content_digest": look["content_digest"],
+    }]
 
 
 def test_appearance_only_and_blank_garments_are_null_outfits(client):

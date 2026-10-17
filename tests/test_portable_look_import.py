@@ -109,14 +109,14 @@ def _insert_look(key: str, version: int, name: str, appearance: str) -> None:
 
 def test_empty_store_import_round_trips_closed_envelope_and_exact_retry(client):
     envelope = _portable_look()
-    envelope["look"]["key"] = "portable/look\\identity"
+    envelope["look"]["key"] = "portable/look-archive-replay\\identity"
     before = _counts()
 
     preview = _preview(client, envelope)
     assert preview.status_code == 200, preview.text
     reviewed = preview.json()
     assert reviewed["status"] == "ready"
-    assert reviewed["destination"] == {"key": "portable/look\\identity", "version": 3}
+    assert reviewed["destination"] == {"key": "portable/look-archive-replay\\identity", "version": 3}
     assert reviewed["mapping"] == {
         "garments": {"portable-top": "portable-top", "portable-layer": "portable-layer"},
         "outfits": {"portable-outfit": "portable-outfit"},
@@ -128,7 +128,7 @@ def test_empty_store_import_round_trips_closed_envelope_and_exact_retry(client):
     assert result["local_origin"] == "import"
     assert result["portable_annotation"] == envelope["provenance"]
     assert result["no_op"] is False
-    assert result["look"]["key"] == "portable/look\\identity"
+    assert result["look"]["key"] == "portable/look-archive-replay\\identity"
     assert _counts() == {
         "garment": before["garment"] + 2,
         "outfit": before["outfit"] + 1,
@@ -147,6 +147,22 @@ def test_empty_store_import_round_trips_closed_envelope_and_exact_retry(client):
     assert retry_preview["status"] == "already_imported"
     assert retry_preview["destination"] == reviewed["destination"]
     assert _commit(client, envelope, retry_preview).json()["no_op"] is True
+    assert _counts() == {
+        "garment": before["garment"] + 2,
+        "outfit": before["outfit"] + 1,
+        "saved_look_version": before["saved_look_version"] + 1,
+        "saved_look_import_receipt": before["saved_look_import_receipt"] + 1,
+    }
+
+    archived = client.delete(f"/api/looks/{quote(result['look']['key'], safe='')}")
+    assert archived.status_code == 200, archived.text
+    export_path = f"/api/looks/{quote(result['look']['key'], safe='')}/versions/3/export"
+    assert client.get(export_path).status_code == 200
+    assert db.one("SELECT COUNT(*) AS count FROM saved_look_import_receipt")["count"] == 1
+
+    archived_retry = _preview(client, envelope).json()
+    assert archived_retry["status"] == "already_imported"
+    assert _commit(client, envelope, archived_retry).json()["no_op"] is True
     assert _counts() == {
         "garment": before["garment"] + 2,
         "outfit": before["outfit"] + 1,
@@ -204,6 +220,24 @@ def test_conflicts_require_exact_choice_and_older_unused_version_uses_latest_plu
     older_preview = _preview(client, older).json()
     assert older_preview["status"] == "choice_required"
     assert older_preview["choices"][0]["destination"] == {"key": "conflict-look", "version": 5}
+
+
+def test_import_cannot_write_a_new_version_under_an_archived_identity(client):
+    _insert_look("archived-conflict", 3, "Existing", "old appearance")
+    archived = client.delete("/api/looks/archived-conflict")
+    assert archived.status_code == 200, archived.text
+
+    envelope = _portable_look()
+    envelope["look"].update(key="archived-conflict", version=3)
+    preview = _preview(client, envelope).json()
+    assert [item["choice"] for item in preview["choices"]] == ["new_version", "save_copy"]
+    before = _counts()
+
+    refused = _commit(client, envelope, preview, "new_version")
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "look_archived"
+    assert _counts() == before
 
 
 def test_save_copy_shows_catalogue_remapping_and_both_retry_paths_are_no_ops(client):

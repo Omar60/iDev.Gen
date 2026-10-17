@@ -29,6 +29,16 @@ When a version has no saved outfit, its `outfit` is `null`. That only means no
 separate outfit was saved: appearance text may still describe clothing, so
 review it manually.
 
+## Archive a look
+
+Choose **Archive** beside a saved look and confirm the action. The look leaves
+active lists and selectors, but all immutable versions, profile and photo
+evidence, import receipts, and session snapshots remain stored. Exact version
+reads and exports remain available, and active Full Auto work keeps its bound
+look and profile. New versions, profile writes, or imports targeting the
+archived identity are rejected. Archiving cannot be undone from the current UI;
+there is no archive browser or restore action.
+
 ## Current scope
 
 The **Looks** view (`#/looks`) includes reviewed JSON import, selected-version
@@ -483,6 +493,7 @@ remains a separate operation.
 | Request | Result |
 | --- | --- |
 | `GET /api/looks` | Latest summary for each look: `[{key, version, name, content_digest}]`. |
+| `DELETE /api/looks/{key}` | Archive the look identity; removes it from active listings and preserves exact versions and related history. Returns `404` for an unknown key. |
 | `GET /api/looks/{key}/versions/{version}` | Full version: `{key, version, name, content_digest, appearance, outfit}`. |
 | `GET /api/looks/{key}/versions/{version}/export` | Closed self-contained `portable-look-v1` envelope for that immutable version. |
 | `POST /api/looks/import/preview` | Plan an import from a raw `portable-look-v1` envelope or legacy garment/outfit JSON; does not write catalogue or look rows. |

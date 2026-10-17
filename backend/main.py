@@ -1545,6 +1545,7 @@ def _automation_profile_error(exc: saved_looks.SavedLookError) -> JSONResponse:
         "look_data_invalid": "Saved look data is invalid.",
         "look_write_conflict": "Automation profile could not be saved.",
         "resource_planning_disabled": "Saved-look writing is disabled.",
+        "look_archived": "Archived looks cannot be changed or selected for new use.",
         "automation_profile_not_found": "Automation profile was not found.",
         "automation_profile_stale": "Saved look or automation profile changed; reload it and try again.",
         "appearance_ownership_unaccepted": "Appearance ownership has not been accepted.",
@@ -1589,6 +1590,12 @@ class PhotoLookReviewIn(BaseModel):
 @app.get("/api/looks")
 def list_saved_looks():
     return saved_looks.list_latest()
+
+
+@app.delete("/api/looks/{look_key:path}")
+def archive_saved_look(look_key: str):
+    _require_saved_look_writes()
+    return saved_looks.archive(look_key)
 
 
 @app.get("/api/looks/automation-profiles")
@@ -1673,7 +1680,7 @@ def discover_saved_look_automation_profiles(
 def preview_saved_look_automation_profile_copy(p: AutomationProfileCopyPreviewIn):
     """Preview explicitly selected reviewed facts without changing profile storage."""
     try:
-        target = saved_looks.get_version(p.target_look_key, p.target_version)
+        target = saved_looks.get_active_version(p.target_look_key, p.target_version)
         if target["content_digest"] != p.target_content_digest:
             raise saved_looks.SavedLookError(
                 409, "automation_profile_stale",
@@ -7366,7 +7373,7 @@ def apply_saved_look_profile_to_plan(
             503, "resource_planning_disabled", "Resource planning is disabled.",
         )
     try:
-        saved = saved_looks.get_version(p.look_key, p.version)
+        saved = saved_looks.get_active_version(p.look_key, p.version)
         if saved["content_digest"] != p.content_digest:
             return _stable_error(
                 409, "automation_profile_stale",

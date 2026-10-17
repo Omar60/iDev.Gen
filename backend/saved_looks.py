@@ -490,6 +490,9 @@ def list_latest() -> list[dict]:
            JOIN (SELECT look_key, MAX(version) AS version
                  FROM saved_look_version GROUP BY look_key) AS latest
              ON latest.look_key = v.look_key AND latest.version = v.version
+           WHERE NOT EXISTS (
+               SELECT 1 FROM saved_look_archive AS a WHERE a.look_key = v.look_key
+           )
            ORDER BY v.look_key"""
     )
     return [
@@ -501,6 +504,36 @@ def list_latest() -> list[dict]:
         }
         for view in (_read_row(row) for row in rows)
     ]
+
+
+def _require_active_look(look_key: str) -> None:
+    if not _valid_key(look_key):
+        _invalid()
+    if db.one("SELECT 1 FROM saved_look_archive WHERE look_key = ?", look_key) is not None:
+        raise SavedLookError(409, "look_archived", "Archived looks cannot be changed or selected for new use.")
+
+
+def get_active_version(look_key: str, version: int) -> dict:
+    _require_active_look(look_key)
+    return get_version(look_key, version)
+
+
+def archive(look_key: str) -> dict:
+    _require_resource_planning_enabled()
+    if not _valid_key(look_key):
+        _invalid()
+    try:
+        with db.transaction():
+            _require_resource_planning_enabled()
+            if db.one("SELECT 1 FROM saved_look_version WHERE look_key = ? LIMIT 1", look_key) is None:
+                raise SavedLookError(404, "look_not_found", "Saved look was not found.")
+            db.run(
+                "INSERT OR IGNORE INTO saved_look_archive (look_key, archived_at) VALUES (?, ?)",
+                look_key, db.now(),
+            )
+            return {"key": look_key, "archived": True}
+    except sqlite3.IntegrityError:
+        _write_conflict()
 
 
 def get_version(look_key: str, version: int) -> dict:
@@ -989,7 +1022,7 @@ def publish_automation_profile(
     try:
         with db.transaction():
             _require_resource_planning_enabled()
-            saved = get_version(look_key, version)
+            saved = get_active_version(look_key, version)
             if expected_content_digest != saved["content_digest"]:
                 _automation_profile_stale()
             current = db.one(
@@ -1392,7 +1425,7 @@ def copy_reviewed_automation_profile_facts(
             "source_state_explicit": source_state_explicit,
         })
 
-    target_saved = get_version(target_look_key, target_version)
+    target_saved = get_active_version(target_look_key, target_version)
     source = _automation_profile_by_digest(source_profile_digest)
     if source is None:
         raise SavedLookError(
@@ -2216,6 +2249,7 @@ def _require_reviewed_destination(reviewed: dict, actual: dict) -> None:
 
 def _commit_portable_rows(envelope: dict, plan: dict, destination: dict, content_digest: str) -> dict:
     _checked_import_destination(destination)
+    _require_active_look(destination["key"])
     mapping = plan["mapping"]
     garment_mapping = mapping["garments"]
     outfit_mapping = mapping["outfits"]
@@ -3128,6 +3162,7 @@ def create_version(look_key: str, expected_version: int, payload: dict) -> dict:
     try:
         with db.transaction():
             _require_resource_planning_enabled()
+            _require_active_look(look_key)
             history = _history(look_key)
             if not history:
                 raise SavedLookError(404, "look_not_found", "Saved look was not found.")

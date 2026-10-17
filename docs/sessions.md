@@ -1889,8 +1889,11 @@ exact model/workflow IDs, look key/version, and profile revision/digest.
 
 SQLite triggers also reject direct deletion of a bound saved-look version or
 profile revision with `full_auto_in_use` while the run is protected. No
-look/profile DELETE API exists. Even after a run settles, profile-evidence
-foreign keys can still prevent directly deleting a referenced profile revision.
+API permanently deletes a look or profile. `DELETE /api/looks/{look_key}` only
+archives the look from active library listings and preserves its exact version,
+profile, and session evidence rows, so it remains safe while Full Auto is active.
+Even after a run settles, profile-evidence foreign keys can still prevent
+directly deleting a referenced profile revision.
 
 If a bound dependency is removed out of band, a run claim or lease
 reconciliation persists a nonterminal run as `blocked` with

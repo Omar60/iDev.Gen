@@ -90,7 +90,7 @@ Verified baseline from the repository layout and application entry points.
   from deleting sessions, linked shots, and exact model/workflow dependencies
   across direct and cascade paths; `full_auto_in_use` reports affected session
   IDs. SQLite triggers also reject direct deletes of bound saved-look versions
-  or profile revisions while protected; no look/profile DELETE API exists.
+  or profile revisions while protected; no profile DELETE API exists.
   Run claims and lease reconciliation set affected nonterminal runs to
   `blocked`, persist `dependency_missing`, and advance the fence. For
   `cancelled`, `failed`, or `completed_with_errors`, status projects the blocker
@@ -158,13 +158,18 @@ Verified baseline from the repository layout and application entry points.
   profile revisions, emits four deterministic English sentences for chest,
   hips, legs, and feet, and blocks unknown or incomplete accepted facts; partial
   layers never add up to full coverage. It does not certify rendered pixels or
-  unsupported body regions. `backend/photo_staging.py` validates temporary look
-  photos and owns their expiry and cleanup. `backend/session_plan.py` applies a
-  selected version and a signed, reviewed wardrobe progression to an
-  authoring-v1 plan through compare-and-swap, recording exact profile evidence
-  when used. `frontend/src/appearanceOwnership.js` maps browser UTF-16 selection
-  offsets to exact Unicode-scalar spans; `frontend/src/views/Looks.jsx` provides
-  saved-look editing, JSON import/export, and photo review.
+  unsupported body regions. `DELETE /api/looks/{look_key}` writes a permanent
+  `saved_look_archive` tombstone, hiding the look from active lists while
+  retaining exact versions and related profile, photo, import-receipt, and
+  session history and active Full Auto dependencies. Archived looks reject
+  writes and new selections; exact historical reads remain available, with no
+  restore UI. `backend/photo_staging.py` validates temporary look photos and
+  owns their expiry and cleanup. `backend/session_plan.py` applies a selected
+  version and a signed, reviewed wardrobe progression to an authoring-v1 plan
+  through compare-and-swap, recording exact profile evidence when used.
+  `frontend/src/appearanceOwnership.js` maps browser UTF-16 selection offsets to
+  exact Unicode-scalar spans; `frontend/src/views/Looks.jsx` provides saved-look
+  editing, JSON import/export, and photo review.
   `frontend/src/views/AutomationProfileEditor.jsx` edits immutable profiles for
   exact look versions; `frontend/src/components/AutomationProfileSelector.jsx`
   loads exact revisions and displays server readiness.

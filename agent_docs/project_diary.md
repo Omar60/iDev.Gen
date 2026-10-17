@@ -1,5 +1,15 @@
 # Project Diary
 
+## Saved Look Archive Tombstone
+
+Use a permanent tombstone to retire a library identity while retaining exact
+versions and their dependent evidence. Keep historical reads and receipt replay
+available, but fence every path that extends the archived identity. Active Full
+Auto work remains valid because its bound rows are not deleted. Since archive
+tombstones are intentionally permanent, tests that create one need a unique key
+instead of relying on normal row cleanup; otherwise later tests can collide
+with the archived identity.
+
 ## Full Auto Task 7.5 Visual Acceptance
 
 Inspect actual existing outputs independently and bind them to frozen stage,

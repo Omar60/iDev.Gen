@@ -135,10 +135,12 @@ export default function Looks() {
   const [isNew, setIsNew] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [looksLoading, setLooksLoading] = useState(true)
+  const [archivingKey, setArchivingKey] = useState('')
   const [wardrobeLoading, setWardrobeLoading] = useState(true)
   const [lookLoading, setLookLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [looksError, setLooksError] = useState('')
+  const [looksNotice, setLooksNotice] = useState('')
   const [wardrobeError, setWardrobeError] = useState('')
   const [lookError, setLookError] = useState('')
   const [saveError, setSaveError] = useState('')
@@ -182,6 +184,7 @@ export default function Looks() {
     const request = ++looksRequest.current
     setLooksLoading(true)
     setLooksError('')
+    setLooksNotice('')
     try {
       const result = await api.getVersioned('/api/looks')
       if (request !== looksRequest.current) return
@@ -304,6 +307,43 @@ export default function Looks() {
     setPhotoMode('')
     setPhotoProposal(null)
     setPhotoDecisions([])
+  }
+
+  const archiveLook = async (item) => {
+    if (navigationBlocked || !window.confirm(
+      `Archive "${item.name}" from the active library? Its versions and session history will be kept.`,
+    )) return
+    setLooksError('')
+    setLooksNotice('')
+    setArchivingKey(item.key)
+    try {
+      const result = await api.del(`/api/looks/${encodeURIComponent(item.key)}`)
+      if (result?.key !== item.key || result?.archived !== true) {
+        throw new Error('The server did not confirm archiving this look.')
+      }
+      looksRequest.current += 1
+      setLooksLoading(false)
+      setLooks((current) => current.filter((look) => look.key !== item.key))
+      setLooksNotice(`Archived ${item.name}. Its versions and session history are retained.`)
+      if (selectedKey === item.key) {
+        detailRequest.current += 1
+        setSelectedKey('')
+        setSelectedVersion(0)
+        setVersionChoice('')
+        setCurrentLook(null)
+        setForm(null)
+        setIsNew(false)
+        setDirty(false)
+        setLookLoading(false)
+        setLookError('')
+        setSaveError('')
+        setNotice('')
+      }
+    } catch (error) {
+      setLooksError(errorText(error, 'archive this look'))
+    } finally {
+      setArchivingKey('')
+    }
   }
 
   const cancelEdits = () => {
@@ -890,7 +930,7 @@ export default function Looks() {
     }
   }
 
-  const navigationBlocked = saving || dirty || Boolean(photoMode)
+  const navigationBlocked = saving || dirty || Boolean(photoMode) || Boolean(archivingKey)
   const latestVersion = versionText(selectedSummary?.version)
   const requestedVersion = versionText(versionChoice)
   const versionOptions = boundedVersionOptions(latestVersion, versionText(selectedVersion))
@@ -1114,19 +1154,31 @@ export default function Looks() {
             <button type="button" onClick={loadLooks} disabled={looksLoading || navigationBlocked}>Refresh</button>
           </div>
           {looksError && <p className="error" role="alert">{looksError}</p>}
+          {looksNotice && <p role="status">{looksNotice}</p>}
           {looksLoading && <p className="muted">Loading saved looks…</p>}
           {!looksLoading && !looksError && looks.length === 0 && <p className="muted">No saved looks yet.</p>}
           <div className="looks-list">
             {looks.map((item) => (
-              <button
-                type="button"
-                key={item.key}
-                aria-current={selectedKey === item.key ? 'true' : undefined}
-                disabled={navigationBlocked || !versionText(item.version)}
-                onClick={() => openVersion(item.key, item.version)}
-              >
-                {item.name} · version {item.version}
-              </button>
+              <div className="looks-list-item" key={item.key}>
+                <button
+                  type="button"
+                  aria-current={selectedKey === item.key ? 'true' : undefined}
+                  disabled={navigationBlocked || !versionText(item.version)}
+                  onClick={() => openVersion(item.key, item.version)}
+                >
+                  {item.name} · version {item.version}
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  aria-label={`Archive ${item.name}`}
+                  aria-busy={archivingKey === item.key}
+                  disabled={navigationBlocked || !versionText(item.version)}
+                  onClick={() => archiveLook(item)}
+                >
+                  {archivingKey === item.key ? 'Archiving…' : 'Archive'}
+                </button>
+              </div>
             ))}
           </div>
         </aside>

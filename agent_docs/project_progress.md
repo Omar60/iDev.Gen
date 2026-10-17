@@ -1,6 +1,21 @@
 # Project Progress
 
-## Accepted Position
+## Current Deployment: Saved Look Archival
+
+Deployment `saved-look-delete-20261016` implements the `archive-saved-looks`
+change. All 8/8 tasks are checked after verification. `DELETE /api/looks/{key}`
+adds a permanent archive tombstone, hides the identity from active listings,
+and keeps immutable versions, profiles, photo evidence, import receipts, session
+snapshots, and active Full Auto dependencies intact. New writes and selections
+for an archived identity are rejected. No dependency was added.
+
+Full Python passed 3,602 tests with two skips and five existing warnings.
+Frontend passed 670 tests in 36 files; build and strict OpenSpec validation
+passed. A receipt replay after archive is covered. The build retains the
+existing 765.64 kB bundle advisory. The change remains unarchived and
+uncommitted; no push or next task is authorized.
+
+## Previous Accepted Position
 
 Deployment `full-auto-7-6-20261016` accepts only Task 7.6 of
 `automate-resource-session-full-auto`: 41/41 tasks complete. The scenario-level

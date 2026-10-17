@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-16
+goal: Allow users to remove a look from active library listings without deleting
+  historical versions or references.

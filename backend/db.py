@@ -312,6 +312,21 @@ CREATE TABLE IF NOT EXISTS saved_look_version (
     UNIQUE (look_key, version)
 );
 
+CREATE TABLE IF NOT EXISTS saved_look_archive (
+    look_key    TEXT PRIMARY KEY,
+    archived_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS saved_look_archive_immutable
+BEFORE UPDATE ON saved_look_archive
+BEGIN
+    SELECT RAISE(ABORT, 'saved look archives are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS saved_look_archive_permanent
+BEFORE DELETE ON saved_look_archive
+BEGIN
+    SELECT RAISE(ABORT, 'saved look archives cannot be removed');
+END;
+
 CREATE TRIGGER IF NOT EXISTS saved_look_version_immutable
 BEFORE UPDATE ON saved_look_version
 BEGIN

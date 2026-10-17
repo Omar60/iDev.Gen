@@ -89,6 +89,11 @@ exact saved-look version, so ownership and coverage facts are recorded once
 rather than per take. Its workflow and manual application are documented in
 [Saved looks](docs/looks.md#reusable-automation-profiles); exact profile
 read/write APIs are in [the API reference](docs/looks.md#automation-profile-api).
+
+In Looks, **Archive** removes a look from active lists while retaining its
+versions and session history. Archived looks cannot be edited or selected for
+new sessions; the current UI has no restore action. See [Saved looks](docs/looks.md#archive-a-look).
+
 ### Full Auto
 
 Full Auto is an opt-in flow in Resources for an exact room revision in Ready
