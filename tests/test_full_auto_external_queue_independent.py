@@ -764,6 +764,46 @@ def test_deferred_runner_reentry_blocks_expired_authorization_without_dispatch(
     assert fake.interrupted == 0
 
 
+def test_runner_recovery_dependency_drift_blocks_without_crashing_coordinator(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _targets, execute_owner = _approved_execution(
+        client, seeded, monkeypatch,
+    )
+    runner, fake = make_runner()
+    monkeypatch.setattr(main, "runner", runner)
+    resource_full_auto.admit_runner_start(session_id, execute_owner)
+    resource_full_auto.advance_run(
+        execute_owner, "waiting_runner", waiting_reason="runner_busy",
+    )
+    db.run(
+        "UPDATE model SET lora_strength = 0.5 WHERE id = "
+        "(SELECT model_id FROM session WHERE id = ?)",
+        session_id,
+    )
+
+    asyncio.run(asyncio.wait_for(main._coordinate_full_auto_run(run_id), timeout=5))
+
+    view = resource_full_auto.get_run(run_id)
+    assert view["state"] == "blocked"
+    assert view["blocker_code"] == "dependency_changed"
+    status = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}")
+    assert status.status_code == 200, status.text
+    assert "compare_scope" in status.json()["blocker"]["remedies"]
+    comparison = client.get(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume-preflight",
+    )
+    assert comparison.status_code == 409
+    assert comparison.json()["detail"]["code"] == "full_auto_continuity_requires_new_session"
+    assert fake.attempts == 0
+    assert db.q(
+        "SELECT status FROM shot WHERE session_id = ? ORDER BY id", session_id,
+    ) == [{"status": "pending"}] * len(_targets)
+    assert db.q(
+        "SELECT * FROM full_auto_execution_attempt WHERE run_id = ?", run_id,
+    ) == []
+
+
 def test_delayed_task_cleanup_does_not_erase_its_new_coordinator(
     client, seeded, monkeypatch,
 ):

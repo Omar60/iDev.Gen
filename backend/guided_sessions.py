@@ -1689,13 +1689,17 @@ def create_or_replay(
         conflicts = resolution["conflicts"]
         settings["composition_mode"] = session_plan.MODE_RESOURCE_V1
         now = db.now()
+        session_number = db.one(
+            "SELECT COUNT(*) AS count FROM session WHERE model_id = ?",
+            model["id"],
+        )["count"] + 1
         session_id = db.run(
             """INSERT INTO session (
                    model_id, name, look, wardrobe, workflow_id,
                    reference_workflow_id, anchor_shot_ids, settings,
                    manner, checkpoint, room_key, created_at
-               ) VALUES (?, '', '', '', ?, NULL, '[]', ?, '', '', '', ?)""",
-            body["character_id"], binding["workflow_id"],
+               ) VALUES (?, ?, '', '', ?, NULL, '[]', ?, '', '', '', ?)""",
+            body["character_id"], f"Session {session_number}", binding["workflow_id"],
             json.dumps(settings, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
             now,
         )

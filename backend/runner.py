@@ -656,7 +656,11 @@ class Runner:
                    JOIN shot ON shot.id = attempt.shot_id
                    WHERE attempt.run_id = ? AND attempt.session_id = ?
                      AND (attempt.completion_state IN ('pending', 'output_available')
-                          OR shot.status = 'running')
+                          OR shot.status = 'running'
+                          OR (shot.status = 'pending' AND (
+                              attempt.completion_state = 'failed'
+                              OR attempt.dispatch_state = 'rejected'
+                          )))
                      AND attempt.attempt_number = (
                          SELECT MAX(latest.attempt_number) FROM full_auto_execution_attempt latest
                          WHERE latest.shot_id = attempt.shot_id
@@ -715,7 +719,18 @@ class Runner:
                         "SELECT * FROM shot WHERE id = ? AND session_id = ?",
                         attempt["shot_id"], session_id,
                     )
-                    if shot is None or shot["status"] != "running":
+                    terminal_failed_pending_shot = (
+                        shot is not None
+                        and shot["status"] == "pending"
+                        and (
+                            attempt["completion_state"] == "failed"
+                            or attempt["dispatch_state"] == "rejected"
+                        )
+                    )
+                    if shot is None or (
+                        shot["status"] != "running"
+                        and not terminal_failed_pending_shot
+                    ):
                         raise resource_full_auto.FullAutoRunError(
                             409, "execution_outcome_unknown",
                             "A cancellation attempt is not attached to its running shot.",
@@ -788,10 +803,21 @@ class Runner:
         """Settle completed work or report a corroborated active queue match."""
         from backend import resource_full_auto
 
+        prior_epoch_terminal_failure = (
+            int(attempt["run_epoch"]) < heartbeat.run_claim.epoch
+            and shot["status"] == "pending"
+            and (
+                attempt["completion_state"] == "failed"
+                or attempt["dispatch_state"] == "rejected"
+            )
+        )
         if (
             attempt["run_id"] != heartbeat.run_claim.run_id
             or int(attempt["session_id"]) != session_id
-            or int(attempt["run_epoch"]) != heartbeat.run_claim.epoch
+            or (
+                int(attempt["run_epoch"]) != heartbeat.run_claim.epoch
+                and not prior_epoch_terminal_failure
+            )
         ):
             raise resource_full_auto.FullAutoRunError(
                 409, "execution_outcome_unknown",

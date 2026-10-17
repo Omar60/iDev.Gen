@@ -316,7 +316,8 @@ def test_guided_creation_returns_closed_plan_and_persists_one_of_each(client, se
 
     session = db.one("SELECT * FROM session WHERE id = ?", result["session_id"])
     assert session is not None
-    assert session["name"] == session["look"] == session["wardrobe"] == ""
+    assert session["name"] == "Session 1"
+    assert session["look"] == session["wardrobe"] == ""
     assert session["workflow_id"] == seeded["workflow_id"]
     assert json.loads(session["settings"])["composition_mode"] == "resource-v1"
     assert json.loads(session["settings"])["width"] == 832
@@ -331,6 +332,16 @@ def test_guided_creation_returns_closed_plan_and_persists_one_of_each(client, se
     assert stored_request["request_id"] == payload["request_id"]
     assert stored_request["response_json"].encode("utf-8") == response.content
     assert _counts() == tuple(value + 1 for value in before)
+
+    second_response = client.post(
+        "/api/sessions/guided", json=_body(seeded, anchor),
+    )
+    assert second_response.status_code == 201, second_response.text
+    second_session = db.one(
+        "SELECT name FROM session WHERE id = ?", second_response.json()["session_id"],
+    )
+    assert second_session == {"name": "Session 2"}
+    assert _counts() == tuple(value + 2 for value in before)
 
 
 @pytest.mark.parametrize("field", ["saved_look", "full_auto"])

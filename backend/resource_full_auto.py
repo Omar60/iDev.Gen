@@ -1553,11 +1553,7 @@ def unresolved_work_count(
         try:
             expected = int(current_authorization(run_id)["authorization"]["summary"]["photo_count"])
             linked = db.q(
-                """SELECT sh.id, sh.session_id, sh.status,
-                          (SELECT attempt.completion_state FROM full_auto_execution_attempt attempt
-                           WHERE attempt.shot_id = sh.id ORDER BY attempt.attempt_number DESC LIMIT 1) AS attempt_state,
-                          (SELECT attempt.run_id FROM full_auto_execution_attempt attempt
-                           WHERE attempt.shot_id = sh.id ORDER BY attempt.attempt_number DESC LIMIT 1) AS attempt_run_id
+                """SELECT sh.id, sh.session_id
                    FROM full_auto_submission_receipt receipt
                    LEFT JOIN shot sh ON sh.id = receipt.shot_id
                    WHERE receipt.run_id = ?""",
@@ -1565,17 +1561,9 @@ def unresolved_work_count(
             )
             if len(linked) != expected:
                 count += 1
+            # The session scan counts valid linked shots; receipts only guard missing or foreign links here.
             count += sum(
                 shot["id"] is None or shot["session_id"] != session_id
-                or (
-                    int(shot["id"]) not in ignored
-                    and shot["status"] not in {"done", "cancelled"}
-                    and not (
-                        shot["status"] == "failed"
-                        and shot["attempt_run_id"] == run_id
-                        and shot["attempt_state"] == "failed"
-                    )
-                )
                 for shot in linked
             )
         except (FullAutoRunError, TypeError, KeyError, ValueError):
@@ -4999,17 +4987,45 @@ def _attempt_matches_claim(attempt: dict, claim: RunClaim, runner_claim: RunnerC
 
 def _attempt_matches_recovery_claim(
     attempt: dict, claim: RunClaim, runner_claim: RunnerClaim,
+    *, allow_authorized_prior_epoch_retry: bool = False,
 ) -> bool:
     if not _authentic_claim(claim) or not isinstance(runner_claim, RunnerClaim):
         return False
     expected_runner_signature = hmac.new(
         _RUNNER_CLAIM_KEY, _runner_claim_payload(runner_claim), hashlib.sha256,
     ).hexdigest()
+    attempt_epoch = int(attempt["run_epoch"])
+    epoch_matches = attempt_epoch == claim.epoch
+    if (
+        not epoch_matches
+        and allow_authorized_prior_epoch_retry
+        and claim.requires_reconciliation
+        and attempt_epoch < claim.epoch
+        and attempt["completion_state"] == "failed"
+        and attempt["dispatch_state"] in {"acknowledged", "rejected"}
+    ):
+        epoch_matches = db.one(
+            """SELECT 1 FROM full_auto_attempt_retry_authorization authorization
+               WHERE authorization.attempt_id = ? AND authorization.run_id = ?
+                 AND authorization.session_id = ? AND authorization.shot_id = ?
+                 AND authorization.run_epoch = ?
+                 AND EXISTS (
+                     SELECT 1 FROM full_auto_execution_attempt latest
+                     WHERE latest.attempt_id = authorization.attempt_id
+                       AND latest.attempt_number = (
+                           SELECT MAX(current.attempt_number)
+                           FROM full_auto_execution_attempt current
+                           WHERE current.shot_id = authorization.shot_id
+                       )
+                 )""",
+            attempt["attempt_id"], claim.run_id, claim.session_id,
+            attempt["shot_id"], claim.epoch,
+        ) is not None
     return (
         hmac.compare_digest(expected_runner_signature, runner_claim._signature)
         and attempt["run_id"] == claim.run_id == runner_claim.run_id
         and int(attempt["session_id"]) == claim.session_id == runner_claim.session_id
-        and int(attempt["run_epoch"]) == claim.epoch
+        and epoch_matches
         and int(attempt["run_fencing_token"]) <= claim.fencing_token
         and int(attempt["runner_fencing_token"]) <= runner_claim.fencing_token
         and runner_claim.owner_kind == "full_auto"
@@ -5124,21 +5140,30 @@ def require_cancellation_attempt_owner(
     runner_claim: RunnerClaim,
     *,
     now_text: str | None = None,
+    allow_terminal_failed_pending_shot: bool = False,
 ) -> dict:
     require_cancellation_runner_claim(
         claim.session_id, claim, runner_claim, now_text=now_text,
     )
-    if not _attempt_matches_recovery_claim(attempt, claim, runner_claim):
-        raise FullAutoRunError(
-            409, "run_owner_stale",
-            "The Full Auto cancellation attempt owner is stale.",
-        )
     shot = db.one(
         "SELECT session_id, status FROM shot WHERE id = ?", attempt["shot_id"],
     )
+    terminal_failed_pending_shot = (
+        allow_terminal_failed_pending_shot
+        and shot is not None
+        and shot["status"] == "pending"
+        and (
+            attempt["completion_state"] == "failed"
+            or attempt["dispatch_state"] == "rejected"
+        )
+    )
     if (
-        shot is None or int(shot["session_id"]) != claim.session_id
-        or shot["status"] != "running"
+        not _attempt_matches_recovery_claim(
+            attempt, claim, runner_claim,
+            allow_authorized_prior_epoch_retry=terminal_failed_pending_shot,
+        )
+        or shot is None or int(shot["session_id"]) != claim.session_id
+        or (shot["status"] != "running" and not terminal_failed_pending_shot)
     ):
         raise FullAutoRunError(
             409, "run_owner_stale", "The Full Auto cancellation shot is stale.",
@@ -5352,9 +5377,18 @@ def finish_execution_attempt(
             raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution result is stale.")
         if recovery and cancellation_recovery:
             raise FullAutoRunError(422, "execution_attempt_invalid", "The recovery authority is invalid.")
+        terminal_failed_pending_shot = (
+            cancellation_recovery
+            and outcome == "failed"
+            and (
+                attempt["completion_state"] == "failed"
+                or attempt["dispatch_state"] == "rejected"
+            )
+        )
         if cancellation_recovery:
             require_cancellation_attempt_owner(
                 attempt, claim, runner_claim, now_text=timestamp,
+                allow_terminal_failed_pending_shot=terminal_failed_pending_shot,
             )
         elif recovery:
             _require_execution_recovery_owner(
@@ -5376,7 +5410,10 @@ def finish_execution_attempt(
             "SELECT status FROM shot WHERE id = ? AND session_id = ?",
             attempt["shot_id"], attempt["session_id"],
         )
-        if shot is None or shot["status"] != "running":
+        if shot is None or (
+            shot["status"] != "running"
+            and not (terminal_failed_pending_shot and shot["status"] == "pending")
+        ):
             raise FullAutoRunError(409, "run_owner_stale", "The Full Auto shot result is stale.")
         if outcome == "completed":
             if (

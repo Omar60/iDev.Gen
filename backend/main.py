@@ -6088,6 +6088,14 @@ async def _coordinate_full_auto_run(run_id: str) -> None:
                     if exc.code in {"runner_busy", "run_already_claimed"}:
                         await asyncio.sleep(_FULL_AUTO_COORDINATOR_RETRY_SECONDS)
                         break
+                    if exc.code == "dependency_changed":
+                        try:
+                            resource_full_auto.advance_run(
+                                claim, "blocked", blocker_code=exc.code,
+                            )
+                        except resource_full_auto.FullAutoRunError:
+                            pass
+                        return
                     raise
                 if not started:
                     await asyncio.sleep(_FULL_AUTO_COORDINATOR_RETRY_SECONDS)

@@ -118,6 +118,200 @@ def test_cancel_before_runner_admission_keeps_linked_ids_for_explicit_continuati
     ) == {"n": len(targets)}
 
 
+def test_explicit_reconciliation_settles_rejected_attempt_left_on_pending_shot(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner = submission._approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner(fail_queue=True)
+    original_finish = resource_full_auto.finish_execution_attempt
+
+    def exit_before_shot_settlement(*_args, **_kwargs):
+        raise RuntimeError("simulated exit after the rejected dispatch was saved")
+
+    monkeypatch.setattr(
+        resource_full_auto, "finish_execution_attempt", exit_before_shot_settlement,
+    )
+
+    async def stop_after_rejected_dispatch():
+        assert runner.start(session_id, _full_auto_claim=execute_owner)
+        await runner._task
+
+    asyncio.run(stop_after_rejected_dispatch())
+    monkeypatch.setattr(
+        resource_full_auto, "finish_execution_attempt", original_finish,
+    )
+    attempt = db.one(
+        "SELECT * FROM full_auto_execution_attempt WHERE run_id = ?", run_id,
+    )
+    assert attempt["dispatch_state"] == "rejected"
+    assert attempt["completion_state"] == "failed"
+    assert db.one("SELECT status FROM shot WHERE id = ?", attempt["shot_id"]) == {
+        "status": "running",
+    }
+
+    # Model a persisted row whose terminal attempt was saved but whose shot
+    # status remained pending when the process stopped.
+    db.run("UPDATE shot SET status='pending' WHERE id = ?", attempt["shot_id"])
+    scheduled = []
+    monkeypatch.setattr(
+        main, "_schedule_full_auto_cancellation",
+        lambda *args: scheduled.append(args),
+    )
+    cancelled = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
+        json=_control_body(run_id),
+    )
+    assert cancelled.status_code == 202, cancelled.text
+    assert resource_full_auto.unresolved_work_count(session_id, run_id) == 1
+
+    db.run(
+        "UPDATE full_auto_run SET lease_expires_at = ? WHERE run_id = ?",
+        "2000-01-01T00:00:00+00:00", run_id,
+    )
+    db.run(
+        "UPDATE global_runner_claim SET lease_expires_at = ? WHERE singleton = 1",
+        "2000-01-01T00:00:00+00:00",
+    )
+    reconcile = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume",
+        json=_control_body(run_id),
+    )
+    assert reconcile.status_code == 202, reconcile.text
+    assert reconcile.json()["state"] == "cancel_requested"
+    assert len(scheduled) == 2
+
+    scheduled_run_id, scheduled_session_id, claim = scheduled[-1]
+    assert (scheduled_run_id, scheduled_session_id) == (run_id, session_id)
+    asyncio.run(main._reconcile_full_auto_cancellation(run_id, session_id, claim))
+
+    assert resource_full_auto.get_run(run_id)["state"] == "cancelled"
+    assert resource_full_auto.require_session_mutation_allowed(session_id) is None
+    assert db.one("SELECT status FROM shot WHERE id = ?", attempt["shot_id"]) == {
+        "status": "failed",
+    }
+    assert resource_full_auto.unresolved_work_count(session_id, run_id) == 0
+    saved_attempt = db.one(
+        "SELECT dispatch_state, completion_state FROM full_auto_execution_attempt "
+        "WHERE attempt_id = ?", attempt["attempt_id"],
+    )
+    assert saved_attempt == {"dispatch_state": "rejected", "completion_state": "failed"}
+    assert fake.attempts == 1
+
+
+def test_cancellation_reconciles_prior_epoch_failure_only_with_retry_authorization(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner = submission._approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner(fail_first=1)
+
+    async def run_initial_attempt():
+        assert runner.start(session_id, _full_auto_claim=execute_owner)
+        await runner._task
+
+    asyncio.run(run_initial_attempt())
+    attempt = db.one(
+        "SELECT * FROM full_auto_execution_attempt WHERE run_id = ?", run_id,
+    )
+    assert attempt["completion_state"] == "failed"
+    assert db.one("SELECT status FROM shot WHERE id = ?", attempt["shot_id"]) == {
+        "status": "failed",
+    }
+
+    quote_response = client.get(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume-preflight",
+    )
+    assert quote_response.status_code == 200, quote_response.text
+    quote = quote_response.json()
+    run = resource_full_auto.get_run(run_id)
+    retry = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume",
+        json={
+            "request_id": str(uuid.uuid4()),
+            "expected_run_revision": run["revision"],
+            "expected_plan_revision": run["plan_revision"],
+            "scope_digest": quote["scope_digest"],
+            "comparison_issued_at": quote["comparison_issued_at"],
+            "retry_failed_shots": True,
+            "accept_unknown_outcome_risk": False,
+        },
+    )
+    assert retry.status_code == 202, retry.text
+    grant = db.one(
+        "SELECT * FROM full_auto_attempt_retry_authorization WHERE attempt_id = ?",
+        attempt["attempt_id"],
+    )
+    assert grant["run_epoch"] == retry.json()["epoch"] > attempt["run_epoch"]
+    assert db.one("SELECT status FROM shot WHERE id = ?", attempt["shot_id"]) == {
+        "status": "pending",
+    }
+    initial_attempt_count = fake.attempts
+    assert initial_attempt_count == 4
+
+    scheduled = []
+    monkeypatch.setattr(
+        main, "_schedule_full_auto_cancellation",
+        lambda *args: scheduled.append(args),
+    )
+    monkeypatch.setattr(main, "runner", runner)
+    cancelled = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
+        json=_control_body(run_id),
+    )
+    assert cancelled.status_code == 202, cancelled.text
+    assert cancelled.json()["state"] == "cancel_requested"
+
+    db.run(
+        "UPDATE full_auto_run SET lease_expires_at = ? WHERE run_id = ?",
+        "2000-01-01T00:00:00+00:00", run_id,
+    )
+    reconcile = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume",
+        json=_control_body(run_id),
+    )
+    assert reconcile.status_code == 202, reconcile.text
+    claim = scheduled[-1][2]
+    assert claim.requires_reconciliation is True
+    assert claim.epoch == grant["run_epoch"]
+
+    probe_runner_claim = resource_full_auto.acquire_runner_claim(
+        session_id, run_claim=claim, recovery=True, cancellation_recovery=True,
+    )
+    assert probe_runner_claim is not None
+    attempt_without_grant = dict(attempt)
+    attempt_without_grant["attempt_id"] = f"{attempt['attempt_id']}-without-grant"
+    with pytest.raises(resource_full_auto.FullAutoRunError) as unauthorized:
+        resource_full_auto.require_cancellation_attempt_owner(
+            attempt_without_grant, claim, probe_runner_claim,
+            allow_terminal_failed_pending_shot=True,
+        )
+    assert unauthorized.value.code == "run_owner_stale"
+    assert resource_full_auto.release_runner_claim(probe_runner_claim)
+
+    asyncio.run(main._reconcile_full_auto_cancellation(run_id, session_id, claim))
+
+    view = resource_full_auto.get_run(run_id)
+    assert view["state"] == "cancelled"
+    assert resource_full_auto.require_session_mutation_allowed(session_id) is None
+    assert db.one("SELECT status FROM shot WHERE id = ?", attempt["shot_id"]) == {
+        "status": "failed",
+    }
+    assert resource_full_auto.unresolved_work_count(session_id, run_id) == 0
+    assert db.one(
+        "SELECT run_epoch, completion_state FROM full_auto_execution_attempt WHERE attempt_id = ?",
+        attempt["attempt_id"],
+    ) == {"run_epoch": attempt["run_epoch"], "completion_state": "failed"}
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM full_auto_execution_attempt WHERE run_id = ?", run_id,
+    ) == {"n": initial_attempt_count}
+    assert fake.attempts == initial_attempt_count
+
+
 def test_cancel_during_assistant_post_keeps_physical_fence_and_discards_late_response(
     client, seeded, monkeypatch,
 ):
