@@ -619,6 +619,15 @@ Deleting a Full Auto session, linked shot or dependent model/workflow/look/profi
 - **WHEN** a model delete races an active Full Auto run
 - **THEN** one serialized decision refuses deletion with affected session details and preserves durable work
 
+### Requirement: Archived looks retain active Full Auto dependencies
+
+Archiving a saved look SHALL retain the exact saved-look version and automation-profile rows used by a Full Auto run. Archiving SHALL not cancel, block, or invalidate that run. Existing Full Auto dependency checks SHALL continue to resolve the retained exact identities; destructive deletion of dependent rows remains subject to the existing `full_auto_in_use` protections.
+
+#### Scenario: Archive a look used by an active run
+- **WHEN** a user archives a look referenced by an active or unsettled Full Auto run
+- **THEN** archiving succeeds and removes the look from active library listings
+- **AND** the run's exact look and profile dependencies remain present and valid
+
 ### Requirement: Numeric ID reuse does not revive stale authority
 
 A deleted and later reused numeric session ID SHALL not grant authority to an old run/epoch/fence.

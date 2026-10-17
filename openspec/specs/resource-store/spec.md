@@ -182,6 +182,43 @@ Personal looks SHALL remain separate from immutable mined resources. Editing a s
 - **WHEN** a used look is saved with different garment wording
 - **THEN** a new version or record is created without mutating prior versions or legacy keys
 
+### Requirement: Saved look archival preserves stored history
+
+The system SHALL archive a saved-look identity without deleting its immutable versions or associated records. Archived looks SHALL be omitted from active saved-look listings.
+
+#### Scenario: Archive a look with multiple versions
+- **WHEN** a user archives a saved look
+- **THEN** the look no longer appears in active look listings
+- **AND** all versions, profiles, photo evidence, import receipts, and session snapshots remain unchanged
+
+### Requirement: Archived look history remains readable
+
+Exact reads and exports of archived versions SHALL remain available. Read-only receipt replays SHALL remain valid when they perform no writes.
+
+#### Scenario: Read archived history
+- **WHEN** a client requests an exact archived version or its export
+- **THEN** the same immutable historical content remains available
+
+### Requirement: Archived look writes are refused
+
+Version creation, profile publication or copy targets, and imports writing to an archived identity SHALL fail with `409 look_archived` and SHALL NOT write look, profile, catalogue, or receipt data.
+
+#### Scenario: Write to an archived look
+- **WHEN** a request attempts a new version, profile write, or import under an archived identity
+- **THEN** it returns `409 look_archived` without writes
+
+### Requirement: Saved look archive requests are stable
+
+Repeated archive requests for an existing look SHALL succeed. Archiving an unknown identity SHALL return `404 look_not_found`.
+
+#### Scenario: Retry archiving an existing look
+- **WHEN** a user archives the same existing look more than once
+- **THEN** each request succeeds without creating duplicate archive records
+
+#### Scenario: Archive an unknown look
+- **WHEN** a user archives a key with no saved versions
+- **THEN** the request returns `404 look_not_found` and stores no archive record
+
 ### Requirement: Photo look extraction is an explicitly reviewed proposal
 
 The system SHALL accept one browser-selected JPEG, PNG or WebP look image per operation, up to 10 MiB file bytes and 25 megapixels decoded. It SHALL validate actual image content, stage it privately behind opaque identifiers, and require an explicit extraction action before sending it to the configured vision assistant. Extraction SHALL be considered available only when the normal assistant endpoint/model are configured and a non-empty `llm_vision_model` has been selected from verified discovery or explicitly declared by the local operator. A detected visual text model SHALL be stored explicitly as that vision model. Extraction SHALL never fall back from an empty vision-model setting to the text-only model. It SHALL NOT infer person identity, unseen garments, background, camera or pose as accepted look content.
