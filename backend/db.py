@@ -390,6 +390,23 @@ BEGIN
     SELECT RAISE(ABORT, 'saved photo evidence is immutable');
 END;
 
+-- The client request identity and accepted review are durable even after a
+-- staged photo has been cleaned. The request JSON contains no image bytes.
+CREATE TABLE IF NOT EXISTS saved_look_combined_save_receipt (
+    request_id          TEXT PRIMARY KEY CHECK (length(request_id) = 36),
+    request_digest      TEXT NOT NULL CHECK (length(request_digest) = 64),
+    input_digest        TEXT NOT NULL CHECK (length(input_digest) = 64),
+    request_json        TEXT NOT NULL,
+    result_json         TEXT NOT NULL,
+    created_at          TEXT NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS saved_look_combined_save_receipt_immutable_update
+BEFORE UPDATE ON saved_look_combined_save_receipt
+BEGIN
+    SELECT RAISE(ABORT, 'combined look save receipts are immutable');
+END;
+
 -- A portable import receipt remembers the pre-remap source identity and the
 -- exact local version/catalogue keys produced by one import. It is separate
 -- from the closed export envelope and immutable alongside the saved version.

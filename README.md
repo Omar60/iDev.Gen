@@ -92,8 +92,12 @@ read/write APIs are in [the API reference](docs/looks.md#automation-profile-api)
 The backend also exposes `POST /api/looks/automation-proposals` for transient,
 unaccepted suggestions on exact manual draft content. Photo extraction accepts
 an explicit `include_automation` option while preserving its historical empty
-request and response. These proposals create no look or profile; the current
-browser editor still saves ordinary looks without a combined profile review.
+request and response. These proposals create no look or profile. Reviewed API
+clients can add `request_id` and the four-confirmation `automation` companion
+to create a look version and its ready profile revision 1 atomically, with
+durable idempotent replay. The current browser editor still saves ordinary
+looks without the combined profile review; incomplete profiles can use that
+explicit look-only path. The portable look-v1 format remains unchanged.
 
 In Looks, **Archive** removes a look from active lists while retaining its
 versions and session history. Archived looks cannot be edited or selected for

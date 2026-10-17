@@ -1,5 +1,21 @@
 # Project Diary
 
+## Atomic Look and Profile Acceptance
+
+Keep the existing look allocator, profile publisher and readiness checker under
+one outer transaction, including photo evidence and both retry receipts. Cleanup
+must remain a post-commit callback; a rejected combined save never falls back to
+an ordinary look. Build accepted user provenance on the server and retain the
+original suggestion separately from renewed final review.
+
+Independent replay probes caught two required defects. A new look with changed
+wording can allocate a different garment key; later replay must use recorded
+original reference definitions instead of a mutable catalogue lookup. Durable
+request evidence also needs submitted/resolved/destination consistency and a
+recomputed input digest, preserving the input profile before canonical ordering.
+Both regressions passed after repair. Only Group 2 is newly accepted; browser
+integration and connected Full Auto acceptance remain later work.
+
 ## Prospective Look Automation Acceptance
 
 Keep draft identity distinct from final saved snapshot identity. Photo models

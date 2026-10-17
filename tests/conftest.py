@@ -208,7 +208,8 @@ def client(monkeypatch):
     db.run("DELETE FROM full_auto_run")
     for table in ("shot", "session", "model", "workflow", "cell", "component", "reading",
                   "garment", "outfit", "saved_look_photo_evidence",
-                  "saved_look_automation_profile", "saved_look_version"):
+                  "saved_look_automation_profile", "saved_look_combined_save_receipt",
+                  "saved_look_version"):
         db.run(f"DELETE FROM {table}")
 
 

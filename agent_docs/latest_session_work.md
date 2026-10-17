@@ -1,47 +1,45 @@
 # Latest Session Work
 
-## Current Handoff: Group 1 Accepted
+## Current Handoff: Group 2 Accepted
 
-Deployment `look-proposals-g1-20261017` used Heavy internal Codex for only
-Tasks 1.1-1.3 of `create-automation-profiles-with-looks`. Main completed framework
-intake and retained architecture, scope and acceptance. G1-EXEC implemented and
-repaired; G1-TEST reviewed actual production/diff and added adversarial tests.
+Deployment `looks-g2-20261017` completed only Tasks 2.1-2.3 of
+`create-automation-profiles-with-looks` through internal Heavy Codex. Main read
+all framework/change artifacts and retained architecture, scope and acceptance.
+The clean baseline was `b7ab1c5`, the accepted Group 1 commit. Independent
+prerequisite verification reran 48 focused tests and strict OpenSpec.
 
-The backend validates a closed prospective schema and exact draft digest,
-maps ordered indices to authenticated saved snapshot keys, proposes manual
-facts through structured assistance with safe 24-hour transient evidence, and
-supports explicit photo automation companions. Historical `{}` extraction stays
-compatible. A malformed companion retains valid ordinary output; a failed
-combined provider call retries ordinary extraction. Neither path creates looks,
-accepted profiles or sessions. Baseline/inventory remain unknown in provider
-suggestions. The photo digest is computed server-side. `docs/looks.md` owns the
-canonical API contract.
+G2-EXEC implemented the closed automation/request-ID companion, common atomic
+save and durable receipt service, existing photo callbacks, and compatibility
+boundaries. The service publishes exact profile revision 1 with server-built
+user provenance and authoritative readiness; original suggestions and final
+review remain distinct evidence. No combined failure falls back to look-only.
+Photo stage results, evidence and the global receipt share the outer commit;
+cleanup warnings preserve the accepted pair. New versions do not rewrite older
+profiles or session snapshots. Portable-v1 and historical data stay unchanged.
+The canonical API contract is in `docs/looks.md`; browser review is not included.
 
-Independent review found and corrected historical mapping dependence on mutable
-catalogue rows and endpoint leakage through model metadata. Mapping now uses
-the authenticated saved version and target history; retained model metadata is
-sanitized. Regressions also observe no open transaction during remote calls and
-feature disablement before persistence. No required correction remains.
+G2-TEST independently inspected the diff/persistence and added eight adversarial
+cases. Review reproduced replay failure after removal of a changed garment's
+original catalogue key, then a material submitted/resolved-content mismatch in
+the receipt. Executor repaired both; Tester reran both regressions and the full
+required gate. Immutable reference definitions now support replay independently
+of mutable source rows, and durable input projection is digest-checked against
+resolved content and the saved destination. No required correction remains.
 
-Independent gates: task checks 46/14/34 passed; complete project-venv Python suite
-3,640 passed, two skipped, 18 warnings; privacy/control 46 passed; strict OpenSpec
-and `git diff --check` passed. Final full run took 375.93 seconds. The skips were the opt-in 500-take benchmark and unavailable symlinks. No frontend files changed. Logs remain outside the
-repository as temporary `g1-*.log` files. No real provider, GPU, runtime config or
-data mutation was used. These checks establish contracts, not image fidelity.
+Final independent evidence: eight adversarial cases passed; focused eight-module
+matrix 176 passed and one skipped; complete project-venv Python suite 3,688
+passed, two skipped and 18 warnings in 422.19 seconds, exit zero. Privacy/control
+passed 46 tests; strict OpenSpec and diff checks including three new files passed.
+No frontend files changed, so frontend test/build were not required. Warnings
+concern Pydantic field shadowing and Starlette/httpx/AnyIO deprecations. The
+Executor's interrupted earlier full run is not passing evidence. All tests used
+temporary storage and fake providers, without real data/config or generation.
 
-A diagnostic full-suite repeat failed three stage-count assertions. Ordered
-reproduction proved that a new independent photo test left a staged photo.
-A baseline-scoped cleanup fixture fixed that isolation defect without changing
-assertions or production; the ordered reproduction passed 7/7 and the final
-complete suite above passed after the repair. Warnings concern Pydantic field
-shadowing and Starlette/httpx/AnyIO deprecations.
-
-Only 1.1-1.3 are complete (3/16). The user subsequently authorized an acceptance
-commit; no push, sync or archive follows. Final documentation checks passed.
-Create the isolated acceptance commit, finish Archivist reporting, then stop. The next authorized work is
-Group 2, Task 2.1; combined saving and browser integration remain pending.
-Manual proposal expiry is enforced at lookup and opportunistic cleanup; photo
-companions follow their staged proposal lifecycle.
+Main accepted only 2.1-2.3 and marked them complete, reaching 6/16. Only closure
+documentation/task marks follow the final production gate; compact checks and
+the user-authorized isolated commit complete this handoff. Archivist seals the
+read-only Git handoff and exact Heavy usage report. Stop at Group 2: no Group 3,
+push, sync, archive or claim of real image fidelity.
 
 ## Historical Saved Look Archive Handoff
 

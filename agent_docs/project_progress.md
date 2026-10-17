@@ -1,37 +1,37 @@
 # Project Progress
 
-## Current Deployment: Prospective Look Automation
+## Current Deployment: Group 2 Accepted
 
-Deployment `look-proposals-g1-20261017` uses Heavy internal Codex for
-`create-automation-profiles-with-looks`. Main accepted only Group 1, Tasks
-1.1-1.3, after independent code/diff review and verification. Progress is 3/16.
-Executor owned production and repair; Tester independently reproduced and
-verified the historical-key and private-model-metadata corrections.
+Deployment `looks-g2-20261017` used Heavy internal Codex for only Tasks 2.1-2.3
+of `create-automation-profiles-with-looks`. Main accepted the group after
+independent verification and two targeted replay repairs. Progress is 6/16.
+The initially clean checkout contained accepted Group 1 commit `b7ab1c5`;
+fresh prerequisite checks passed 48 focused tests and strict OpenSpec.
 
 ## Implemented Boundary
 
-Closed prospective profiles bind exact pending appearance, ordered garment
-wording and worn/aside states with a separate draft digest. Mapping resolves
-actual immutable saved identities without publishing a profile. Manual proposals
-use structured assistance and safe transient evidence with a 24-hour expiry.
-Photo extraction has an opt-in companion while preserving the historical empty
-request/result and ordinary proposals when automation is unavailable.
+Reviewed API saves create the immutable look version, exact profile revision 1,
+accepted evidence and durable receipt atomically. Manual and extracted photo
+saves reuse existing callbacks and defer cleanup until the outer commit.
+Identical requests replay the exact response after byte cleanup or source
+catalogue removal; changed UUID reuse conflicts. Accepted user provenance is
+server-owned. Unknown or conflicting facts cannot produce a ready combined
+result. Look-only calls, portable-v1 and historical sessions stay compatible.
 
-Suggestions remain unaccepted and unknown facts remain unknown. Neither path
-creates a look, accepted profile or session. The browser still saves ordinary
-looks. Combined save and integrated review remain unimplemented.
+The browser still saves ordinary looks; integrated review is Group 3. There is
+no historical backfill or portable schema change. No provider/GPU generation,
+real configuration/data writes, push, sync or archive were performed.
 
 ## Verification and Continuation
 
-Independent task checks passed: 1.1 (46), 1.2 (14), 1.3 (34). The complete
-project-interpreter Python suite passed 3,640 tests with two skips and 18 warnings.
-A new photo test leaked a staged row into other modules; scoped teardown fixed
-the reproduced isolation failure. The final full rerun passed after that repair.
-Privacy/control checks passed 46 tests; strict OpenSpec and diff checks passed.
-No frontend files changed. Isolated fixtures and fake providers were used; no
-real configuration/data, network provider or GPU generation was exercised.
+Independent acceptance: 8 adversarial tests; focused matrix 176 passed and one
+skipped; complete project-venv Python suite 3,688 passed, two skipped and 18
+warnings in 422.19 seconds. Privacy/control passed 46 tests; strict OpenSpec and
+tracked/new-file diff checks passed. No frontend files changed. Only closure
+documents and task marks changed after these production gates; compact closure
+checks precede the authorized isolated Conventional Commit.
 
-The user authorized a final acceptance commit after the original no-commit
-instruction. No push, sync or archive is authorized. Group 1 is complete; stop
-here. A later authorized apply starts Group 2 at Task 2.1 and must reuse the
-prospective contracts without treating suggestions as accepted provenance.
+G2-EXEC owned production and repairs; G2-TEST independently inspected actual
+diff and persistence. Main owns acceptance and these continuity documents;
+Archivist owns the closing documentation and usage report. Close the Group 2
+commit, then stop. Group 3 requires a later authorization.

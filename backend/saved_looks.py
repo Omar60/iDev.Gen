@@ -537,7 +537,11 @@ def archive(look_key: str) -> dict:
 
 
 def get_version(look_key: str, version: int) -> dict:
-    if not _valid_key(look_key) or type(version) is not int or version < 1:
+    if (
+        not _valid_key(look_key)
+        or type(version) is not int
+        or not 1 <= version <= _SQLITE_INTEGER_MAX
+    ):
         _invalid()
     row = db.one(
         "SELECT * FROM saved_look_version WHERE look_key = ? AND version = ?",
@@ -759,8 +763,16 @@ def map_prospective_automation_profile(
     appearance: object,
     garments: object,
     saved: dict,
+    *,
+    resolved_source_definitions: object = None,
 ) -> dict:
-    """Resolve ordered draft indices to the immutable saved snapshot identities."""
+    """Resolve ordered draft indices to the immutable saved snapshot identities.
+
+    New saves resolve keyed garments against current history/catalogue state.
+    Receipt replay can instead provide the immutable definitions recorded when
+    the source references were resolved, so replay does not depend on mutable
+    catalogue rows.
+    """
     draft = canonicalize_prospective_automation_profile(value, appearance, garments)
     if (
         type(saved) is not dict
@@ -780,10 +792,33 @@ def map_prospective_automation_profile(
         if exc.code == "look_not_found":
             _invalid()
         raise
-    history = _history(saved["key"])
     if authoritative_saved != saved:
         _invalid()
     source = canonicalize_prospective_automation_source(appearance, garments)
+    history = None
+    if resolved_source_definitions is None:
+        history = _history(saved["key"])
+    else:
+        if (
+            type(resolved_source_definitions) is not list
+            or len(resolved_source_definitions) != len(source["garments"])
+        ):
+            _invalid()
+        for source_garment, original in zip(source["garments"], resolved_source_definitions):
+            source_key = source_garment.get("key")
+            if source_key is None:
+                if original is not None:
+                    _invalid()
+                continue
+            if (
+                type(original) is not dict
+                or set(original) != {"key", "wording", "aside"}
+                or original.get("key") != source_key
+            ):
+                _invalid()
+            canonical_original = canonicalize_prospective_automation_source("", [original])
+            if canonical_original["garments"] != [original]:
+                _invalid()
     final_garments = [] if saved["outfit"] is None else saved["outfit"].get("garments")
     if (
         saved.get("appearance") != source["appearance"]
@@ -808,7 +843,15 @@ def map_prospective_automation_profile(
     seen_final_keys: set[str] = set()
     for index, (source_garment, final_garment) in enumerate(zip(source["garments"], final_garments)):
         source_key = source_garment.get("key")
-        original = None if source_key is None else _known_garment(source_key, history)
+        original = (
+            None
+            if source_key is None
+            else (
+                _known_garment(source_key, history)
+                if resolved_source_definitions is None
+                else resolved_source_definitions[index]
+            )
+        )
         if source_key is not None and (
             original is None
             or not _valid_profile_key(original["key"])
@@ -3426,7 +3469,7 @@ def create_version(look_key: str, expected_version: int, payload: dict) -> dict:
     if (
         not _valid_key(look_key)
         or type(expected_version) is not int
-        or expected_version < 1
+        or not 1 <= expected_version <= _SQLITE_INTEGER_MAX
     ):
         _invalid()
     try:
@@ -3439,6 +3482,8 @@ def create_version(look_key: str, expected_version: int, payload: dict) -> dict:
             prior = history[0]
             if prior["version"] != expected_version:
                 raise SavedLookError(409, "look_version_stale", "Saved look changed; reload before saving.")
+            if prior["version"] == _SQLITE_INTEGER_MAX:
+                raise SavedLookError(409, "look_version_limit", "Saved look cannot have another version.")
             return _save(
                 payload,
                 look_key=look_key,

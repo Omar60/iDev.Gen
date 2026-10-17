@@ -173,8 +173,15 @@ Verified baseline from the repository layout and application entry points.
   stage-bound proposal; the server computes its draft digest after validating
   the ordinary proposal. Accepted mapping validates the saved snapshot and
   resolves garment indices from that look's immutable history before the live
-  catalogue fallback. The browser editor does not yet review or save these
-  candidates.
+  catalogue fallback. `backend/combined_look_save.py` coordinates the optional
+  reviewed automation companion for look creation, new versions, and existing
+  manual/extracted-photo saves. One outer SQLite transaction stores the final
+  look, profile revision 1, accepted evidence, and UUID receipt; exact retries
+  replay the stored response, including after staged-photo cleanup, which runs
+  only after commit. Prospective garment references map to keys assigned by the
+  save, and profile identity/readiness bind to the final look digest. These
+  combined review/save operations are API-only; the browser editor does not yet
+  expose them. The API contract is in `docs/looks.md`.
   `frontend/src/appearanceOwnership.js` maps browser UTF-16 selection offsets to
   exact Unicode-scalar spans; `frontend/src/views/Looks.jsx` provides saved-look
   editing, JSON import/export, and photo review.

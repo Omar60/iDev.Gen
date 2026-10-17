@@ -62,6 +62,7 @@ from backend import guided_sessions
 from backend import authoring_operations
 from backend import resource_full_auto
 from backend import saved_looks
+from backend import combined_look_save
 from backend import look_automation
 from backend import photo_staging
 from backend import photo_extraction
@@ -1470,6 +1471,24 @@ class SavedLookGarmentIn(BaseModel):
     aside: str | None = Field(default=None, strict=True)
 
 
+class LookAutomationSuggestionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    proposal_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    draft_content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class LookAutomationSaveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    profile: dict[str, Any]
+    profile_review_confirmed: bool
+    inventory_complete_confirmed: bool
+    baseline_coverage_confirmed: bool
+    removal_order_confirmed: bool
+    suggestion: LookAutomationSuggestionIn | None = None
+
+
 class SavedLookWriteIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1477,6 +1496,22 @@ class SavedLookWriteIn(BaseModel):
     appearance: str = Field(default="", strict=True)
     garments: list[SavedLookGarmentIn] | None = None
     outfit_key: str | None = Field(default=None, strict=True, max_length=128)
+    request_id: str | None = Field(
+        default=None,
+        strict=True,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    )
+    automation: LookAutomationSaveIn | None = None
+
+    @model_validator(mode="after")
+    def combined_request_pair(self):
+        has_request_id = "request_id" in self.model_fields_set
+        has_automation = "automation" in self.model_fields_set
+        if has_request_id != has_automation or (
+            has_request_id and (self.request_id is None or self.automation is None)
+        ):
+            raise ValueError("A combined save requires both request_id and automation.")
+        return self
 
     @model_validator(mode="after")
     def one_outfit_source(self):
@@ -1486,7 +1521,7 @@ class SavedLookWriteIn(BaseModel):
 
 
 class SavedLookVersionIn(SavedLookWriteIn):
-    expected_version: int = Field(strict=True, ge=1)
+    expected_version: int = Field(strict=True, ge=1, le=saved_looks._SQLITE_INTEGER_MAX)
 
 
 class AutomationProfilePublishIn(BaseModel):
@@ -1607,6 +1642,22 @@ class PhotoLookReviewIn(BaseModel):
     unresolved_decisions: list[PhotoLookUnresolvedDecisionIn] = Field(max_length=32)
     review_confirmed: bool = Field(strict=True)
     removal_order_confirmed: bool = Field(strict=True)
+    request_id: str | None = Field(
+        default=None,
+        strict=True,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    )
+    automation: LookAutomationSaveIn | None = None
+
+    @model_validator(mode="after")
+    def combined_request_pair(self):
+        has_request_id = "request_id" in self.model_fields_set
+        has_automation = "automation" in self.model_fields_set
+        if has_request_id != has_automation or (
+            has_request_id and (self.request_id is None or self.automation is None)
+        ):
+            raise ValueError("A combined save requires both request_id and automation.")
+        return self
 
 
 @app.get("/api/looks")
@@ -1757,17 +1808,23 @@ def preview_saved_look_automation_profile_copy(p: AutomationProfileCopyPreviewIn
 
 
 @app.get("/api/looks/{look_key}/versions/{version}")
-def get_saved_look_version(look_key: str, version: int = PathParam(ge=1)):
+def get_saved_look_version(
+    look_key: str, version: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
+):
     return saved_looks.get_version(look_key, version)
 
 
 @app.get("/api/looks/{look_key:path}/versions/{version}/export")
-def export_saved_look_version(look_key: str, version: int = PathParam(ge=1)):
+def export_saved_look_version(
+    look_key: str, version: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
+):
     return saved_looks.export_version(look_key, version)
 
 
 @app.get("/api/looks/{look_key:path}/versions/{version}/photo-evidence")
-def get_saved_look_photo_evidence(look_key: str, version: int = PathParam(ge=1)):
+def get_saved_look_photo_evidence(
+    look_key: str, version: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
+):
     return saved_looks.get_photo_evidence(look_key, version)
 
 
@@ -1850,6 +1907,25 @@ def save_look_from_photo_stage(photo_id: str, payload: SavedLookWriteIn):
     """Save reviewed manual fields; the staged image is not assistant evidence."""
     _require_saved_look_writes()
     try:
+        if payload.request_id is not None:
+            request = payload.model_dump(exclude_unset=True)
+            request_id = request.pop("request_id")
+            automation = request.pop("automation")
+            look_payload = request
+            return combined_look_save.save(
+                request_id=request_id,
+                operation="create",
+                look_payload=look_payload,
+                automation=automation,
+                create_look=saved_looks.create,
+                source={"kind": "photo-manual", "photo_id": photo_id},
+                source_save=lambda create_pair: photo_staging.save_look(
+                    photo_id, look_payload, create_pair, digest_payload={
+                        **look_payload, "request_id": request_id, "automation": automation,
+                    },
+                ),
+                enabled=is_resource_planning_enabled,
+            )
         return photo_staging.save_look(
             photo_id,
             payload.model_dump(exclude_unset=True),
@@ -1864,6 +1940,37 @@ def save_extracted_look_from_photo_stage(photo_id: str, payload: PhotoLookReview
     """Save only the user's reviewed fields for the stage-bound proposal."""
     _require_saved_look_writes()
     try:
+        if payload.request_id is not None:
+            review = payload.model_dump(exclude_unset=True)
+            request_id = review["request_id"]
+            automation = review["automation"]
+            look_payload = {
+                "name": review["name"],
+                "appearance": review["appearance"],
+                "garments": [
+                    {"wording": garment["wording"], "aside": garment.get("aside", "")}
+                    for garment in review["garments"]
+                ],
+            }
+            return combined_look_save.save(
+                request_id=request_id,
+                operation="create",
+                look_payload=look_payload,
+                automation=automation,
+                create_look=saved_looks.create,
+                source={
+                    "kind": "photo-extracted",
+                    "photo_id": photo_id,
+                    "proposal_id": review["proposal_id"],
+                    "unresolved_decisions": review["unresolved_decisions"],
+                    "review_confirmed": review["review_confirmed"],
+                    "removal_order_confirmed": review["removal_order_confirmed"],
+                },
+                source_save=lambda create_pair: photo_extraction.save_review(
+                    photo_id, review, CONFIG, create_pair, photo_staging.save_look,
+                ),
+                enabled=is_resource_planning_enabled,
+            )
         return photo_extraction.save_review(
             photo_id,
             payload.model_dump(exclude_unset=True),
@@ -1878,12 +1985,40 @@ def save_extracted_look_from_photo_stage(photo_id: str, payload: PhotoLookReview
 @_request_limited_post("/api/looks")
 def create_saved_look(payload: SavedLookWriteIn):
     _require_saved_look_writes()
+    if payload.request_id is not None:
+        request = payload.model_dump(exclude_unset=True)
+        request_id = request.pop("request_id")
+        automation = request.pop("automation")
+        return combined_look_save.save(
+            request_id=request_id,
+            operation="create",
+            look_payload=request,
+            automation=automation,
+            create_look=saved_looks.create,
+            enabled=is_resource_planning_enabled,
+        )
     return saved_looks.create(payload.model_dump(exclude_unset=True))
 
 
 @_request_limited_post("/api/looks/{look_key}/versions")
 def create_saved_look_version(look_key: str, payload: SavedLookVersionIn):
     _require_saved_look_writes()
+    if payload.request_id is not None:
+        request = payload.model_dump(exclude_unset=True)
+        request_id = request.pop("request_id")
+        automation = request.pop("automation")
+        request.pop("expected_version")
+        return combined_look_save.save(
+            request_id=request_id,
+            operation="new_version",
+            look_payload=request,
+            automation=automation,
+            target={"look_key": look_key, "expected_version": payload.expected_version},
+            create_look=lambda body: saved_looks.create_version(
+                look_key, payload.expected_version, body,
+            ),
+            enabled=is_resource_planning_enabled,
+        )
     return saved_looks.create_version(
         look_key,
         payload.expected_version,

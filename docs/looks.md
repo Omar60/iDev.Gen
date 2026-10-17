@@ -132,8 +132,94 @@ request evidence expire with the existing staged proposal; neither image bytes
 nor a data URI are included in that evidence.
 
 The current browser editor does not yet show this combined automation review or
-save. Users can continue to describe and save ordinary looks manually; the
-prospective API leaves any suggestions unaccepted for a later review.
+save. The backend combined-save API below is available to reviewed clients;
+suggestions remain unaccepted until that request supplies the final profile and
+all four confirmations. The browser still supports ordinary look-only saves.
+
+### Atomic combined look/profile saves
+
+Reviewed API clients can create a look version and its eligible automation
+profile revision 1 in one operation. Add both `request_id` and `automation` to
+`POST /api/looks` or `POST /api/looks/{look_key}/versions`; the version request
+also requires its current `expected_version`. The photo manual-save and
+reviewed-extraction routes accept the same pair. Sending only one field is a
+`422` validation error and never falls back to an ordinary save.
+
+`request_id` is a client UUID. `automation` contains the closed prospective v1
+`profile` for the exact final appearance and ordered garment definitions, plus
+four explicit true confirmations: `profile_review_confirmed`,
+`inventory_complete_confirmed`, `baseline_coverage_confirmed`, and
+`removal_order_confirmed`. Its optional `suggestion` identifies the original
+proposal with both `proposal_id` and that proposal's original
+`draft_content_digest`. The final profile digest is recomputed from the current
+reviewed draft; editing suggested content is allowed after the user renews all
+four confirmations. The server maps prospective garment indices to actual
+snapshot keys and constructs accepted `origin: user` provenance against the
+saved look's final `content_digest`. Assistant suggestions are retained as
+separate source evidence and are never relabeled `reviewed_structured`.
+
+For example, the companion shape is:
+
+```json
+{
+  "request_id": "5d15f7e7-dbcf-49b1-8274-621873f4fd72",
+  "automation": {
+    "profile": {
+      "schema_version": 1,
+      "draft_content_digest": "ebe9a78d5dad56fe12277a4f1b9ea081ba3f603ad051278b0a96d2b69aba79cc",
+      "appearance_segments": [],
+      "garment_coverage": [],
+      "baseline_coverage": {"regions": {
+        "chest": "none", "hips": "none", "legs": "none", "feet": "none"
+      }},
+      "inventory_complete": true
+    },
+    "profile_review_confirmed": true,
+    "inventory_complete_confirmed": true,
+    "baseline_coverage_confirmed": true,
+    "removal_order_confirmed": true
+  }
+}
+```
+
+The digest in the example is for the empty appearance and garment list. When a
+suggestion was used, include its original opaque `proposal_id` and original
+64-character `draft_content_digest` under the optional `suggestion` field.
+
+The response retains the ordinary saved-look fields and adds
+`automation_profile` with the exact `look_key`, `version`, final
+`content_digest`, `profile_revision`, `profile_digest`, and readiness result.
+The save is refused with `422 automation_profile_not_ready` if any required
+fact remains unknown or unassigned, the inventory is incomplete, or baseline
+coverage conflicts with the final outfit. Choose an explicit normal-only save
+by omitting both companion fields when the profile is incomplete. A rejected
+combined save does not create an unprofiled look.
+
+Other stable refusals include `422 automation_review_required` for a missing
+confirmation, `422 invalid_look` for malformed or stale final-draft content,
+`409 automation_proposal_stale` for an obsolete suggestion,
+`409 look_version_stale` for a changed target, `409 look_archived` for new
+writes to an archived look, and `409 look_version_limit` when a successor
+would exceed SQLite's signed-integer version range. Reusing a request UUID for
+different content returns `409 idempotency_conflict`; constrained write
+failures return `409 look_write_conflict`. Resource-planning disablement returns
+`503 resource_planning_disabled` before combined-save work.
+
+One durable receipt binds the UUID to the operation, target version, source,
+final content and order, complete review, and original suggestion identity.
+Identical retries return the stored response. Reusing the UUID with different
+content or review returns `409 idempotency_conflict`. A photo retry resolves
+this receipt before reading staged bytes, so it still returns the same result
+after successful cleanup. Photo evidence, the stage's saved result, look,
+profile, and receipt commit together; cleanup runs only after the outer
+transaction commits. If cleanup fails, the save remains successful and
+`GET /api/looks/photo-stages/{photo_id}` exposes `cleanup_warning`; retrying the
+same combined request preserves the original response.
+
+Each new look version gets its own profile revision 1. Earlier profiles and
+session snapshots stay bound to their original version. There is no historical
+profile backfill. `portable-look-v1` remains unchanged and contains no
+automation profile or combined-save receipt.
 
 In **Shared Choices** on an authoring-v1 session, load an exact saved-look
 version, explicitly choose which appearance and wardrobe fields to replace or
@@ -566,8 +652,8 @@ remains a separate operation.
 | `GET /api/looks/{key}/versions/{version}/export` | Closed self-contained `portable-look-v1` envelope for that immutable version. |
 | `POST /api/looks/import/preview` | Plan an import from a raw `portable-look-v1` envelope or legacy garment/outfit JSON; does not write catalogue or look rows. |
 | `POST /api/looks/import/commit` | Commit the reviewed portable or legacy envelope with its preview token, digest, and explicit choice. |
-| `POST /api/looks` | Create version 1 with required `name`, optional `appearance`, and at most one of `garments` or `outfit_key`. |
-| `POST /api/looks/{key}/versions` | Append a version with the same content fields and required `expected_version`. |
+| `POST /api/looks` | Create version 1 with required `name`, optional `appearance`, and at most one of `garments` or `outfit_key`; optional paired `request_id` and `automation` create the look and eligible profile revision 1 atomically. |
+| `POST /api/looks/{key}/versions` | Append a version with the same content fields and required `expected_version`; the optional combined-save pair creates that version's profile revision 1 atomically. |
 | `GET /api/looks/automation-profiles` | Read one automation-profile revision using its complete saved-look and profile identity. |
 | `POST /api/looks/automation-profiles` | Create an immutable automation-profile revision with `expected_profile_revision` compare-and-swap. |
 | `GET /api/looks/{look_key}/versions/{version}/automation-profiles?content_digest=...` | Discover exact profile identities and server readiness; the caller chooses a revision. |
@@ -578,9 +664,9 @@ remains a separate operation.
 | `GET /api/looks/photo-stages/{photo_id}` | Read temporary photo-stage status and metadata. |
 | `GET /api/looks/photo-stages/{photo_id}/preview` | Read staged image bytes for preview. |
 | `POST /api/looks/photo-stages/{photo_id}/cancel` | Cancel photo staging. |
-| `POST /api/looks/photo-stages/{photo_id}/save` | Save the reviewed look fields accepted by `POST /api/looks`. |
+| `POST /api/looks/photo-stages/{photo_id}/save` | Save the reviewed look fields accepted by `POST /api/looks`; the optional combined-save pair includes the profile, stage result, and receipt in one transaction. |
 | `POST /api/looks/photo-stages/{photo_id}/extract` | Request an editable proposal from the configured vision model. |
-| `POST /api/looks/photo-stages/{photo_id}/save-extracted` | Save the reviewed proposal and its durable photo evidence. |
+| `POST /api/looks/photo-stages/{photo_id}/save-extracted` | Save the reviewed proposal and durable photo evidence; optional `request_id` plus `automation` also publish profile revision 1 atomically. |
 | `GET /api/looks/{key}/versions/{version}/photo-evidence` | Read evidence for a photo-extracted look version. |
 
 Each garment definition can provide `key`, `wording`, and `aside`; omit `key`
@@ -593,7 +679,10 @@ catalogue. The content digest is derived from canonical `{appearance, outfit}`
 content; use `key` and `version` to identify a specific version.
 
 Writes are transactional and use the shared 10 MiB actual-request-body limit,
-measured from the streamed request body. Import preview and commit enforce this
+measured from the streamed request body. Combined saves return the stored exact
+result for an identical UUID and reject changed UUID reuse with
+`409 idempotency_conflict`; disabled resource planning returns `503` before
+combined-save work. Import preview and commit enforce this
 limit even when `Content-Length` is missing or inaccurate. When resource
 planning is disabled, saved-look writes and both `/api/looks/import/preview` and
 `/api/looks/import/commit` return `503`, including for portable and legacy-format

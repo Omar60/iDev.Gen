@@ -103,6 +103,32 @@ def test_profile_schema_is_additive_and_recreated_on_reopen(tmp_path, monkeypatc
     assert saved_looks.get_version(saved["key"], saved["version"]) == before
 
 
+def test_combined_receipt_schema_migrates_additively_without_profile_backfill(tmp_path, monkeypatch):
+    path = tmp_path / "combined-receipts.db"
+    conn = _open(path, monkeypatch)
+    saved = _saved_look()
+    published = _publish(saved, _profile(saved))
+    profile_before = saved_looks.get_automation_profile(
+        saved["key"], 1, 1, saved["content_digest"], published["profile_digest"],
+    )
+    conn.execute("DROP TABLE saved_look_combined_save_receipt")
+    conn.commit()
+    conn.close()
+
+    reopened = db.connect(path)
+
+    assert saved_looks.get_version(saved["key"], 1) == saved
+    assert saved_looks.get_automation_profile(
+        saved["key"], 1, 1, saved["content_digest"], published["profile_digest"],
+    ) == profile_before
+    assert reopened.execute(
+        "SELECT COUNT(*) FROM saved_look_combined_save_receipt",
+    ).fetchone()[0] == 0
+    assert reopened.execute(
+        "SELECT COUNT(*) FROM saved_look_automation_profile",
+    ).fetchone()[0] == 1
+
+
 def test_archived_look_retains_exact_profile_but_refuses_new_profile_revisions(
     tmp_path, monkeypatch,
 ):
