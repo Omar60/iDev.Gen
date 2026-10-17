@@ -1,6 +1,38 @@
 # Latest Session Work
 
-## Saved Look Archive Handoff
+## Current Handoff: Integrated Look Automation Planning
+
+Deployment `look-auto-profile-20261017` follows Medium. The user requested saving
+the automation profile with the reviewed principal look and progressive removal
+through a final state with no listed garments or accessories. The complete
+framework intake and two bounded read-only support packages are finished; main
+retained architecture and planning decisions.
+
+The change is `openspec/changes/create-automation-profiles-with-looks/`:
+proposal, design, three delta specs and 16 unchecked implementation tasks.
+Strict OpenSpec validation passed. Documentation privacy/control checks passed
+with exit zero; the existing EnhanceIn register-field warning remains. No
+production code or tests changed and no live provider/GPU work ran.
+
+The main decisions are one integrated review and atomic save using the existing
+look/profile services; prospective ordered garment indices mapped to real saved
+keys; server-constructed accepted user provenance; durable exact save replay;
+normal-only saving when facts remain incomplete; and sole-ready-profile selection
+scoped to new guided creation. Keep the canonical full-interval removal arc,
+including last-item aside and the later empty endpoint. Require enough takes and
+explicit inventory/baseline facts rather than inventing coverage.
+
+Read `design.md` before implementation. Task 1.1 is first; all 16 tasks remain
+unchecked. The openspec-propose skill requires presenting the artifacts and
+waiting for a subsequent apply request, so this deployment closes paused after
+planning. Do not infer implementation or rendered fidelity from artifact checks.
+No commit or push was made. Initial Git state was clean on main, 47 commits
+ahead of origin/main. No earlier active OpenSpec change was present.
+
+## Historical Saved Look Archive Handoff
+
+The following sections are retained historical acceptance snapshots; their old
+uncommitted/unarchived and stop statements do not describe this deployment.
 
 Deployment `saved-look-delete-20261016` implemented and verified OpenSpec change
 `archive-saved-looks` (8/8 tasks). Looks now offers a confirmed Archive action.

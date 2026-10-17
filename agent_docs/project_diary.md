@@ -1,5 +1,21 @@
 # Project Diary
 
+## Integrated Look Automation Planning
+
+A saved profile revision is not proof of Full Auto readiness: appearance
+ownership, known state coverage, complete inventory and the inventory-absent
+baseline must be accepted together. Propose these alongside look content and
+review once before atomic persistence. New garment keys exist only during save;
+map prospective ordered references to the final snapshot within that transaction.
+Fresh user acceptance uses destination-bound user provenance; reviewed_structured
+continues to mean verified copying from an existing immutable source profile.
+
+The existing Full Auto stage arc already removes the confirmed inventory in
+order and ends empty, with a last-item aside stage before that endpoint. Reuse
+it and test the connected save-to-final-prompt journey. Do not create another
+removal algorithm or confuse prompt correctness with image fidelity. Proposal
+completion is planning evidence only; implementation tasks remain unchecked.
+
 ## Saved Look Archive Tombstone
 
 Use a permanent tombstone to retire a library identity while retaining exact

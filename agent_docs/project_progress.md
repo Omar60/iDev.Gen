@@ -1,43 +1,41 @@
 # Project Progress
 
-## Current Deployment: Saved Look Archival
+## Current Deployment: Integrated Look Automation Planning
 
-Deployment `saved-look-delete-20261016` implements the `archive-saved-looks`
-change. All 8/8 tasks are checked after verification. `DELETE /api/looks/{key}`
-adds a permanent archive tombstone, hides the identity from active listings,
-and keeps immutable versions, profiles, photo evidence, import receipts, session
-snapshots, and active Full Auto dependencies intact. New writes and selections
-for an archived identity are rejected. No dependency was added.
+Deployment `look-auto-profile-20261017` uses Medium for
+`create-automation-profiles-with-looks`. Proposal, design, three delta specs and
+tasks are complete; implementation is 0/16 tasks. No production code or tests
+were modified. The planning boundary in `openspec-propose` requires presenting
+these artifacts before a later user request starts apply.
 
-Full Python passed 3,602 tests with two skips and five existing warnings.
-Frontend passed 670 tests in 36 files; build and strict OpenSpec validation
-passed. A receipt replay after archive is covered. The build retains the
-existing 765.64 kB bundle advisory. The change remains unarchived and
-uncommitted; no push or next task is authorized.
+## Goal and Design
 
-## Previous Accepted Position
+Save a reviewed principal look and its first exact automation-profile revision
+together, using one integrated review of appearance ownership, coverage,
+inventory, baseline and confirmed removal order. Keep explicit normal-only
+saving when automation facts are incomplete. New guided creation can visibly
+select a sole ready exact profile; multiple ready revisions require choice.
 
-Deployment `full-auto-7-6-20261016` accepts only Task 7.6 of
-`automate-resource-session-full-auto`: 41/41 tasks complete. The scenario-level
-acceptance report is `docs/full-auto-task-7-6-acceptance.md`. Independent review
-matched all 223 delta scenarios, including repeated titles, to the report and
-checked the retained manual journey against actual code and test assertions.
+Reuse the existing complete removal arc: initially all listed items are worn,
+successive stages remove them in order, an applicable last-item aside stage is
+intermediate, and the final take has no listed garment or accessory remaining.
+Unknown facts and covering baselines remain blockers; prompts cannot certify
+rendered fidelity. No historical backfill or portable-v1 change is planned.
 
-## Result and Verification
+## Verification and Continuation
 
-Internal Executor produced and repaired the report; independent Tester verified
-its evidence classifications, source links and five tables. Main accepted the
-corrected scope and conclusions. No production or test changes were required.
-Full Python passed 3,592 tests with two skips and five warnings; frontend passed
-667 tests in 36 files, build and strict OpenSpec passed. Explicit historical
-rollback checks passed three tests against disposable restored data. Report
-privacy/control checks passed 46 tests. Closure-document privacy/control tests, strict OpenSpec and diff checks passed
-before the acceptance commit and Archivist's sealed reporting handoff.
+Strict OpenSpec validation and documentation privacy/control checks passed.
+No implementation or real-generation verification is claimed. The initial
+working tree was clean on main, 47 commits ahead of origin/main; there was no
+active OpenSpec change before this proposal. No commit or push was made.
 
-## Stop Boundary
+After a later apply request, start with Task 1.1 and the exact design/specs.
+Preserve the one-task boundary when the user selects a task. Do not mark any
+implementation task complete from planning validation.
 
-All tasks are checked, but this change remains unarchived. No next task, push,
-new generation, runtime mutation or live downgrade is authorized. The report
-separates local automated contracts from retained live protocol and visual
-evidence. Foot cropping, the take 7 garment mismatch and occluded coverage remain
-documented limitations; the earlier credential-rotation action remains unresolved.
+## Previous Accepted Baseline
+
+Saved-look archival and Full Auto are already present in the current source
+and main specifications; their changes are archived. Historical gate counts and
+visual limitations belong to their acceptance reports, including
+`docs/full-auto-task-7-6-acceptance.md`, rather than proving this new feature.
