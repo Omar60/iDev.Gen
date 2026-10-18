@@ -1,5 +1,24 @@
 # Project Diary
 
+## Exact Profile Selection and Complete Removal, Group 4
+
+Keep sole-ready discovery opt-in and verify the exact loaded identity before
+preflight. Fence both discovery and exact loads across A-to-B-to-A and unmount.
+Retaining a selection across Full Auto toggles must not change the editor or
+existing-session selector's explicit reset/reload behavior. A hidden attribute
+does not override inline display; hide the retained panel explicitly.
+
+Export the existing canonical stage helper instead of recreating removal logic.
+Show its complete timeline and minimum even when preflight refuses too few
+takes. Independent API tests should preserve the original accessory clause in
+the snapshot while proving its exclusion from permanent appearance, then verify
+aside and the empty endpoint with exact and longer deterministic intervals.
+
+The Tester usage limit interrupted reporting, not the completed Python suite.
+Recover complete logs and verify source freshness before repeating expensive
+gates; disclose the missing wrapper exit code rather than inventing it. Only
+4.1-4.2 are accepted; Group 5's connected submission/browser journeys remain.
+
 ## Integrated Review Group 3 Acceptance
 
 Accept a combined result only when it matches the frozen request, not merely

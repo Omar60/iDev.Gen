@@ -22,8 +22,8 @@
 
 ## 4. Exact profile discovery and complete removal in Full Auto
 
-- [ ] 4.1 Add opt-in sole-ready-profile selection to `AutomationProfileSelector` for new guided creation only, using its existing exact-revision loader. Verify zero/one/multiple eligible revisions, sole-ready among incomplete revisions, retained manual choice, stale identity/digest, unmount and superseded discovery responses; preserve explicit behavior in other consumers and document the selection rule in `docs/looks.md`.
-- [ ] 4.2 Connect Resources preflight/creation to the verified selected identity and show the complete canonical removal timeline and required minimum take count. Verify first fully worn, every ordered removal, final-item aside before complete removal, last empty inventory, insufficient-count refusal, larger intervals, appearance-only semantics and consent invalidation. Reuse the existing stage services and extend frontend/backend stage tests; update `docs/sessions.md` and the README Full Auto summary.
+- [x] 4.1 Add opt-in sole-ready-profile selection to `AutomationProfileSelector` for new guided creation only, using its existing exact-revision loader. Verify zero/one/multiple eligible revisions, sole-ready among incomplete revisions, retained manual choice, stale identity/digest, unmount and superseded discovery responses; preserve explicit behavior in other consumers and document the selection rule in `docs/looks.md`.
+- [x] 4.2 Connect Resources preflight/creation to the verified selected identity and show the complete canonical removal timeline and required minimum take count. Verify first fully worn, every ordered removal, final-item aside before complete removal, last empty inventory, insufficient-count refusal, larger intervals, appearance-only semantics and consent invalidation. Reuse the existing stage services and extend frontend/backend stage tests; update `docs/sessions.md` and the README Full Auto summary.
 
 ## 5. Connected acceptance and repository gates
 

@@ -6,6 +6,7 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import Resources from './Resources.jsx'
 import { api } from '../api.js'
+import { savedLookWardrobeStages } from '../wardrobe.js'
 import actualPayloadFreeLibraries from './__fixtures__/actual_payload_free_libraries.json'
 
 const guidedResponseFor = (request, sessionId = 42, status = 201) => ({
@@ -75,12 +76,16 @@ const fullAutoLibrary = {
   revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready', pending_fields: {} } }],
   auxiliary: [],
 }
-const fullAutoConsentFor = (request, { workflowId = 12, providerModel = 'provider-model', issuedAt } = {}) => {
+const fullAutoConsentFor = (request, {
+  workflowId = 12,
+  providerModel = 'provider-model',
+  issuedAt,
+  lookResponse = fullAutoLook(Number(request.saved_look.version)),
+} = {}) => {
   const issued = issuedAt || new Date(Date.now() - 30_000).toISOString().replace(/\.\d{3}Z$/, '+00:00')
   const expiry = new Date(Date.parse(issued) + 7 * 24 * 60 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, '+00:00')
   const count = request.photo_count
-  const look = fullAutoLook(Number(request.saved_look.version))
-  const stageCount = look.outfit.garments.length + 1 + Number(Boolean(look.outfit.garments.at(-1).aside))
+  const stageCount = lookResponse.outfit === null ? 1 : savedLookWardrobeStages(lookResponse.outfit).length
   const grouped = Array.from({ length: stageCount }, () => [])
   for (let takeIndex = 0; takeIndex < count; takeIndex += 1) {
     const stageIndex = stageCount === 1 ? 0 : Math.floor(takeIndex * (stageCount - 1) / (count - 1))
@@ -194,6 +199,18 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     photoCount = '12',
     preflight = (body) => fullAutoConsentFor(body),
     create = (body) => guidedResponseFor(body, 42),
+    loadExactProfile = (params, exactLook) => ({
+      look: { key: exactLook.key, version: exactLook.version, content_digest: exactLook.content_digest },
+      profile_revision: params.get('profile_revision'),
+      profile_digest: params.get('profile_digest'),
+      appearance_segments: [{ owner: 'permanent', text: 'A permanent studio look.' }],
+    }),
+    lookResponse = fullAutoLook(),
+    profileRows = [{
+      profile_revision: 2,
+      profile_digest: 'e'.repeat(64),
+      readiness: { profile_ready: true, diagnostics: [] },
+    }],
   } = {}) => {
     window.location.hash = ''
     vi.spyOn(api, 'get').mockImplementation(async (url) => {
@@ -202,22 +219,20 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       if (url === '/api/config') return { llm_ok: true }
       return []
     })
+    const versionedAttempts = []
     vi.spyOn(api, 'getVersioned').mockImplementation(async (url) => {
+      versionedAttempts.push(url)
       if (url === '/api/looks') return [fullAutoLookSummary()]
-      if (url === '/api/looks/look-example/versions/3') return fullAutoLook()
+      if (url === '/api/looks/look-example/versions/3') return lookResponse
       if (url.startsWith('/api/looks/look-example/versions/3/automation-profiles?')) {
         return {
-          look: { key: 'look-example', version: 3, content_digest: 'd'.repeat(64) },
-          profiles: [{ profile_revision: 2, profile_digest: 'e'.repeat(64), readiness: { profile_ready: true } }],
+          look: { key: lookResponse.key, version: lookResponse.version, content_digest: lookResponse.content_digest },
+          profiles: profileRows,
         }
       }
       if (url.startsWith('/api/looks/automation-profiles?')) {
-        return {
-          look: { key: 'look-example', version: 3, content_digest: 'd'.repeat(64) },
-          profile_revision: 2,
-          profile_digest: 'e'.repeat(64),
-          appearance_segments: [{ owner: 'permanent', text: 'A permanent studio look.' }],
-        }
+        const params = new URLSearchParams(url.slice(url.indexOf('?') + 1))
+        return loadExactProfile(params, lookResponse)
       }
       throw new Error(`Unexpected versioned request: ${url}`)
     })
@@ -244,13 +259,11 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
     const profile = container.querySelector('[aria-label="Exact automation profile revision"]')
     expect(profile).toBeTruthy()
-    await act(async () => {
-      setSelectValue(profile, '2')
-      await Promise.resolve()
-      await Promise.resolve()
-    })
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
-    return { attempts, form: container.querySelector('[aria-label="Guided session setup"]') }
+    if (profileRows.length === 1 && profileRows[0].readiness.profile_ready) {
+      expect(profile.value).toBe(String(profileRows[0].profile_revision))
+    }
+    return { attempts, versionedAttempts, form: container.querySelector('[aria-label="Guided session setup"]') }
   }
 
   const switchToImportTab = async () => {
@@ -6639,7 +6652,7 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
   })
 
   it('6.2 Full Auto shows exact stage wardrobe states and sends one consented creation request', async () => {
-    const { attempts, form } = await prepareFullAutoForm()
+    const { attempts, versionedAttempts, form } = await prepareFullAutoForm()
     const summary = form.querySelector('[aria-label="Full Auto consent summary"]')
     expect(summary).toBeTruthy()
     expect(summary.textContent).toContain('look-example · version 3')
@@ -6656,11 +6669,23 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
 
     const stages = Array.from(summary.querySelectorAll('[aria-label="Authorized wardrobe stage timeline"] li'))
     expect(stages).toHaveLength(4)
+    expect(stages.map((stage) => stage.textContent.match(/\((\d+) takes\)/)?.[1])).toEqual(['4', '4', '3', '1'])
     expect(stages[0].textContent).toContain('She wears a navy dress, and a silver necklace.')
     expect(stages[1].textContent).toContain('She wears a silver necklace.')
     expect(stages[2].textContent).toContain('She wears the silver necklace draped against her collarbone.')
     expect(stages[3].textContent).toContain('She wears nothing at all.')
+    expect(form.querySelector('[aria-label="Full Auto progression preview"] p').textContent)
+      .toBe('Minimum take count: 4. Current count: 12. Full Auto will not skip stages.')
+    const exactLoad = versionedAttempts.find((url) => url.startsWith('/api/looks/automation-profiles?'))
+    const exactLoadIdentity = new URLSearchParams(exactLoad.slice(exactLoad.indexOf('?') + 1))
+    expect(exactLoadIdentity.get('look_key')).toBe('look-example')
+    expect(exactLoadIdentity.get('version')).toBe('3')
+    expect(exactLoadIdentity.get('content_digest')).toBe('d'.repeat(64))
+    expect(exactLoadIdentity.get('profile_revision')).toBe('2')
+    expect(exactLoadIdentity.get('profile_digest')).toBe('e'.repeat(64))
     expect(attempts.filter(([url]) => url === '/api/sessions/guided/full-auto/preflight')).toHaveLength(1)
+    expect(attempts.find(([url]) => url === '/api/sessions/guided/full-auto/preflight')[1].full_auto)
+      .toMatchObject({ profile_revision: '2', profile_digest: 'e'.repeat(64) })
     expect(attempts.filter(([url]) => url === '/api/sessions/guided')).toHaveLength(0)
 
     await act(async () => { summary.querySelector('button').click() })
@@ -6812,6 +6837,12 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
         })
       },
     })
+    const preview = form.querySelector('[aria-label="Full Auto progression preview"]')
+    expect(preview).toBeTruthy()
+    expect(preview.querySelector('p').textContent)
+      .toBe('Minimum take count: 4. Current count: 3. Full Auto will not skip stages.')
+    expect(Array.from(preview.querySelectorAll('li')).at(-1).textContent)
+      .toBe('Stage 4: She wears nothing at all.')
     expect(container.textContent).toContain('Full Auto requires at least 4 takes to cover every saved-look stage; increase the count or continue manually.')
     expect(attempts.filter(([url]) => url === '/api/sessions/guided')).toHaveLength(0)
 
@@ -6825,6 +6856,104 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     expect(created[0][1]).not.toHaveProperty('full_auto')
     expect(created[0][1]).not.toHaveProperty('progression')
     expect(window.location.hash).toBe('#/session/42')
+  })
+
+  it('6.2 keeps appearance-only looks at one constant stage with an explicit minimum', async () => {
+    const appearanceOnlyLook = { ...fullAutoLook(), outfit: null }
+    const { attempts, form } = await prepareFullAutoForm({
+      lookResponse: appearanceOnlyLook,
+      preflight: (body) => fullAutoConsentFor(body, { lookResponse: appearanceOnlyLook }),
+    })
+
+    const preview = form.querySelector('[aria-label="Full Auto progression preview"]')
+    expect(preview.querySelector('p').textContent)
+      .toBe('Minimum take count: 1. Current count: 12. Full Auto will not skip stages.')
+    expect(Array.from(preview.querySelectorAll('li')).map((stage) => stage.textContent))
+      .toEqual(['Stage 1: Appearance-only saved look; wardrobe remains unchanged.'])
+    const summary = form.querySelector('[aria-label="Full Auto consent summary"]')
+    expect(summary.querySelectorAll('[aria-label="Authorized wardrobe stage timeline"] li')).toHaveLength(1)
+    expect(summary.textContent).toContain('Appearance-only saved look; wardrobe remains unchanged.')
+    expect(attempts.find(([url]) => url === '/api/sessions/guided/full-auto/preflight')[1].saved_look)
+      .toEqual({ look_key: 'look-example', version: '3', content_digest: 'd'.repeat(64) })
+  })
+
+  it('6.2 hides Full Auto controls while retaining the exact selected profile when toggled off', async () => {
+    const { versionedAttempts, form } = await prepareFullAutoForm()
+    const selector = form.querySelector('[aria-label="Exact automation profile revision"]')
+    const fullAutoPanel = selector.closest('section[aria-label="Full Auto setup"]').querySelector(':scope > div')
+    expect(selector.value).toBe('2')
+    expect(fullAutoPanel.style.display).toBe('grid')
+
+    await act(async () => { container.querySelector('#guided-full-auto').click() })
+    expect(container.querySelector('#guided-full-auto').checked).toBe(false)
+    expect(fullAutoPanel.hidden).toBe(true)
+    expect(fullAutoPanel.style.display).toBe('none')
+    expect(selector.value).toBe('2')
+
+    await act(async () => { container.querySelector('#guided-full-auto').click() })
+    expect(container.querySelector('#guided-full-auto').checked).toBe(true)
+    expect(fullAutoPanel.hidden).toBe(false)
+    expect(fullAutoPanel.style.display).toBe('grid')
+    expect(selector.value).toBe('2')
+    expect(versionedAttempts.filter((url) => url.startsWith('/api/looks/automation-profiles?'))).toHaveLength(1)
+  })
+
+  it('6.2 invalidates consent while a newly selected exact profile is still loading', async () => {
+    let resolveSecondProfile
+    const secondProfile = new Promise((resolve) => { resolveSecondProfile = resolve })
+    const rows = [
+      { profile_revision: '5', profile_digest: 'f'.repeat(64), readiness: { profile_ready: true, diagnostics: [] } },
+      { profile_revision: '9', profile_digest: '1'.repeat(64), readiness: { profile_ready: true, diagnostics: [] } },
+    ]
+    const { attempts, versionedAttempts, form } = await prepareFullAutoForm({
+      profileRows: rows,
+      loadExactProfile: (params, exactLook) => {
+        if (params.get('profile_revision') === '9') return secondProfile
+        return {
+          look: { key: exactLook.key, version: exactLook.version, content_digest: exactLook.content_digest },
+          profile_revision: params.get('profile_revision'),
+          profile_digest: params.get('profile_digest'),
+          appearance_segments: [{ owner: 'permanent', text: 'A permanent studio look.' }],
+        }
+      },
+    })
+
+    expect(form.querySelector('select[aria-label="Exact automation profile revision"]').value).toBe('')
+    await act(async () => {
+      setSelectValue(form.querySelector('select[aria-label="Exact automation profile revision"]'), '5')
+      for (let index = 0; index < 16; index += 1) await Promise.resolve()
+    })
+    expect(form.querySelector('[aria-label="Full Auto consent summary"]')).toBeTruthy()
+    const firstPreflight = attempts.filter(([url]) => url === '/api/sessions/guided/full-auto/preflight')
+    expect(firstPreflight).toHaveLength(1)
+    expect(firstPreflight[0][1].full_auto).toMatchObject({ profile_revision: '5', profile_digest: 'f'.repeat(64) })
+
+    await act(async () => {
+      setSelectValue(form.querySelector('select[aria-label="Exact automation profile revision"]'), '9')
+      await Promise.resolve()
+    })
+    expect(form.querySelector('[aria-label="Full Auto consent summary"]')).toBeNull()
+    const pendingLoad = versionedAttempts.find((url) => {
+      if (!url.startsWith('/api/looks/automation-profiles?')) return false
+      return new URLSearchParams(url.slice(url.indexOf('?') + 1)).get('profile_revision') === '9'
+    })
+    expect(pendingLoad).toBeTruthy()
+    expect(new URLSearchParams(pendingLoad.slice(pendingLoad.indexOf('?') + 1)).get('profile_digest'))
+      .toBe('1'.repeat(64))
+
+    await act(async () => {
+      resolveSecondProfile({
+        look: { key: 'look-example', version: 3, content_digest: 'd'.repeat(64) },
+        profile_revision: '9',
+        profile_digest: '1'.repeat(64),
+        appearance_segments: [{ owner: 'permanent', text: 'A permanent studio look.' }],
+      })
+      for (let index = 0; index < 16; index += 1) await Promise.resolve()
+    })
+    expect(form.querySelector('[aria-label="Full Auto consent summary"]')).toBeTruthy()
+    const preflights = attempts.filter(([url]) => url === '/api/sessions/guided/full-auto/preflight')
+    expect(preflights).toHaveLength(2)
+    expect(preflights[1][1].full_auto).toMatchObject({ profile_revision: '9', profile_digest: '1'.repeat(64) })
   })
 
   it('6.2 loads and manually creates the exact maximum SQLite look version without Full Auto', async () => {

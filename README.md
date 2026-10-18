@@ -107,7 +107,9 @@ Looks view retains the exact request and UUID in memory for identical replay,
 including across editor unmount/remount in the same app tab. Reloading the page
 or closing the tab clears that local recovery snapshot, so resolve an unknown
 save first. The saved-profile editor keeps its publication, copy-preview, and
-history actions. The portable look-v1 format remains unchanged.
+history actions. The portable look-v1 format remains unchanged. Saving the
+look/profile pair does not create a session, prepare prompts, or start image
+generation; Full Auto requires a later, explicit choice in Resources.
 
 In Looks, **Archive** removes a look from active lists while retaining its
 versions and session history. Archived looks cannot be edited or selected for
@@ -115,14 +117,21 @@ new sessions; the current UI has no restore action. See [Saved looks](docs/looks
 
 ### Full Auto
 
-Full Auto is an opt-in flow in Resources for an exact room revision in Ready
-state, a resolved character/model, a compatible `t2i` workflow, an exact
-saved-look version, and an exact ready automation-profile revision bound to
-that look. The read-only preflight binds model and workflow, stage coverage,
-canvas and framing, provider, limits, and expiry. **Generate without pauses**
-authorizes preparation, policy review
-and approval, submission, and one initial image attempt per take; manual
-creation remains available.
+Full Auto is an opt-in during new guided creation in Resources for an exact
+room revision in Ready state, a resolved character/model, a compatible `t2i`
+workflow, an exact saved-look version, and an exact ready automation-profile
+revision bound to that look. For the selected look version, Resources loads its
+sole ready revision by exact identity and digest; multiple ready revisions need
+an explicit choice, and no ready revision shows diagnostics. Before consent,
+the form displays the complete ordered removal timeline and minimum take count:
+all listed clothing and accessories first, each removed in order, an optional
+aside state for the last item, then the final empty-inventory stage. At least
+one take per stage is required; longer runs distribute the stages deterministically
+over the full interval. An appearance-only look has one stage and keeps the
+wardrobe empty. The read-only preflight binds model and workflow, stage
+coverage, canvas and framing, provider, limits, and expiry. **Generate without
+pauses** authorizes preparation, policy review and approval, submission, and one
+initial image attempt per take; manual creation remains available.
 
 The automatic review checks persisted evidence; it is not a human review and
 cannot certify semantic or image quality. Exact duplicate takes intentionally

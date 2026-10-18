@@ -108,7 +108,7 @@ const hasExactKeys = (value, expected) => {
 
 const hasSnapshotBoundaryWhitespace = (value) => /^[\s\u001c-\u001f\u0085]|[\s\u001c-\u001f\u0085]$/u.test(value)
 
-const savedLookWardrobeStages = (outfit) => {
+export const savedLookWardrobeStages = (outfit) => {
   if (!outfit || typeof outfit !== 'object' || Array.isArray(outfit)) {
     throw new TypeError('outfit must be a complete snapshot object')
   }

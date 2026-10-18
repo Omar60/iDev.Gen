@@ -258,6 +258,10 @@ session snapshots stay bound to their original version. There is no historical
 profile backfill. `portable-look-v1` remains unchanged and contains no
 automation profile or combined-save receipt.
 
+Saving a reviewed look and profile persists those records only. It does not
+create a session, prepare prompts, or start image generation; opt into Full Auto
+later from a new guided session in Resources.
+
 In **Shared Choices** on an authoring-v1 session, load an exact saved-look
 version, explicitly choose which appearance and wardrobe fields to replace or
 keep, and apply it through the plan revision CAS. The selected version is copied
@@ -278,11 +282,15 @@ permanent appearance projection when the current-plan API checks and accepted
 appearance ownership validate the exact profile. It supplies no derived
 coverage; existing manual coverage remains user-authored.
 
-The exact-revision selector in Resources is read-only: it shows readiness
-diagnostics but does not open the profile editor. To correct a profile, open
+The exact-revision selector in Resources is read-only. It automatically selects
+only when Full Auto is explicitly enabled during new guided creation. After you
+select an exact saved-look version, it loads that version's sole ready profile
+using the exact look identity and profile digest. If none is ready, it shows
+readiness diagnostics and a link to **Looks**; if several are ready, choose the
+revision explicitly. A manual choice is retained when discovery refreshes.
+This selector does not edit or publish profiles. To correct a profile, open
 **Looks** from the main navigation, edit and publish a new immutable revision
-for the exact saved-look version, then return to Resources and select that
-revision explicitly.
+for the exact saved-look version, then return to Resources.
 
 For each appearance phrase, select the saved text and assign it to permanent
 appearance or a progressive garment. The source text stays unchanged; the view

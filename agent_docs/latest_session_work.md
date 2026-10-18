@@ -1,6 +1,51 @@
 # Latest Session Work
 
-## Current Handoff: Group 3 Accepted
+## Current Handoff: Group 4 Accepted
+
+Deployment `looks-g4-20261017` covers only Tasks 4.1-4.2 of
+`create-automation-profiles-with-looks`. Baseline `3b44921` was clean, with
+51 local commits ahead of origin. Explorer verified the real Group 1-3 commits
+and code; Tester reran 130 backend/API and 52 frontend prerequisite cases.
+Main owns architecture and acceptance, G4-EXEC implementation/repair,
+G4-TEST independent verification and G4-DOC public documentation.
+
+Resources alone enables `autoSelectSoleReady`. One ready discovered revision is
+loaded with exact look key/version/content digest and profile revision/digest;
+multiple ready revisions require explicit choice. None ready exposes diagnostics
+and a Looks correction link. Selection/loading responses are fenced across
+supersession and unmount. Opt-in toggles retain manual choice without replacing
+it with latest. Other consumers preserve their explicit reset and rediscovery.
+Resources exports/reuses the existing canonical wardrobe stage helper to display
+the full timeline and minimum before consent, including insufficient requests.
+Saving a profile starts no session or generation; consent remains explicit and
+bound to exact current inputs.
+
+Main review required two scoped repairs: explicitly hide the mounted retained
+panel with `display:none`, and scope selection caching to the opt-in consumer.
+Independent backend cases prove complete layered/accessory removal, five stages
+including final-item aside then empty inventory, five/eight-take deterministic
+distribution, exact persisted identities and zero writes across ten tables for
+insufficient preflight. Original accessory text stays in the snapshot and is
+excluded from permanent appearance. Appearance-only semantics remain constant.
+
+Final focused acceptance: 138 frontend cases and four backend API cases passed.
+Full Python log ends with 3,694 passed, two skipped and 18 warnings in 767.83
+seconds. A usage-limit interruption prevented retention of the wrapper exit code;
+Tester confirmed the complete summary, no later crash/error and source freshness.
+The skips are the opt-in 500-take benchmark and unavailable native symlinks.
+Full frontend: 724 passed in 44 files, exit zero; build and strict OpenSpec passed.
+Explicit privacy/control: 46 cases passed; diff checks include both new files.
+Existing framework/dependency and Vite bundle-size warnings remain. Logs are
+outside the repository under the `G4-TEST-` temporary-file prefix.
+
+Main accepted and marked only 4.1-4.2, reaching 13/16. Public docs are README,
+Looks and Sessions; production changes are frontend-only with independent API
+tests for existing canonical backend services. The isolated authorized group
+commit follows acceptance and compact closure checks. Archivist supplies the
+final read-only Git handoff and exact Heavy usage report. Stop here: no Group 5,
+push, sync, archive, real generation or claim of rendered fidelity.
+
+## Previous Handoff: Group 3 Accepted
 
 Implementation deployment `looks-g3-20261017` and closure deployment
 `looks-g3-close-20261017` cover only Tasks 3.1-3.5 of

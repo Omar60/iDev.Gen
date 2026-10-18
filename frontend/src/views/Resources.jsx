@@ -3,7 +3,7 @@ import { api, versionText } from '../api'
 import { go } from '../App.jsx'
 import CanvasSize from './CanvasSize.jsx'
 import AutomationProfileSelector from '../components/AutomationProfileSelector.jsx'
-import { deriveSavedLookWardrobeProgression } from '../wardrobe.js'
+import { savedLookWardrobeStages } from '../wardrobe.js'
 import {
   normalizeFieldRole,
   extractCategories,
@@ -37,30 +37,21 @@ const defaultGuidedPolicy = () => Object.fromEntries(
   GUIDED_DIMENSIONS.map(([field]) => [field, { mode: 'vary', value: '' }]),
 )
 
-const fullAutoWardrobeAtStage = (look, stageIndex) => {
-  if (!Number.isInteger(stageIndex) || stageIndex < 0) return ''
-  if (look?.outfit === null) {
-    if (stageIndex !== 0) return ''
-    const unchanged = deriveSavedLookWardrobeProgression(null, '', 1)[0]
-    return unchanged ? `Appearance-only look; ${unchanged}` : 'Appearance-only saved look; wardrobe remains unchanged.'
-  }
-  if (!look?.outfit) return ''
+const fullAutoWardrobeStages = (look) => {
+  if (look?.outfit === null) return ['Appearance-only saved look; wardrobe remains unchanged.']
+  if (!look?.outfit) return []
   try {
-    return deriveSavedLookWardrobeProgression(
-      look.outfit, '', stageIndex + 1, { stageIndices: [stageIndex] },
-    )[stageIndex] || ''
+    return savedLookWardrobeStages(look.outfit)
   } catch {
-    return ''
+    return []
   }
 }
 
-const fullAutoWardrobeStageCount = (look) => {
-  if (look?.outfit === null) return 1
-  const garments = look?.outfit?.garments
-  if (!Array.isArray(garments) || garments.length === 0
-    || typeof garments[garments.length - 1]?.aside !== 'string') return 0
-  return garments.length + 1 + Number(Boolean(garments[garments.length - 1].aside))
-}
+const fullAutoWardrobeAtStage = (look, stageIndex) => (
+  Number.isInteger(stageIndex) && stageIndex >= 0
+    ? fullAutoWardrobeStages(look)[stageIndex] || ''
+    : ''
+)
 
 const freezeGuidedRequest = (request) => Object.freeze({
   ...request,
@@ -109,7 +100,8 @@ const isFullAutoConsent = (result, request, look) => {
   const canvas = summary?.canvas
   const issued = Date.parse(result?.scope_issued_at || '')
   const expires = Date.parse(summary?.authorization_expires_at || '')
-  const stageCount = fullAutoWardrobeStageCount(look)
+  const canonicalStages = fullAutoWardrobeStages(look)
+  const stageCount = canonicalStages.length
   const expectedStageCounts = Array.from({ length: stageCount }, () => 0)
   if (stageCount > 0 && Number.isSafeInteger(summary?.photo_count)
     && summary.photo_count >= stageCount) {
@@ -152,7 +144,7 @@ const isFullAutoConsent = (result, request, look) => {
       && stage.first_take_id === firstTake && stage.last_take_id === lastTake
       && Number.isInteger(stage.stage_index) && stage.stage_index === index
       && Number.isInteger(stage.take_count) && stage.take_count === expectedCount && expectedCount > 0
-      && Boolean(fullAutoWardrobeAtStage(look, stage.stage_index))
+      && Boolean(canonicalStages[stage.stage_index])
     })
     && stages.reduce((total, stage) => total + stage.take_count, 0) === request.photo_count
     && limits?.assistant_calls_per_take === 2
@@ -1530,6 +1522,9 @@ export default function Resources({ requestedModelId = '' }) {
       content_digest: guidedSavedLook.content_digest,
     }
     : null
+  const guidedFullAutoWardrobeStages = guidedSavedLookIdentity
+    ? fullAutoWardrobeStages(guidedSavedLook)
+    : []
   const guidedProfileMatchesLook = guidedSelectedProfile && guidedSavedLookIdentity
     && guidedSelectedProfile.look_key === guidedSavedLookIdentity.look_key
     && versionText(guidedSelectedProfile.version) === guidedSavedLookIdentity.version
@@ -1782,12 +1777,11 @@ export default function Resources({ requestedModelId = '' }) {
               />
               Enable opt-in Full Auto
             </label>
-            {fullAutoEnabled && (
-              <div style={{ display: 'grid', gap: 9, marginTop: 8 }}>
+            <div hidden={!fullAutoEnabled} style={{ display: fullAutoEnabled ? 'grid' : 'none', gap: 9, marginTop: 8 }}>
                 <p className="muted" style={{ margin: 0 }}>
                   Full Auto requires an exact ready saved-look profile and Automatic mode. It keeps manual creation available when a look is ineligible.
                 </p>
-                {assistantConfigured === false && <p className="error" role="alert">Full Auto needs a configured text assistant. <a href="#/setup">Configure assistant</a>; manual creation remains available.</p>}
+                {fullAutoEnabled && assistantConfigured === false && <p className="error" role="alert">Full Auto needs a configured text assistant. <a href="#/setup">Configure assistant</a>; manual creation remains available.</p>}
                 {guidedSavedLookKey && !guidedSavedLookIdentity && <p className="muted" role="status">Load the selected exact saved-look version to continue.</p>}
                 {!guidedSavedLookKey && <p className="muted" role="status">Choose an exact saved-look version to continue.</p>}
                 {guidedSavedLookIdentity && (
@@ -1798,9 +1792,20 @@ export default function Resources({ requestedModelId = '' }) {
                       active={fullAutoEnabled}
                       disabled={guidedLocked || guidedSavedLookLoading}
                       label="Exact automation profile revision"
+                      autoSelectSoleReady
                       onProfileChange={setGuidedSelectedProfile}
                     />
                     {guidedSelectedProfile && <p className="muted">Selected profile revision {versionText(guidedSelectedProfile.profile_revision)} · {guidedSelectedProfile.profile_digest}</p>}
+                  </div>
+                )}
+                {guidedSavedLookIdentity && guidedFullAutoWardrobeStages.length > 0 && (
+                  <div className="panel" aria-label="Full Auto progression preview">
+                    <p>Minimum take count: {guidedFullAutoWardrobeStages.length}. Current count: {Number(guidedPhotoCount) || 0}. Full Auto will not skip stages.</p>
+                    <ol aria-label="Full Auto progression stages">
+                      {guidedFullAutoWardrobeStages.map((wardrobe, index) => (
+                        <li key={index}>Stage {index + 1}: {wardrobe}</li>
+                      ))}
+                    </ol>
                   </div>
                 )}
                 <fieldset disabled={guidedLocked} style={{ border: 0, padding: 0, margin: 0 }}>
@@ -1851,7 +1856,6 @@ export default function Resources({ requestedModelId = '' }) {
                   </div>
                 )}
               </div>
-            )}
           </section>
 
           <details open={guidedAdvancedOpen} onToggle={(event) => setGuidedAdvancedOpen(event.currentTarget.open)}>

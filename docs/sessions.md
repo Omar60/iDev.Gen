@@ -1591,17 +1591,32 @@ The Resources form can use an exact saved-look version for either manual or
 Full Auto creation. Manual saved-look creation copies that immutable snapshot
 without loading an automation profile, deriving progression or coverage, or
 creating Full Auto authorization. Full Auto requires Automatic authoring and a
-ready profile revision bound to that exact look version. When Full Auto is
-selected, Resources automatically obtains a read-only preflight. Review the
-summary and explicitly confirm **Generate without pauses**. It shows each
-ordered wardrobe stage, including
-aside and final wording, coverage, take count and interval, effective workflow
-and provider identity, inherited or overridden canvas, `vary` or `full_body`
-framing, budgets, policy/compiler versions, and the UTC authorization deadline
-seven days from the quote. `full_body` inserts a prompt requesting both feet
-in frame. Framing and coverage are instructions only; images are not guaranteed
-to show every requested region, reproduce exact anatomy, or match garment
-geometry.
+ready profile revision bound to that exact look version. During Full Auto
+opt-in for new guided creation, the selector loads the sole ready revision for
+the selected version after resolving its exact identity and digest. If several
+revisions are ready, choose one explicitly. If none are ready, the form shows
+diagnostics and links to **Looks**. This behavior does not change choices in other selector
+uses or historical session bindings.
+
+Before authorization, Resources shows the complete ordered wardrobe timeline
+and minimum take count. For an outfit of N garments and accessories, the first
+stage keeps all N, then each stage removes the next item in the confirmed order,
+ending with none of the listed items. If the last item has aside wording, its
+aside stage appears before that final empty-inventory stage. Full Auto requires
+at least one take per stage and refuses a smaller count without skipping or
+combining stages. Larger counts distribute every stage deterministically across
+the full interval, including the first and last stages. An appearance-only look
+has one informational stage, no outfit removals, and requires the session
+wardrobe state to remain empty.
+
+When Full Auto is selected, Resources obtains a read-only preflight. Review its
+summary and explicitly confirm **Generate without pauses**. The summary also
+shows coverage, take count and interval, effective workflow and provider
+identity, inherited or overridden canvas, `vary` or `full_body` framing,
+budgets, policy/compiler versions, and the UTC authorization deadline seven
+days from the quote. `full_body` inserts a prompt requesting both feet in frame.
+Framing and coverage are instructions only; images are not guaranteed to show
+every requested region, reproduce exact anatomy, or match garment geometry.
 
 The explicit creation click sends one atomic request authorizing preparation,
 policy review and approval, submission, and the initial execution attempt. If
