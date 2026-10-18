@@ -3237,7 +3237,7 @@
                       "assistant_request": {
                         "messages": [
                           {
-                            "content": "You write fragments of image-generation prompts. Answer with one JSON object and nothing else: no prose around it, no markdown fence. Never repeat anything the user tells you is already in the prompt. Always answer in English, whatever language the request is written in: translate what it asks for, and never copy words from it verbatim.",
+                            "content": "Answer with one JSON object and nothing else: no prose around it, no markdown fence. Follow the requested schema. Preserve source text, identifiers, values and types exactly when requested. Write new prose in English.",
                             "role": "system"
                           },
                           {
@@ -3533,7 +3533,7 @@
                     "assistant_request": {
                       "messages": [
                         {
-                          "content": "You write fragments of image-generation prompts. Answer with one JSON object and nothing else: no prose around it, no markdown fence. Never repeat anything the user tells you is already in the prompt. Always answer in English, whatever language the request is written in: translate what it asks for, and never copy words from it verbatim.",
+                          "content": "Answer with one JSON object and nothing else: no prose around it, no markdown fence. Follow the requested schema. Preserve source text, identifiers, values and types exactly when requested. Write new prose in English.",
                           "role": "system"
                         },
                         {
@@ -3805,7 +3805,7 @@
             {
               "result": {
                 "assistant_output_digest": "b5b953d3380182ad174a478026bf1cdce988f616b07ce4e50c140fcadad87efd",
-                "assistant_request_digest": "7fb60f5e5fbbc6413dace5a608c827d5f5284e892df52797149ecd549c842cb6",
+                "assistant_request_digest": "53606f4399581e218d36454e831f0f1741fbf9600b707823e194c96c36d63215",
                 "prepared_take_id": 3,
                 "take_id": "take-001"
               },
@@ -4013,7 +4013,7 @@
                       "assistant_request": {
                         "messages": [
                           {
-                            "content": "You write fragments of image-generation prompts. Answer with one JSON object and nothing else: no prose around it, no markdown fence. Never repeat anything the user tells you is already in the prompt. Always answer in English, whatever language the request is written in: translate what it asks for, and never copy words from it verbatim.",
+                            "content": "Answer with one JSON object and nothing else: no prose around it, no markdown fence. Follow the requested schema. Preserve source text, identifiers, values and types exactly when requested. Write new prose in English.",
                             "role": "system"
                           },
                           {
@@ -4309,7 +4309,7 @@
                     "assistant_request": {
                       "messages": [
                         {
-                          "content": "You write fragments of image-generation prompts. Answer with one JSON object and nothing else: no prose around it, no markdown fence. Never repeat anything the user tells you is already in the prompt. Always answer in English, whatever language the request is written in: translate what it asks for, and never copy words from it verbatim.",
+                          "content": "Answer with one JSON object and nothing else: no prose around it, no markdown fence. Follow the requested schema. Preserve source text, identifiers, values and types exactly when requested. Write new prose in English.",
                           "role": "system"
                         },
                         {

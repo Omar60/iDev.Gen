@@ -22,7 +22,7 @@ _MANUAL_INSTRUCTION = """Propose editable automation facts for this pending look
 Return exactly one JSON object with these keys and no others:
 {"schema_version":1,"draft_content_digest":"<copy the supplied digest exactly>","appearance_segments":[{"segment_id":"unique id","start":0,"end":1,"text":"exact source slice","owner":"permanent"|{"garment_index":0}|null}],"garment_coverage":[{"garment_index":0,"states":{"worn":{"regions":{"chest":"full|partial|none|unknown","hips":"full|partial|none|unknown","legs":"full|partial|none|unknown","feet":"full|partial|none|unknown"}},"aside":{"regions":{"chest":"full|partial|none|unknown","hips":"full|partial|none|unknown","legs":"full|partial|none|unknown","feet":"full|partial|none|unknown"}}}}],"baseline_coverage":null,"inventory_complete":null}
 
-Partition appearance into exact, contiguous Unicode-scalar spans. Keep uncertain ownership as null and uncertain coverage as unknown. The garment indices refer only to the supplied list; do not return, rank, reorder, or decide a removal sequence. Include aside only when that exact garment defines aside wording. Never decide inventory completeness or baseline coverage; both must be null. These are suggestions only: include no approval, acceptance, provenance, confidence, or identity fields. Source:
+Partition appearance into exact, contiguous Unicode-scalar spans. The server supplies appearance_length: start at 0, use exclusive end offsets, and end the final span at exactly appearance_length. Copy each source slice verbatim, including spaces. Copy the complete draft_content_digest exactly; never shorten or regenerate it. Keep uncertain ownership as null and uncertain coverage as unknown. The garment indices refer only to the supplied list; do not return, rank, reorder, or decide a removal sequence. Include aside only when that exact garment defines aside wording. Never decide inventory completeness or baseline coverage; both must be null. These are suggestions only: include no approval, acceptance, provenance, confidence, or identity fields. Source:
 """
 _PHOTO_CANDIDATE_FIELDS = _PROPOSAL_OUTPUT_FIELDS - {"draft_content_digest"}
 _PHOTO_INSTRUCTION = """Alongside the ordinary saved-look proposal, return a strictly prospective automation candidate for the visible appearance and listed garments. Keep the exact ordinary fields and add exactly one `automation` field. The automation value must use this closed shape: {\"schema_version\":1,\"appearance_segments\":[{\"segment_id\":\"unique id\",\"start\":0,\"end\":1,\"text\":\"exact source slice\",\"owner\":\"permanent\"|{\"garment_index\":0}|null}],\"garment_coverage\":[{\"garment_index\":0,\"states\":{\"worn\":{\"regions\":{\"chest\":\"full|partial|none|unknown\",\"hips\":\"full|partial|none|unknown\",\"legs\":\"full|partial|none|unknown\",\"feet\":\"full|partial|none|unknown\"}}}}],\"baseline_coverage\":null,\"inventory_complete\":null}. Do not return a draft digest: the server attaches the digest after validating the exact ordinary appearance and ordered garment definitions. Partition appearance into exact, contiguous Unicode-scalar spans. Use null for uncertain ownership and unknown for uncertain coverage. Indices refer only to the ordinary garment list; do not reorder it or propose a removal sequence. Do not decide baseline or inventory completeness. Include no approval, acceptance, provenance, confidence, or identity fields. Any uncertain or unsupported automation fact stays unknown. The ordinary appearance and garment list remain the primary proposal even if this companion cannot be completed."""
@@ -58,7 +58,9 @@ def canonicalize_provider_candidate(value: object, source: dict) -> dict:
     return candidate
 
 
-def safe_request_projection(evidence: object, config: dict, expected_model: str) -> dict:
+def safe_request_projection(
+    evidence: object, config: dict, expected_model: str, draft_content_digest: str,
+) -> dict:
     """Retain non-secret request identity without storing prompt or endpoint text."""
     if type(evidence) is not dict or set(evidence) != {"messages", "model", "parameters"}:
         _fail(502, "automation_proposal_failed", "The assistant returned invalid request evidence.")
@@ -85,9 +87,16 @@ def safe_request_projection(evidence: object, config: dict, expected_model: str)
     except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
         _fail(502, "automation_proposal_failed", "The assistant returned invalid request evidence.")
     from backend import photo_extraction
+    # The server's quoted source digest otherwise looks like embedded base64.
+    safety_messages = [
+        {**message, "content": message["content"].replace(
+            json.dumps(draft_content_digest), '"[draft content digest]"',
+        )}
+        for message in messages
+    ]
     try:
         photo_extraction._check_safe_strings(
-            {"model": model, "messages": messages, "parameters": parameters}, config,
+            {"model": model, "messages": safety_messages, "parameters": parameters}, config,
         )
     except photo_extraction.PhotoExtractionError:
         _fail(502, "automation_proposal_failed", "The assistant returned invalid request evidence.")
@@ -275,7 +284,10 @@ async def propose_manual(payload: dict, config: dict, run_structured, writes_ena
     source = saved_looks.canonicalize_prospective_automation_source(
         payload.get("appearance"), payload.get("garments"),
     )
-    source_json = json.dumps(source, ensure_ascii=False, separators=(",", ":"))
+    source_json = json.dumps(
+        {**source, "appearance_length": len(source["appearance"])},
+        ensure_ascii=False, separators=(",", ":"),
+    )
     from backend import photo_extraction
     try:
         photo_extraction._check_safe_strings(source, config)
@@ -293,6 +305,7 @@ async def propose_manual(payload: dict, config: dict, run_structured, writes_ena
         profile = canonicalize_provider_candidate(output, source)
         projection = safe_request_projection(
             request_evidence, config, str(config.get("llm_model", "")).strip(),
+            source["draft_content_digest"],
         )
         photo_extraction._check_safe_strings(profile, config)
     except saved_looks.SavedLookError:

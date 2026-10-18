@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 
 import pytest
+import httpx
 
 import db
 import main
@@ -132,9 +133,56 @@ def test_manual_proposal_is_exact_transient_and_leaves_unknowns_unknown(client, 
     assert db.one("SELECT COUNT(*) AS n FROM session")["n"] == 0
 
 
+@pytest.mark.parametrize("appearance", ["soft brown hair and earring", "brown hair \U0001f33f"])
+def test_manual_proposal_accepts_real_transport_evidence_with_embedded_draft_digest(client, monkeypatch, appearance):
+    _config(monkeypatch, llm_url="https://api.minimax.io/v1", llm_model="MiniMax-M3.1-Flash-Preview")
+    source = _source()
+    source["appearance"] = appearance
+    profile = _profile(source)
+    requests = []
+    original_client = main.enhance.httpx.AsyncClient
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(profile)}, "finish_reason": "stop"}],
+        })
+
+    def simulated_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(respond)
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(main.enhance.httpx, "AsyncClient", simulated_client)
+    response = _post(client, source)
+
+    assert response.status_code == 200, response.text
+    assert len(requests) == 1
+    request = requests[0]
+    assert profile["draft_content_digest"] in request["messages"][1]["content"]
+    supplied_source = json.loads(request["messages"][1]["content"].split("Source:\n", 1)[1])
+    assert supplied_source["appearance_length"] == len(appearance)
+    assert supplied_source["draft_content_digest"] == profile["draft_content_digest"]
+    assert request["reasoning_effort"] == "low"
+    assert request["reasoning_split"] is True
+    assert request["response_format"] == {"type": "json_object"}
+    result = response.json()
+    assert result["profile"] == profile
+    assert result["request_projection"]["messages_digest"] == look_automation.resource_store.canonical_digest(
+        request["messages"],
+    )
+    stored = look_automation.get_manual_proposal(result["proposal_id"], result["draft_content_digest"])
+    assert stored["profile"] == profile
+    assert stored["request_projection"] == result["request_projection"]
+    assert db.one("SELECT COUNT(*) AS n FROM saved_look_version")["n"] == 0
+    assert db.one("SELECT COUNT(*) AS n FROM saved_look_automation_profile")["n"] == 0
+    assert db.one("SELECT COUNT(*) AS n FROM session")["n"] == 0
+
+
 @pytest.mark.parametrize("mutate", [
     lambda profile: profile.update(accepted=True),
     lambda profile: profile.update(draft_content_digest="0" * 64),
+    lambda profile: profile["appearance_segments"][0].update(end=1),
+    lambda profile: profile["appearance_segments"][0].update(text="altered source"),
     lambda profile: profile.update(inventory_complete=True),
     lambda profile: profile.update(baseline_coverage={"regions": {
         "chest": "none", "hips": "none", "legs": "none", "feet": "none",
@@ -179,16 +227,27 @@ def test_disabled_feature_gate_refuses_before_provider_dispatch(client, monkeypa
     assert db.one("SELECT COUNT(*) AS n FROM saved_look_automation_proposal")["n"] == 0
 
 
-def test_manual_proposal_rejects_unsafe_request_evidence(client, monkeypatch):
+@pytest.mark.parametrize("unsafe", [
+    "Authorization: Bearer invented-test-key",
+    "https://private.example.invalid/review",
+    "0" * 64,
+    "QUJD" * 24,
+    "{digest}A",
+])
+def test_manual_proposal_rejects_unsafe_request_evidence(client, monkeypatch, unsafe):
     _config(monkeypatch)
     source = _source()
+    profile = _profile(source)
+    content = json.dumps(profile["draft_content_digest"]) + " " + unsafe.format(
+        digest=profile["draft_content_digest"],
+    )
     _install_provider(
         monkeypatch,
-        _profile(source),
+        profile,
         evidence={
             "messages": [
                 {"role": "system", "content": "Return JSON."},
-                {"role": "user", "content": "Authorization: Bearer invented-test-key"},
+                {"role": "user", "content": content},
             ],
             "model": "invented-text-model",
             "parameters": {},

@@ -740,6 +740,8 @@ async def test_structured_sends_json_object_response_format_and_json_system_even
     assert seen["body"]["response_format"] == {"type": "json_object"}
     system_content = seen["body"]["messages"][0]["content"]
     assert "Answer with one JSON object" in system_content
+    assert "never copy words from it verbatim" not in system_content
+    assert "Preserve source text, identifiers, values and types exactly when requested" in system_content
 
 
 @pytest.mark.anyio

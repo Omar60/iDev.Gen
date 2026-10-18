@@ -126,6 +126,12 @@ JSON_SYSTEM = SYSTEM.replace(
     "fence. ",
 )
 
+STRUCTURED_SYSTEM = (
+    "Answer with one JSON object and nothing else: no prose around it, no markdown fence. "
+    "Follow the requested schema. Preserve source text, identifiers, values and types "
+    "exactly when requested. Write new prose in English."
+)
+
 
 class EnhanceIn(BaseModel):
     """What to write. `instruction` carries the caller's own guidance."""
@@ -646,7 +652,7 @@ def _messages(p: EnhanceIn, image: str, *, structured: bool = False) -> list[dic
     parts.append(f"Rewrite this:\n{p.text}" if p.text.strip() else "")
 
     text = "\n\n".join(x for x in parts if x)
-    system = (JSON_SYSTEM if (p.fields or structured) else SYSTEM) + (
+    system = (STRUCTURED_SYSTEM if structured else JSON_SYSTEM if p.fields else SYSTEM) + (
         EXPLICIT_SYSTEM if p.register == "explicit" else "")
     if not image:
         return [{"role": "system", "content": system}, {"role": "user", "content": text}]
