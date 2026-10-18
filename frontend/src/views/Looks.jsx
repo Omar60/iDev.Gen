@@ -1,6 +1,36 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api, parseVersionJson, versionText } from '../api.js'
+import AutomationProfileReview from '../components/AutomationProfileReview.jsx'
+import {
+  draftContentDigest,
+  draftFromProspectiveSuggestion,
+  emptyAutomationDraft,
+  newLookRowId,
+  prospectiveProfile,
+  prospectiveSource,
+} from '../looksAutomationReview.js'
 import AutomationProfileEditor from './AutomationProfileEditor.jsx'
+
+const combinedSaveEvent = 'idevgen:combined-look-save'
+let pendingCombinedSave = null
+
+function announceCombinedSave(outcome = '') {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(combinedSaveEvent, { detail: { outcome } }))
+  }
+}
+
+function retainCombinedSave(attempt, inFlight) {
+  pendingCombinedSave = { attempt, inFlight }
+  announceCombinedSave()
+}
+
+function releaseCombinedSave(attempt, outcome = '') {
+  if (pendingCombinedSave?.attempt !== attempt) return false
+  pendingCombinedSave = null
+  announceCombinedSave(outcome)
+  return true
+}
 
 async function postRawJson(path, body, action) {
   const response = await fetch(path, {
@@ -57,6 +87,7 @@ const listKeys = (value) => (Array.isArray(value) ? value : String(value || '').
   .filter(Boolean)
 
 const rowFromGarment = (garment) => ({
+  id: newLookRowId(),
   key: garment?.key || '',
   sourceWording: garment?.wording || '',
   sourceAside: garment?.aside || '',
@@ -110,6 +141,199 @@ function editableGarmentPayload(row) {
   return { wording: row.wording.trim(), aside: row.aside.trim() }
 }
 
+function reviewedRows(form) {
+  if (!form || form.outfitMode === 'none') return []
+  if (form.outfitMode === 'catalogue') return form.garments
+  return form.garments.map((row) => ({
+    ...row,
+    key: row.key && row.wording === row.sourceWording && row.aside === row.sourceAside ? row.key : '',
+  }))
+}
+
+function lookPayloadForForm(form) {
+  const body = { name: form.name.trim(), appearance: form.appearance }
+  if (form.outfitMode === 'catalogue' && form.outfitKey) body.outfit_key = form.outfitKey
+  else if (form.outfitMode === 'garments') body.garments = form.garments.map(editableGarmentPayload)
+  else body.garments = []
+  return body
+}
+
+function requestUuid() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID()
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (token) => {
+    const random = Math.floor(Math.random() * 16)
+    return (token === 'x' ? random : (random & 0x3) | 0x8).toString(16)
+  })
+}
+
+function freezeRequestValue(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.values(value).forEach(freezeRequestValue)
+    Object.freeze(value)
+  }
+  return value
+}
+
+const preWriteCodes = new Set([
+  'automation_review_required', 'automation_profile_not_ready', 'automation_proposal_stale',
+  'combined_save_incomplete', 'idempotency_conflict', 'invalid_look', 'look_archived',
+  'look_data_invalid', 'look_not_found', 'look_version_limit', 'look_version_stale', 'look_write_conflict',
+  'automation_proposal_expired',
+  'photo_proposal_stale', 'photo_review_required', 'photo_stage_expired',
+  'photo_stage_not_found', 'photo_stage_not_saved', 'photo_stage_state_changed',
+])
+
+function isKnownPreWriteRefusal(error) {
+  return Number.isInteger(error?.status) && error.status >= 400 && error.status < 500
+    && error.hasStableErrorBody === true
+    && preWriteCodes.has(error.detail?.code)
+}
+
+function responseOutfitMatchesAttempt(outfit, expected) {
+  if (expected.outfitKey == null && expected.garments.length === 0) return outfit === null
+  if (!outfit || typeof outfit !== 'object' || !Array.isArray(outfit.garments)) return false
+  if (expected.outfitKey != null && outfit.outfit_key !== expected.outfitKey) return false
+  if (outfit.garments.length !== expected.garments.length) return false
+  return expected.garments.every((garment, index) => {
+    const saved = outfit.garments[index]
+    return saved && typeof saved.key === 'string'
+      && (garment.key == null || saved.key === garment.key)
+      && saved.wording === garment.wording
+      && saved.aside === garment.aside
+  })
+}
+
+function combinedSuccessIsExact(result, attempt) {
+  const savedVersion = versionText(result?.version)
+  const profile = result?.automation_profile
+  const expected = attempt?.expected
+  let expectedVersion = '1'
+  if (expected?.expectedVersion != null) {
+    try {
+      expectedVersion = (BigInt(expected.expectedVersion) + 1n).toString()
+    } catch {
+      return null
+    }
+  }
+  const identityMatches = expected && typeof result?.key === 'string' && result.key.length > 0
+    && (expected.key == null || result.key === expected.key)
+    && savedVersion === expectedVersion
+    && result.name === expected.name
+    && result.appearance === expected.appearance
+    && responseOutfitMatchesAttempt(result.outfit, expected)
+  return identityMatches && Boolean(savedVersion)
+    && typeof result.content_digest === 'string' && /^[0-9a-f]{64}$/.test(result.content_digest)
+    && profile?.look_key === result.key
+    && versionText(profile.version) === savedVersion
+    && profile.content_digest === result.content_digest
+    && versionText(profile.profile_revision) === '1'
+    && typeof profile.profile_digest === 'string' && /^[0-9a-f]{64}$/.test(profile.profile_digest)
+    && profile.readiness?.profile_ready === true
+  ? savedVersion
+  : null
+}
+
+function validateAutomationCandidate(profile, appearance, rows, expectedDigest) {
+  const expectedProfileFields = [
+    'appearance_segments', 'baseline_coverage', 'draft_content_digest',
+    'garment_coverage', 'inventory_complete', 'schema_version',
+  ]
+  if (!profile || Object.keys(profile).sort().join(',') !== expectedProfileFields.join(',')
+    || profile.schema_version !== 1 || profile.draft_content_digest !== expectedDigest
+    || profile.baseline_coverage !== null || profile.inventory_complete !== null
+    || !Array.isArray(profile.appearance_segments) || !Array.isArray(profile.garment_coverage)) {
+    throw new Error('The server returned an invalid automation profile proposal.')
+  }
+  const scalars = Array.from(appearance)
+  const seenSegmentIds = new Set()
+  let offset = 0
+  for (const segment of profile.appearance_segments) {
+    if (!segment || Object.keys(segment).sort().join(',') !== 'end,owner,segment_id,start,text'
+      || typeof segment.segment_id !== 'string' || !segment.segment_id
+      || seenSegmentIds.has(segment.segment_id)
+      || !Number.isInteger(segment.start) || !Number.isInteger(segment.end)
+      || segment.start !== offset || segment.end <= segment.start || segment.end > scalars.length
+      || segment.text !== scalars.slice(segment.start, segment.end).join('')) {
+      throw new Error('The automation proposal does not match the exact appearance text.')
+    }
+    const owner = segment.owner
+    if (owner !== null && owner !== 'permanent'
+      && (!owner || typeof owner !== 'object' || Array.isArray(owner)
+        || Object.keys(owner).join(',') !== 'garment_index'
+        || !Number.isInteger(owner.garment_index) || owner.garment_index < 0
+        || owner.garment_index >= rows.length)) {
+      throw new Error('The automation proposal refers to an invalid garment row.')
+    }
+    seenSegmentIds.add(segment.segment_id)
+    offset = segment.end
+  }
+  if (offset !== scalars.length) throw new Error('The automation proposal leaves appearance text unreviewed.')
+  const seenIndices = new Set()
+  for (const entry of profile.garment_coverage) {
+    if (!entry || Object.keys(entry).sort().join(',') !== 'garment_index,states'
+      || !Number.isInteger(entry.garment_index) || entry.garment_index < 0
+      || entry.garment_index >= rows.length || seenIndices.has(entry.garment_index)
+      || !entry.states || typeof entry.states !== 'object' || Array.isArray(entry.states)
+      || Object.keys(entry.states).some((state) => !['worn', 'aside'].includes(state))) {
+      throw new Error('The automation proposal contains an invalid garment mapping.')
+    }
+    for (const [state, fact] of Object.entries(entry.states)) {
+      if ((state === 'aside' && !rows[entry.garment_index].aside)
+        || !fact || Object.keys(fact).join(',') !== 'regions'
+        || !fact.regions || typeof fact.regions !== 'object' || Array.isArray(fact.regions)
+        || Object.keys(fact.regions).sort().join(',') !== 'chest,feet,hips,legs'
+        || Object.values(fact.regions).some((value) => !['unknown', 'full', 'partial', 'none'].includes(value))) {
+        throw new Error('The automation proposal contains an invalid coverage state.')
+      }
+    }
+    seenIndices.add(entry.garment_index)
+  }
+}
+
+function automationReviewBlockers(draft, appearance, garments, confirmations, photo) {
+  const blockers = []
+  if (!draft) return ['Automation review is not available for this draft.']
+  const owners = new Set(['permanent', ...garments.map((garment) => `garment:${garment.id}`)])
+  let offset = 0
+  for (const segment of draft.appearance_segments) {
+    if (segment.start !== offset || segment.end <= segment.start
+      || segment.text !== Array.from(appearance).slice(segment.start, segment.end).join('')
+      || !owners.has(segment.owner)) {
+      blockers.push('Assign every exact appearance span to permanent appearance or a listed garment.')
+      break
+    }
+    offset = segment.end
+  }
+  if (offset !== Array.from(appearance).length
+    && !blockers.some((item) => item.startsWith('Assign every exact appearance'))) {
+    blockers.push('Assign every exact appearance span to permanent appearance or a listed garment.')
+  }
+  const unknown = (fact) => ['chest', 'hips', 'legs', 'feet'].filter((region) => (
+    !['full', 'partial', 'none'].includes(fact?.regions?.[region])
+  ))
+  const missingBaseline = unknown(draft.baseline_coverage)
+  if (missingBaseline.length) blockers.push(`Baseline coverage needs a known value for: ${missingBaseline.join(', ')}.`)
+  garments.forEach((garment, index) => {
+    const states = draft.garment_coverage?.[garment.id]
+    const worn = unknown(states?.worn)
+    if (worn.length) blockers.push(`Garment ${index + 1} worn coverage needs a known value for: ${worn.join(', ')}.`)
+    if (garment.aside) {
+      const aside = unknown(states?.aside)
+      if (aside.length) blockers.push(`Garment ${index + 1} moved-aside coverage needs a known value for: ${aside.join(', ')}.`)
+    }
+  })
+  if (draft.inventory_complete?.value == null) blockers.push('Choose explicitly whether the listed garment inventory is complete.')
+  else if (draft.inventory_complete.value !== true) blockers.push('The inventory is marked incomplete; add the missing items or choose look-only save.')
+  if (!confirmations.inventory) blockers.push('Confirm the inventory answer explicitly.')
+  if (!confirmations.baseline) blockers.push('Review the inventory-absent baseline explicitly.')
+  if (!confirmations.review) blockers.push('Confirm the complete appearance and automation profile review.')
+  if (!confirmations.order) blockers.push('Confirm the complete garment list and removal order.')
+  if (photo && !photo.resolutions) blockers.push('Resolve or omit every uncertain photo detail and include each correction in the look.')
+  if (photo && !photo.review) blockers.push('Confirm that the photo appearance and uncertainty corrections were reviewed.')
+  if (photo && !photo.order) blockers.push('Confirm the photo proposal garment list and removal order.')
+  return blockers
+}
+
 function importChoiceLabel(choice, option) {
   if (choice === 'new_version') {
     return `Add as a new version${option?.destination?.version ? ` (version ${option.destination.version})` : ''}`
@@ -132,6 +356,7 @@ export default function Looks() {
   const [versionChoice, setVersionChoice] = useState('')
   const [currentLook, setCurrentLook] = useState(null)
   const [form, setForm] = useState(null)
+  const [automationDraft, setAutomationDraft] = useState(null)
   const [isNew, setIsNew] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [looksLoading, setLooksLoading] = useState(true)
@@ -162,6 +387,17 @@ export default function Looks() {
   const [photoDecisions, setPhotoDecisions] = useState([])
   const [photoReviewConfirmed, setPhotoReviewConfirmed] = useState(false)
   const [photoOrderConfirmed, setPhotoOrderConfirmed] = useState(false)
+  const [lookOrderConfirmed, setLookOrderConfirmed] = useState(false)
+  const [automationInventoryConfirmed, setAutomationInventoryConfirmed] = useState(false)
+  const [automationBaselineConfirmed, setAutomationBaselineConfirmed] = useState(false)
+  const [automationReviewConfirmed, setAutomationReviewConfirmed] = useState(false)
+  const [automationProposalBusy, setAutomationProposalBusy] = useState(false)
+  const [automationProposalError, setAutomationProposalError] = useState('')
+  const [automationProposalNotice, setAutomationProposalNotice] = useState('')
+  const [profileSuggestion, setProfileSuggestion] = useState(null)
+  const [includePhotoAutomation, setIncludePhotoAutomation] = useState(false)
+  const [uncertainSave, setUncertainSave] = useState(false)
+  const [combinedSaveInFlight, setCombinedSaveInFlight] = useState(false)
   const [cleanupStage, setCleanupStage] = useState(null)
   const [visionAvailability, setVisionAvailability] = useState('checking')
   const [visionError, setVisionError] = useState('')
@@ -174,11 +410,44 @@ export default function Looks() {
   const photoRequest = useRef(0)
   const photoStageRef = useRef(null)
   const photoBusyRef = useRef(false)
+  const automationProposalRequest = useRef(0)
+  const automationSourceEpoch = useRef(0)
+  const automationDraftEpoch = useRef(0)
+  const combinedSaveRef = useRef(null)
   const visionRequest = useRef(0)
   const looksRequest = useRef(0)
   const wardrobeRequest = useRef(0)
   const detailRequest = useRef(0)
+  const mountedRef = useRef(false)
   const selectedSummary = looks.find((item) => item.key === selectedKey)
+
+  const resetAutomationDraft = (nextForm, suggestedProfile = null) => {
+    automationSourceEpoch.current += 1
+    automationDraftEpoch.current += 1
+    automationProposalRequest.current += 1
+    setAutomationProposalBusy(false)
+    setAutomationProposalError('')
+    setAutomationProposalNotice('')
+    setProfileSuggestion(null)
+    setAutomationInventoryConfirmed(false)
+    setAutomationBaselineConfirmed(false)
+    setAutomationReviewConfirmed(false)
+    setLookOrderConfirmed(false)
+    if (!nextForm) {
+      setAutomationDraft(null)
+      return []
+    }
+    const rows = reviewedRows(nextForm)
+    try {
+      setAutomationDraft(suggestedProfile
+        ? draftFromProspectiveSuggestion(suggestedProfile, rows)
+        : emptyAutomationDraft(nextForm.appearance, rows))
+    } catch (error) {
+      setAutomationDraft(emptyAutomationDraft(nextForm.appearance, rows))
+      setAutomationProposalNotice(errorText(error, 'apply the optional automation proposal'))
+    }
+    return rows
+  }
 
   const loadLooks = async () => {
     const request = ++looksRequest.current
@@ -244,16 +513,40 @@ export default function Looks() {
   }
 
   useEffect(() => {
+    mountedRef.current = true
+    const syncPendingCombinedSave = (event) => {
+      if (!pendingCombinedSave) {
+        combinedSaveRef.current = null
+        setUncertainSave(false)
+        setCombinedSaveInFlight(false)
+        if (event?.detail?.outcome === 'success-offscreen') {
+          void loadLooks().then(() => {
+            if (mountedRef.current) {
+              setLooksNotice('A combined save completed after its editor closed. The saved-look list was refreshed.')
+            }
+          })
+        }
+        return
+      }
+      combinedSaveRef.current = pendingCombinedSave.attempt
+      setUncertainSave(true)
+      setCombinedSaveInFlight(pendingCombinedSave.inFlight)
+    }
+    syncPendingCombinedSave()
+    window.addEventListener(combinedSaveEvent, syncPendingCombinedSave)
     loadLooks()
     loadWardrobe()
     loadVisionAvailability()
     return () => {
+      mountedRef.current = false
+      window.removeEventListener(combinedSaveEvent, syncPendingCombinedSave)
       looksRequest.current += 1
       wardrobeRequest.current += 1
       detailRequest.current += 1
       importRequest.current += 1
       exportRequest.current += 1
       photoRequest.current += 1
+      automationProposalRequest.current += 1
       visionRequest.current += 1
     }
   }, [])
@@ -270,6 +563,7 @@ export default function Looks() {
     setVersionChoice(exactVersion)
     setCurrentLook(null)
     setForm(null)
+    resetAutomationDraft(null)
     setIsNew(false)
     setDirty(false)
     setNotice('')
@@ -284,7 +578,9 @@ export default function Looks() {
         throw new Error('The server returned a different saved look version.')
       }
       setCurrentLook(result)
-      setForm(formForLook(result, wardrobe))
+      const nextForm = formForLook(result, wardrobe)
+      setForm(nextForm)
+      resetAutomationDraft(nextForm)
     } catch (error) {
       if (request === detailRequest.current) setLookError(errorText(error, 'load this look version'))
     } finally {
@@ -298,7 +594,9 @@ export default function Looks() {
     setSelectedVersion(0)
     setVersionChoice('')
     setCurrentLook(null)
-    setForm(blankForm())
+    const nextForm = blankForm()
+    setForm(nextForm)
+    resetAutomationDraft(nextForm)
     setIsNew(true)
     setDirty(false)
     setLookError('')
@@ -332,6 +630,7 @@ export default function Looks() {
         setVersionChoice('')
         setCurrentLook(null)
         setForm(null)
+        resetAutomationDraft(null)
         setIsNew(false)
         setDirty(false)
         setLookLoading(false)
@@ -358,6 +657,7 @@ export default function Looks() {
       setSelectedVersion(0)
       setCurrentLook(null)
       setForm(null)
+      resetAutomationDraft(null)
       setIsNew(false)
       setDirty(false)
       setPhotoMode('')
@@ -365,12 +665,15 @@ export default function Looks() {
       setPhotoDecisions([])
       setPhotoReviewConfirmed(false)
       setPhotoOrderConfirmed(false)
+      setLookOrderConfirmed(false)
       setSaveError('')
       setNotice('')
       return
     }
     if (!isNew && currentLook) {
-      setForm(formForLook(currentLook, wardrobe))
+      const nextForm = formForLook(currentLook, wardrobe)
+      setForm(nextForm)
+      resetAutomationDraft(nextForm)
       setDirty(false)
       setSaveError('')
       setNotice('')
@@ -381,6 +684,7 @@ export default function Looks() {
     setSelectedVersion(0)
     setCurrentLook(null)
     setForm(null)
+    resetAutomationDraft(null)
     setIsNew(false)
     setDirty(false)
     setSaveError('')
@@ -391,7 +695,34 @@ export default function Looks() {
     setDirty(true)
     setSaveError('')
     setNotice('')
-    if (photoMode === 'extracted') {
+    const changesSource = ['appearance', 'outfitMode', 'outfitKey', 'garments']
+      .some((field) => Object.hasOwn(patch, field))
+    if (changesSource) {
+      automationSourceEpoch.current += 1
+      automationProposalRequest.current += 1
+      setAutomationProposalBusy(false)
+      setAutomationProposalError('')
+      setAutomationReviewConfirmed(false)
+      setLookOrderConfirmed(false)
+      if (['outfitMode', 'outfitKey', 'garments'].some((field) => Object.hasOwn(patch, field))) {
+        setAutomationInventoryConfirmed(false)
+        setAutomationBaselineConfirmed(false)
+      }
+      if (Object.hasOwn(patch, 'appearance')) {
+        const length = Array.from(patch.appearance).length
+        setAutomationDraft((current) => current && ({
+          ...current,
+          appearance_segments: length ? [{
+            segment_id: `unassigned-${newLookRowId()}`,
+            start: 0,
+            end: length,
+            text: patch.appearance,
+            owner: null,
+          }] : [],
+        }))
+      }
+    }
+    if (changesSource && photoMode === 'extracted') {
       setPhotoReviewConfirmed(false)
       setPhotoOrderConfirmed(false)
     }
@@ -407,6 +738,14 @@ export default function Looks() {
     setDirty(true)
     setSaveError('')
     setNotice('')
+    automationSourceEpoch.current += 1
+    automationProposalRequest.current += 1
+    setAutomationProposalBusy(false)
+    setAutomationProposalError('')
+    setAutomationReviewConfirmed(false)
+    setLookOrderConfirmed(false)
+    setAutomationInventoryConfirmed(false)
+    setAutomationBaselineConfirmed(false)
     if (photoMode === 'extracted') {
       setPhotoReviewConfirmed(false)
       setPhotoOrderConfirmed(false)
@@ -416,6 +755,54 @@ export default function Looks() {
   const updatePhotoDecision = (id, patch) => {
     setPhotoDecisions((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item))
     setPhotoReviewConfirmed(false)
+  }
+
+  const requestAutomationProposal = async () => {
+    if (!form || automationProposalBusy || saving || uncertainSave) return
+    const rows = reviewedRows(form)
+    if (rows.some((row) => !row.wording.trim())) {
+      setAutomationProposalError('Add worn wording for each garment before requesting suggestions.')
+      return
+    }
+    const request = ++automationProposalRequest.current
+    const sourceEpoch = automationSourceEpoch.current
+    const draftEpoch = automationDraftEpoch.current
+    setAutomationProposalBusy(true)
+    setAutomationProposalError('')
+    setAutomationProposalNotice('')
+    try {
+      const source = prospectiveSource(form.appearance, rows)
+      const digest = await draftContentDigest(source)
+      if (request !== automationProposalRequest.current || sourceEpoch !== automationSourceEpoch.current) return
+      const result = await api.post('/api/looks/automation-proposals', source)
+      if (request !== automationProposalRequest.current || sourceEpoch !== automationSourceEpoch.current) return
+      if (!/^[0-9a-f]{32}$/.test(result?.proposal_id || '')
+        || result.draft_content_digest !== digest) {
+        throw new Error('The server returned an invalid automation suggestion identity.')
+      }
+      validateAutomationCandidate(result.profile, source.appearance, source.garments, digest)
+      if (draftEpoch !== automationDraftEpoch.current) {
+        setAutomationProposalNotice('Your profile edits were kept while suggestions were pending. Request suggestions again to apply a fresh proposal.')
+        return
+      }
+      const suggestion = draftFromProspectiveSuggestion(result.profile, rows)
+      setAutomationDraft((current) => ({
+        ...suggestion,
+        baseline_coverage: current?.baseline_coverage || null,
+        inventory_complete: current?.inventory_complete || { value: null },
+      }))
+      setProfileSuggestion({ proposal_id: result.proposal_id, draft_content_digest: digest })
+      setAutomationInventoryConfirmed(automationDraft?.inventory_complete?.value != null)
+      setAutomationBaselineConfirmed(Boolean(automationDraft?.baseline_coverage))
+      setAutomationReviewConfirmed(false)
+      setAutomationProposalNotice('Assistant suggestions are unaccepted. Review every fact and confirm the baseline, inventory, ownership and coverage yourself.')
+    } catch (error) {
+      if (request === automationProposalRequest.current && sourceEpoch === automationSourceEpoch.current) {
+        setAutomationProposalError(errorText(error, 'request automation suggestions'))
+      }
+    } finally {
+      if (request === automationProposalRequest.current) setAutomationProposalBusy(false)
+    }
   }
 
   const handleJsonFile = async (event) => {
@@ -585,23 +972,53 @@ export default function Looks() {
     setNotice('')
     setIsNew(true)
     if (mode === 'extracted') {
-      setForm({
+      const nextForm = {
         ...blankForm(),
         appearance: proposal.appearance,
         outfitMode: 'garments',
         garments: proposal.garments.map((wording) => rowFromGarment({ wording: wording.trim(), aside: '' })),
-      })
+      }
+      setForm(nextForm)
+      const rows = resetAutomationDraft(nextForm)
       setPhotoProposal(proposal)
+      const companion = proposal.automation
+      if (companion?.status === 'ready') {
+        try {
+          validateAutomationCandidate(
+            companion.profile, proposal.appearance,
+            proposal.garments.map((wording) => ({ aside: '', wording: wording.trim() })),
+            companion.draft_content_digest,
+          )
+          if (companion.proposal_id !== proposal.proposal_id
+            || companion.profile?.draft_content_digest !== companion.draft_content_digest) {
+            throw new Error('The photo automation suggestion identity does not match its extraction.')
+          }
+          setAutomationDraft(draftFromProspectiveSuggestion(companion.profile, rows))
+          setProfileSuggestion({
+            proposal_id: companion.proposal_id,
+            draft_content_digest: companion.draft_content_digest,
+          })
+          setAutomationProposalNotice('Photo automation suggestions are editable and unaccepted. Resolve every uncertain photo detail and review all profile facts.')
+        } catch {
+          setAutomationProposalNotice('The optional photo automation suggestions could not be used. The ordinary extraction is available for manual review.')
+        }
+      } else if (companion?.status === 'unavailable') {
+        setAutomationProposalNotice('The optional photo automation suggestions are unavailable. The ordinary extraction is available for manual review.')
+      }
       setPhotoDecisions(proposal.unresolved.map((item) => ({ id: item.id, detail: item.detail, action: '', correction: '' })))
       setPhotoReviewConfirmed(false)
       setPhotoOrderConfirmed(false)
+      setLookOrderConfirmed(false)
       setDirty(true)
     } else {
-      setForm(blankForm())
+      const nextForm = blankForm()
+      setForm(nextForm)
+      resetAutomationDraft(nextForm)
       setPhotoProposal(null)
       setPhotoDecisions([])
       setPhotoReviewConfirmed(false)
       setPhotoOrderConfirmed(false)
+      setLookOrderConfirmed(false)
       setDirty(false)
     }
     setPhotoMode(mode)
@@ -618,11 +1035,31 @@ export default function Looks() {
     setPhotoError('')
     setPhotoNotice('')
     try {
-      const proposal = await api.post(`/api/looks/photo-stages/${stage.photo_id}/extract`, {})
+      const proposal = await api.post(`/api/looks/photo-stages/${stage.photo_id}/extract`, includePhotoAutomation
+        ? { include_automation: true }
+        : {})
       if (request !== photoRequest.current || photoStageRef.current?.photo_id !== stage.photo_id) return
       if (typeof proposal?.proposal_id !== 'string' || !Array.isArray(proposal.garments)
         || !Array.isArray(proposal.unresolved) || typeof proposal.appearance !== 'string') {
         throw new Error('The server returned an invalid photo proposal.')
+      }
+      if (includePhotoAutomation && proposal.automation?.status === 'ready') {
+        try {
+          const source = {
+            appearance: proposal.appearance,
+            garments: proposal.garments.map((wording) => ({ key: null, wording, aside: '' })),
+          }
+          const digest = await draftContentDigest(source)
+          if (request !== photoRequest.current || photoStageRef.current?.photo_id !== stage.photo_id) return
+          validateAutomationCandidate(proposal.automation.profile, proposal.appearance, source.garments, digest)
+          if (proposal.automation.proposal_id !== proposal.proposal_id
+            || proposal.automation.draft_content_digest !== digest
+            || proposal.automation.profile?.draft_content_digest !== digest) {
+            throw new Error('The photo automation suggestion identity does not match its extraction.')
+          }
+        } catch {
+          proposal.automation = { status: 'unavailable' }
+        }
       }
       if (startPhotoDescription('extracted', proposal, true)) {
         setPhotoNotice('Review the appearance, resolve every uncertain detail, and confirm the garment removal order before saving.')
@@ -647,13 +1084,15 @@ export default function Looks() {
     setSelectedVersion(0)
     setCurrentLook(null)
     setIsNew(true)
-    setForm({
+    const nextForm = {
       ...blankForm(),
       name: outfit.label || 'Imported outfit',
       outfitMode: 'catalogue',
       outfitKey: outfit.key,
       garments: rowsForOutfit(outfit, wardrobe),
-    })
+    }
+    setForm(nextForm)
+    resetAutomationDraft(nextForm)
     setDirty(false)
     setLookError('')
     setSaveError('')
@@ -808,9 +1247,101 @@ export default function Looks() {
     garments: form.garments.filter((_, rowIndex) => rowIndex !== index),
   })
 
-  const saveLook = async (event) => {
-    event.preventDefault()
-    if (!form || saving || savingRef.current) return
+  const runSaveAttempt = async (attempt, combined, surfaceEpoch) => {
+    const isCurrentSurface = () => mountedRef.current
+      && surfaceEpoch === detailRequest.current
+    if (!isCurrentSurface()) return
+    setSaveError('')
+    setNotice('')
+    try {
+      const result = await api.postVersioned(attempt.path, attempt.body, attempt.integerFields)
+      const resultVersion = combined ? combinedSuccessIsExact(result, attempt) : versionText(result?.version)
+      if (!result || typeof result.key !== 'string' || !resultVersion) {
+        throw new Error(combined
+          ? 'The combined save returned an invalid look/profile identity or readiness result.'
+          : 'The server returned an invalid saved look version.')
+      }
+      const currentSurface = isCurrentSurface()
+      if (combined) releaseCombinedSave(attempt, currentSurface ? 'success' : 'success-offscreen')
+      if (!currentSurface) return
+      const summary = {
+        key: result.key,
+        version: resultVersion,
+        name: result.name,
+        content_digest: result.content_digest,
+      }
+      looksRequest.current += 1
+      setLooksLoading(false)
+      setLooksError('')
+      setLooks((current) => {
+        const index = current.findIndex((item) => item.key === summary.key)
+        if (index < 0) return [...current, summary]
+        return current.map((item) => item.key === summary.key ? summary : item)
+      })
+      setSelectedKey(result.key)
+      setSelectedVersion(resultVersion)
+      setVersionChoice(resultVersion)
+      setCurrentLook(result)
+      const nextForm = formForLook(result, wardrobe)
+      setForm(nextForm)
+      resetAutomationDraft(nextForm)
+      setIsNew(false)
+      setDirty(false)
+      setNotice(combined
+        ? `Saved look version ${resultVersion} and automation profile revision 1. The profile is ready.`
+        : `Saved as version ${resultVersion}. Previous versions remain available; no automation profile was created.`)
+      setPhotoMode('')
+      setPhotoProposal(null)
+      setPhotoDecisions([])
+      setPhotoReviewConfirmed(false)
+      setPhotoOrderConfirmed(false)
+      setLookOrderConfirmed(false)
+      combinedSaveRef.current = null
+      setUncertainSave(false)
+      if (photoStage?.photo_id) {
+        const savedPhotoId = photoStage.photo_id
+        void api.get(`/api/looks/photo-stages/${savedPhotoId}`).then((stage) => {
+          if (photoStageRef.current?.photo_id === savedPhotoId) setCurrentPhotoStage(stage)
+        }).catch(() => {})
+      }
+      void loadWardrobe()
+    } catch (error) {
+      if (combined) {
+        if (isKnownPreWriteRefusal(error)) releaseCombinedSave(attempt)
+        else retainCombinedSave(attempt, false)
+      }
+      if (!isCurrentSurface()) return
+      setSaveError(errorText(error, 'save this look'))
+      if (combined) {
+        if (isKnownPreWriteRefusal(error)) {
+          combinedSaveRef.current = null
+          setUncertainSave(false)
+          setCombinedSaveInFlight(false)
+        } else {
+          setUncertainSave(true)
+          setCombinedSaveInFlight(false)
+        }
+      }
+    }
+  }
+
+  const retryCombinedSave = async () => {
+    const attempt = combinedSaveRef.current
+    if (!attempt || saving || savingRef.current || !mountedRef.current) return
+    savingRef.current = true
+    setSaving(true)
+    retainCombinedSave(attempt, true)
+    await runSaveAttempt(attempt, true, detailRequest.current)
+    savingRef.current = false
+    if (mountedRef.current) setSaving(false)
+  }
+
+  const saveLook = async (event, mode = 'combined') => {
+    event?.preventDefault()
+    if (!form || saving || savingRef.current || uncertainSave) return
+    if (mode === 'combined' && pendingCombinedSave) return
+    const surfaceEpoch = detailRequest.current
+    const combined = mode === 'combined'
     const name = form.name.trim()
     if (!name) {
       setSaveError('Enter a name for this look.')
@@ -843,14 +1374,24 @@ export default function Looks() {
       setSaveError('This photo stage is no longer available. Stage the photo again before saving.')
       return
     }
-
-    const body = { name, appearance: form.appearance }
-    if (form.outfitMode === 'catalogue' && form.outfitKey) {
-      body.outfit_key = form.outfitKey
-    } else if (form.outfitMode === 'garments') {
-      body.garments = form.garments.map(editableGarmentPayload)
-    } else {
-      body.garments = []
+    if (combined) {
+      const rows = reviewedRows(form)
+      const blockers = automationReviewBlockers(automationDraft, form.appearance, rows, {
+        inventory: automationInventoryConfirmed,
+        baseline: automationBaselineConfirmed,
+        review: automationReviewConfirmed,
+        order: photoMode === 'extracted' ? photoOrderConfirmed : lookOrderConfirmed,
+      }, photoMode === 'extracted' ? {
+        resolutions: photoDecisions.every((item) => item.action === 'omit'
+          || (item.action === 'correct' && item.correction.trim()
+            && finalPhotoText.some((text) => text.includes(item.correction.trim())))),
+        review: photoReviewConfirmed,
+        order: photoOrderConfirmed,
+      } : null)
+      if (blockers.length) {
+        setSaveError('Complete the automation review before using the combined save. See the blockers below.')
+        return
+      }
     }
 
     const previous = selectedSummary
@@ -864,73 +1405,115 @@ export default function Looks() {
     setSaveError('')
     setNotice('')
     try {
-      const result = photoMode === 'extracted'
-        ? await api.post(`/api/looks/photo-stages/${photoStage.photo_id}/save-extracted`, {
-          proposal_id: photoProposal.proposal_id,
-          name,
-          appearance: form.appearance,
-          garments: form.outfitMode === 'garments'
-            ? form.garments.map((row) => ({ wording: row.wording.trim(), aside: row.aside.trim() }))
-            : [],
-          unresolved_decisions: photoReviewPayload(photoDecisions),
-          review_confirmed: photoReviewConfirmed,
-          removal_order_confirmed: photoOrderConfirmed,
+      const lookBody = lookPayloadForForm(form)
+      let path
+      let body
+      let integerFields = []
+      if (combined) {
+        const rows = reviewedRows(form)
+        const source = prospectiveSource(form.appearance, rows)
+        const digest = await draftContentDigest(source)
+        const profile = prospectiveProfile(automationDraft, form.appearance, rows, digest)
+        const suggestion = profileSuggestion
+          && (photoMode !== 'extracted' || profileSuggestion.proposal_id === photoProposal?.proposal_id)
+          ? profileSuggestion
+          : null
+        const automation = {
+          profile,
+          profile_review_confirmed: true,
+          inventory_complete_confirmed: true,
+          baseline_coverage_confirmed: true,
+          removal_order_confirmed: true,
+          ...(suggestion ? { suggestion } : {}),
+        }
+        if (photoMode === 'extracted') {
+          path = `/api/looks/photo-stages/${photoStage.photo_id}/save-extracted`
+          body = {
+            proposal_id: photoProposal.proposal_id,
+            ...lookBody,
+            garments: rows.map((row) => ({ wording: row.wording.trim(), aside: row.aside.trim() })),
+            unresolved_decisions: photoReviewPayload(photoDecisions),
+            review_confirmed: photoReviewConfirmed,
+            removal_order_confirmed: photoOrderConfirmed,
+            request_id: requestUuid(),
+            automation,
+          }
+        } else if (photoMode === 'manual') {
+          path = `/api/looks/photo-stages/${photoStage.photo_id}/save`
+          body = { ...lookBody, request_id: requestUuid(), automation }
+        } else if (isNew) {
+          path = '/api/looks'
+          body = { ...lookBody, request_id: requestUuid(), automation }
+        } else {
+          path = `/api/looks/${encodeURIComponent(selectedKey)}/versions`
+          body = { ...lookBody, expected_version: expectedVersion, request_id: requestUuid(), automation }
+          integerFields = ['expected_version']
+        }
+        const attemptBody = freezeRequestValue(structuredClone(body))
+        const expectedGarments = form.outfitMode === 'none' ? [] : form.garments.map((row, index) => {
+          const sent = lookBody.garments?.[index]
+          return {
+            key: sent?.key || (lookBody.outfit_key ? row.key : null) || null,
+            wording: sent?.wording ?? row.wording,
+            aside: sent?.aside ?? row.aside,
+          }
         })
-        : photoMode === 'manual'
-          ? await api.post(`/api/looks/photo-stages/${photoStage.photo_id}/save`, body)
-          : isNew
-            ? await api.post('/api/looks', body)
-            : await api.postVersioned(`/api/looks/${encodeURIComponent(selectedKey)}/versions`, {
-                ...body,
-                expected_version: expectedVersion,
-              }, ['expected_version'])
-      const resultVersion = versionText(result?.version)
-      if (!result || typeof result.key !== 'string' || !resultVersion) {
-        throw new Error('The server returned an invalid saved look version.')
+        const attempt = freezeRequestValue({
+          path,
+          body: attemptBody,
+          integerFields: [...integerFields],
+          expected: {
+            key: expectedVersion == null ? null : selectedKey,
+            expectedVersion,
+            name: lookBody.name,
+            appearance: lookBody.appearance,
+            outfitKey: lookBody.outfit_key || null,
+            garments: expectedGarments,
+          },
+        })
+        combinedSaveRef.current = attempt
+        setUncertainSave(false)
+        setCombinedSaveInFlight(true)
+        retainCombinedSave(attempt, true)
+        await runSaveAttempt(attempt, true, surfaceEpoch)
+      } else {
+        if (photoMode === 'extracted') {
+          path = `/api/looks/photo-stages/${photoStage.photo_id}/save-extracted`
+          body = {
+            proposal_id: photoProposal.proposal_id,
+            ...lookBody,
+            garments: form.outfitMode === 'garments'
+              ? form.garments.map((row) => ({ wording: row.wording.trim(), aside: row.aside.trim() }))
+              : [],
+            unresolved_decisions: photoReviewPayload(photoDecisions),
+            review_confirmed: photoReviewConfirmed,
+            removal_order_confirmed: photoOrderConfirmed,
+          }
+        } else if (photoMode === 'manual') {
+          path = `/api/looks/photo-stages/${photoStage.photo_id}/save`
+          body = lookBody
+        } else if (isNew) {
+          path = '/api/looks'
+          body = lookBody
+        } else {
+          path = `/api/looks/${encodeURIComponent(selectedKey)}/versions`
+          body = { ...lookBody, expected_version: expectedVersion }
+          integerFields = ['expected_version']
+        }
+        await runSaveAttempt({ path, body, integerFields }, false, surfaceEpoch)
       }
-      const summary = {
-        key: result.key,
-        version: resultVersion,
-        name: result.name,
-        content_digest: result.content_digest,
-      }
-      looksRequest.current += 1
-      setLooksLoading(false)
-      setLooksError('')
-      setLooks((current) => {
-        const index = current.findIndex((item) => item.key === summary.key)
-        if (index < 0) return [...current, summary]
-        return current.map((item) => item.key === summary.key ? summary : item)
-      })
-      setSelectedKey(result.key)
-      setSelectedVersion(resultVersion)
-      setVersionChoice(resultVersion)
-      setCurrentLook(result)
-      setForm(formForLook(result, wardrobe))
-      setIsNew(false)
-      setDirty(false)
-      setNotice(`Saved as version ${resultVersion}. Previous versions remain available.`)
-      setPhotoMode('')
-      setPhotoProposal(null)
-      setPhotoDecisions([])
-      setPhotoReviewConfirmed(false)
-      setPhotoOrderConfirmed(false)
-      if (photoStage?.photo_id) {
-        const savedPhotoId = photoStage.photo_id
-        void api.get(`/api/looks/photo-stages/${savedPhotoId}`).then((stage) => {
-          if (photoStageRef.current?.photo_id === savedPhotoId) setCurrentPhotoStage(stage)
-        }).catch(() => {})
-      }
-      void loadWardrobe()
     } catch (error) {
-      setSaveError(errorText(error, 'save this look'))
+      setSaveError(errorText(error, 'prepare this look save'))
+      combinedSaveRef.current = null
+      setUncertainSave(false)
     } finally {
       savingRef.current = false
-      setSaving(false)
+      if (mountedRef.current && surfaceEpoch === detailRequest.current) setSaving(false)
     }
   }
 
   const navigationBlocked = saving || dirty || Boolean(photoMode) || Boolean(archivingKey)
+    || uncertainSave || Boolean(pendingCombinedSave)
   const latestVersion = versionText(selectedSummary?.version)
   const requestedVersion = versionText(versionChoice)
   const versionOptions = boundedVersionOptions(latestVersion, versionText(selectedVersion))
@@ -943,6 +1526,23 @@ export default function Looks() {
       && [form?.appearance || '', ...(form?.garments || []).flatMap((row) => [row.wording, row.aside])]
         .some((text) => text.includes(item.correction.trim()))))
   const canConfirmPhotoReview = extractionResolutionsComplete
+  const currentReviewRows = reviewedRows(form)
+  const combinedBlockers = form ? automationReviewBlockers(
+    automationDraft,
+    form.appearance,
+    currentReviewRows,
+    {
+      inventory: automationInventoryConfirmed,
+      baseline: automationBaselineConfirmed,
+      review: automationReviewConfirmed,
+      order: photoMode === 'extracted' ? photoOrderConfirmed : lookOrderConfirmed,
+    },
+    photoMode === 'extracted' ? {
+      resolutions: extractionResolutionsComplete,
+      review: photoReviewConfirmed,
+      order: photoOrderConfirmed,
+    } : null,
+  ) : []
 
   return (
     <section className="looks-page" aria-label="Looks">
@@ -980,13 +1580,13 @@ export default function Looks() {
             accept="image/jpeg,image/png,image/webp"
             aria-label="Choose one photo"
             onChange={handlePhotoFile}
-            disabled={photoBusy || photoStage?.state === 'staged'}
+            disabled={saving || uncertainSave || photoBusy || photoStage?.state === 'staged'}
             hidden
           />
           <button
             type="button"
             onClick={() => photoInput.current?.click()}
-            disabled={photoBusy || photoStage?.state === 'staged'}
+            disabled={saving || uncertainSave || photoBusy || photoStage?.state === 'staged'}
           >
             From photo
           </button>
@@ -1113,14 +1713,23 @@ export default function Looks() {
             <p className="muted" role="status">
               {photoStage.format?.toUpperCase()} · {photoStage.width} × {photoStage.height} · {photoStage.byte_count} bytes
             </p>
+            <label>
+              <input
+                type="checkbox"
+                checked={includePhotoAutomation}
+                onChange={(event) => setIncludePhotoAutomation(event.target.checked)}
+                disabled={photoBusy}
+              />
+              Include optional automation profile suggestions with photo extraction
+            </label>
             <div className="row">
-              <button type="button" onClick={extractPhoto} disabled={photoBusy || visionAvailability !== 'available'}>
-                {photoBusy ? 'Working…' : 'Extract look'}
+              <button type="button" onClick={extractPhoto} disabled={photoBusy || saving || uncertainSave || visionAvailability !== 'available'}>
+                {photoBusy ? 'Working…' : includePhotoAutomation ? 'Extract look + profile suggestions' : 'Extract look'}
               </button>
-              <button type="button" onClick={() => startPhotoDescription('manual')} disabled={photoBusy || Boolean(photoProposal)}>
+              <button type="button" onClick={() => startPhotoDescription('manual')} disabled={photoBusy || saving || uncertainSave || Boolean(photoProposal)}>
                 Describe this photo manually
               </button>
-              <button type="button" className="danger" onClick={cancelPhotoStage} disabled={photoBusy}>
+              <button type="button" className="danger" onClick={cancelPhotoStage} disabled={photoBusy || saving || uncertainSave}>
                 Cancel photo stage
               </button>
             </div>
@@ -1135,12 +1744,12 @@ export default function Looks() {
           </p>
         )}
         {photoStage?.photo_id && (
-          <button type="button" onClick={refreshPhotoStatus} disabled={photoBusy}>Refresh photo status</button>
+          <button type="button" onClick={refreshPhotoStatus} disabled={photoBusy || saving || uncertainSave}>Refresh photo status</button>
         )}
         {(cleanupStage?.cleanup_warning || photoStage?.cleanup_warning) && (
           <div>
             <p className="error" role="alert">{(cleanupStage || photoStage).cleanup_warning}</p>
-            <button type="button" onClick={retryPhotoCleanup} disabled={photoBusy}>Retry cleanup</button>
+            <button type="button" onClick={retryPhotoCleanup} disabled={photoBusy || saving || uncertainSave}>Retry cleanup</button>
           </div>
         )}
         {photoError && <p className="error" role="alert">{photoError}</p>}
@@ -1184,6 +1793,12 @@ export default function Looks() {
         </aside>
 
         <section className="panel" aria-label="Look editor">
+          {uncertainSave && <div className="error" role="alert" aria-label="Combined save recovery">
+            {combinedSaveInFlight
+              ? <p>A combined save from this browser tab is still awaiting a response. Editing and new writes stay blocked until its exact outcome is known.</p>
+              : <p>The combined save outcome is unknown. Its exact request body and request ID are retained for recovery.</p>}
+            {!combinedSaveInFlight && <button type="button" onClick={retryCombinedSave} disabled={saving}>Retry the identical combined save</button>}
+          </div>}
           {!form && !lookLoading && !lookError && <p className="muted">Select a saved look or create one.</p>}
           {lookLoading && <p className="muted" role="status">Loading look version…</p>}
           {lookError && <p className="error" role="alert">{lookError}</p>}
@@ -1203,7 +1818,7 @@ export default function Looks() {
                       aria-label="Version history"
                       value={versionText(selectedVersion) || ''}
                       onChange={(event) => openVersion(selectedKey, event.target.value)}
-                      disabled={saving || dirty}
+                      disabled={saving || uncertainSave || dirty}
                     >
                       {versionOptions.map((version) => (
                         <option key={version} value={version}>
@@ -1221,21 +1836,21 @@ export default function Looks() {
                       pattern="[1-9][0-9]*"
                       value={versionChoice}
                       onChange={(event) => setVersionChoice(event.target.value)}
-                      disabled={saving || dirty}
+                      disabled={saving || uncertainSave || dirty}
                     />
                   </label>
                   <div className="row">
                     <button
                       type="button"
                       onClick={() => openVersion(selectedKey, latestVersion)}
-                      disabled={!latestVersion || latestVersion === versionText(selectedVersion) || saving || dirty}
+                      disabled={!latestVersion || latestVersion === versionText(selectedVersion) || saving || uncertainSave || dirty}
                     >
                       Open latest version
                     </button>
                     <button
                       type="button"
                       onClick={() => openVersion(selectedKey, versionChoice)}
-                      disabled={!requestedVersion || saving || dirty}
+                      disabled={!requestedVersion || saving || uncertainSave || dirty}
                     >
                       Open version
                     </button>
@@ -1249,7 +1864,7 @@ export default function Looks() {
                   value={form.name}
                   maxLength={128}
                   onChange={(event) => updateForm({ name: event.target.value })}
-                  disabled={saving}
+                  disabled={saving || uncertainSave}
                   required
                 />
               </label>
@@ -1259,7 +1874,7 @@ export default function Looks() {
                   aria-label="Constant appearance"
                   value={form.appearance}
                   onChange={(event) => updateForm({ appearance: event.target.value })}
-                  disabled={saving}
+                  disabled={saving || uncertainSave}
                   placeholder="Hair, makeup, or styling that stays constant"
                 />
               </label>
@@ -1281,7 +1896,7 @@ export default function Looks() {
                     aria-label="Optional outfit"
                     value={selectedOutfitValue}
                     onChange={(event) => chooseOutfit(event.target.value)}
-                    disabled={saving}
+                    disabled={saving || uncertainSave}
                   >
                     <option value="">No outfit (appearance only)</option>
                     <option value="__manual__">Build an outfit from garments</option>
@@ -1296,12 +1911,12 @@ export default function Looks() {
                 <div>
                   <ol aria-label="Outfit removal order">
                     {form.garments.map((row, index) => (
-                      <li key={`${row.key || 'garment'}-${index}`}>
+                      <li key={row.id}>
                         {row.wording}{row.aside ? ` · moved aside: ${row.aside}` : ''}
                       </li>
                     ))}
                   </ol>
-                  <button type="button" onClick={customizeOutfit} disabled={saving}>Edit garments and order</button>
+                  <button type="button" onClick={customizeOutfit} disabled={saving || uncertainSave}>Edit garments and order</button>
                 </div>
               )}
 
@@ -1316,7 +1931,7 @@ export default function Looks() {
                             aria-label="Add existing garment"
                             value={newGarmentKey}
                             onChange={(event) => setNewGarmentKey(event.target.value)}
-                            disabled={saving || wardrobeLoading || availableGarments.length === 0}
+                            disabled={saving || uncertainSave || wardrobeLoading || availableGarments.length === 0}
                           >
                             <option value="">Choose a garment</option>
                             {availableGarments.map((garment) => (
@@ -1326,16 +1941,16 @@ export default function Looks() {
                             ))}
                           </select>
                         </label>
-                        <button type="button" onClick={addSelectedGarment} disabled={saving || !newGarmentKey}>
+                        <button type="button" onClick={addSelectedGarment} disabled={saving || uncertainSave || !newGarmentKey}>
                           Add existing garment
                         </button>
                       </>
                     )}
-                    <button type="button" onClick={addBlankGarment} disabled={saving}>Add new garment</button>
+                    <button type="button" onClick={addBlankGarment} disabled={saving || uncertainSave}>Add new garment</button>
                   </div>
                   {wardrobeError && <p className="error" role="alert">{wardrobeError}</p>}
                   {form.garments.map((row, index) => (
-                    <fieldset className="looks-garment" key={`${row.key || 'new'}-${index}`} aria-label={`Garment ${index + 1}`}>
+                    <fieldset className="looks-garment" key={row.id} aria-label={`Garment ${index + 1}`}>
                       <legend>Garment {index + 1}</legend>
                       <div className="looks-garment-fields">
                         <label>
@@ -1344,7 +1959,7 @@ export default function Looks() {
                             aria-label={`Garment ${index + 1} worn wording`}
                             value={row.wording}
                             onChange={(event) => updateGarment(index, { wording: event.target.value })}
-                            disabled={saving}
+                            disabled={saving || uncertainSave}
                             required
                           />
                         </label>
@@ -1354,14 +1969,14 @@ export default function Looks() {
                             aria-label={`Garment ${index + 1} moved-aside wording`}
                             value={row.aside}
                             onChange={(event) => updateGarment(index, { aside: event.target.value })}
-                            disabled={saving}
+                            disabled={saving || uncertainSave}
                           />
                         </label>
                       </div>
                       <div className="row">
-                        <button type="button" aria-label={`Move garment ${index + 1} up`} onClick={() => moveGarment(index, -1)} disabled={saving || index === 0}>Move up</button>
-                        <button type="button" aria-label={`Move garment ${index + 1} down`} onClick={() => moveGarment(index, 1)} disabled={saving || index === form.garments.length - 1}>Move down</button>
-                        <button type="button" className="danger" aria-label={`Remove garment ${index + 1}`} onClick={() => removeGarment(index)} disabled={saving}>Remove</button>
+                        <button type="button" aria-label={`Move garment ${index + 1} up`} onClick={() => moveGarment(index, -1)} disabled={saving || uncertainSave || index === 0}>Move up</button>
+                        <button type="button" aria-label={`Move garment ${index + 1} down`} onClick={() => moveGarment(index, 1)} disabled={saving || uncertainSave || index === form.garments.length - 1}>Move down</button>
+                        <button type="button" className="danger" aria-label={`Remove garment ${index + 1}`} onClick={() => removeGarment(index)} disabled={saving || uncertainSave}>Remove</button>
                       </div>
                     </fieldset>
                   ))}
@@ -1380,7 +1995,7 @@ export default function Looks() {
                           aria-label={`Resolution for uncertain detail ${index + 1}`}
                           value={item.action}
                           onChange={(event) => updatePhotoDecision(item.id, { action: event.target.value, correction: '' })}
-                          disabled={saving}
+                          disabled={saving || uncertainSave}
                         >
                           <option value="">Choose correction or omission</option>
                           <option value="correct">Correct this detail</option>
@@ -1395,7 +2010,7 @@ export default function Looks() {
                             value={item.correction}
                             maxLength={1000}
                             onChange={(event) => updatePhotoDecision(item.id, { correction: event.target.value })}
-                            disabled={saving}
+                            disabled={saving || uncertainSave}
                           />
                         </label>
                       )}
@@ -1411,7 +2026,7 @@ export default function Looks() {
                       type="checkbox"
                       checked={photoReviewConfirmed}
                       onChange={(event) => setPhotoReviewConfirmed(event.target.checked)}
-                      disabled={saving || !canConfirmPhotoReview}
+                      disabled={saving || uncertainSave || !canConfirmPhotoReview}
                     />
                     I reviewed the appearance and corrected or omitted every uncertain detail.
                   </label>
@@ -1420,18 +2035,84 @@ export default function Looks() {
                       type="checkbox"
                       checked={photoOrderConfirmed}
                       onChange={(event) => setPhotoOrderConfirmed(event.target.checked)}
-                      disabled={saving}
+                      disabled={saving || uncertainSave}
                     />
                     I confirm the complete garment list and removal order shown above.
                   </label>
                 </fieldset>
               )}
 
+              <fieldset aria-label="Automation profile review">
+                <legend>Automation profile review</legend>
+                <p className="muted">Review this profile with the look before saving. Suggestions are optional, editable and never accepted automatically.</p>
+                {photoMode !== 'extracted' && (
+                  <button
+                    type="button"
+                    onClick={requestAutomationProposal}
+                    disabled={automationProposalBusy || saving || uncertainSave
+                      || currentReviewRows.some((row) => !row.wording.trim())}
+                  >
+                    {automationProposalBusy ? 'Requesting suggestions…' : 'Suggest profile facts'}
+                  </button>
+                )}
+                {profileSuggestion && <p className="muted" role="status">An optional suggestion is linked to its original draft identity; current look edits and profile corrections remain separate.</p>}
+                {profileSuggestion && <button type="button" onClick={() => setProfileSuggestion(null)} disabled={saving || uncertainSave}>Save without optional suggestion evidence</button>}
+                {automationProposalError && <p className="error" role="alert">{automationProposalError}</p>}
+                {automationProposalNotice && <p className="muted" role="status">{automationProposalNotice}</p>}
+                <ol aria-label="Reviewed garment removal order">
+                  {currentReviewRows.map((row, index) => (
+                    <li key={row.id}>{index + 1}. {row.wording}{row.aside ? ` · moved aside: ${row.aside}` : ''}</li>
+                  ))}
+                </ol>
+                {photoMode !== 'extracted' && <label>
+                  <input
+                    type="checkbox"
+                    checked={lookOrderConfirmed}
+                    onChange={(event) => setLookOrderConfirmed(event.target.checked)}
+                    disabled={saving || uncertainSave}
+                  />
+                  I confirm the complete garment list and removal order shown above.
+                </label>}
+                <AutomationProfileReview
+                  appearance={form.appearance}
+                  garments={currentReviewRows.map((row) => ({
+                    id: row.id,
+                    wording: row.wording,
+                    aside: row.aside,
+                  }))}
+                  draft={automationDraft || emptyAutomationDraft(form.appearance, currentReviewRows)}
+                  onDraftChange={(next) => {
+                    automationDraftEpoch.current += 1
+                    setAutomationDraft(next)
+                  }}
+                  inventoryConfirmed={automationInventoryConfirmed}
+                  onInventoryConfirmed={setAutomationInventoryConfirmed}
+                  baselineConfirmed={automationBaselineConfirmed}
+                  onBaselineConfirmed={setAutomationBaselineConfirmed}
+                  reviewConfirmed={automationReviewConfirmed}
+                  onReviewConfirmed={setAutomationReviewConfirmed}
+                  reviewLabel="I reviewed ownership, every coverage state, the baseline and inventory for this exact look draft."
+                  appearanceLabel="Look appearance · select a phrase to assign or correct"
+                  showReviewConfirmation
+                  disabled={saving || uncertainSave}
+                />
+                {combinedBlockers.length > 0 && <div className="error" role="status" aria-label="Combined save blockers">
+                  <strong>Combined save needs these facts:</strong>
+                  <ul>{combinedBlockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
+                  <p>Use “Save look only” to create the look without a profile.</p>
+                </div>}
+              </fieldset>
+
               {saveError && <p className="error" role="alert">{saveError}</p>}
               {notice && <p role="status">{notice}</p>}
               <div className="row">
-                <button type="submit" className="primary" disabled={saving}>{saving ? 'Saving…' : 'Save look'}</button>
-                <button type="button" onClick={cancelEdits} disabled={saving}>
+                <button type="submit" className="primary" disabled={saving || uncertainSave || combinedBlockers.length > 0}>
+                  {saving ? 'Saving…' : 'Save look + automation profile'}
+                </button>
+                <button type="button" onClick={() => saveLook(undefined, 'normal')} disabled={saving || uncertainSave}>
+                  Save look only
+                </button>
+                <button type="button" onClick={cancelEdits} disabled={saving || uncertainSave}>
                   {photoMode === 'extracted'
                     ? 'Cancel photo stage and discard draft'
                     : photoMode ? 'Discard photo description' : 'Cancel edits'}
@@ -1446,7 +2127,7 @@ export default function Looks() {
               <AutomationProfileEditor
                 key={`${currentLook.key}:${versionText(currentLook.version)}:${currentLook.content_digest}`}
                 look={currentLook}
-                disabled={saving || dirty || lookLoading}
+                disabled={saving || uncertainSave || dirty || lookLoading}
               />
             )}
           {wardrobeError && form?.outfitMode !== 'garments' && <p className="error" role="alert">{wardrobeError}</p>}

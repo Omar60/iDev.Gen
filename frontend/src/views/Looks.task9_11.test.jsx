@@ -214,7 +214,7 @@ describe('Looks Task 9.11 browser actions', () => {
     await render()
     await click(button(`Large look · version ${MAX_SAFE_VERSION}`))
     await setValue(field('Constant appearance'), 'updated appearance')
-    await click(button('Save look'))
+    await click(button('Save look only'))
 
     expect(calls).toHaveLength(1)
     expect(calls[0].init.body).toContain(`"expected_version":${MAX_SAFE_VERSION}`)
@@ -284,8 +284,7 @@ describe('Looks Task 9.11 browser actions', () => {
       calls.push({ path, init })
       return { ok: true, text: async () => JSON.stringify(calls.length === 1 ? plan : result) }
     }))
-    const post = api.post
-    post.mockImplementation(async (path, body) => {
+    const post = vi.spyOn(api, 'postVersioned').mockImplementation(async (path, body) => {
       if (path === '/api/looks') return { ...saved(body.name), outfit: { outfit_key: 'local-outfit', garments: result.garments } }
       throw new Error(`Unexpected POST ${path}`)
     })
@@ -302,10 +301,10 @@ describe('Looks Task 9.11 browser actions', () => {
     expect(field('Look name').value).toBe('Summer layers')
     expect(field('Optional outfit').value).toBe('local-outfit')
     expect(post).not.toHaveBeenCalled()
-    await click(button('Save look'))
+    await click(button('Save look only'))
     expect(post).toHaveBeenCalledWith('/api/looks', {
       name: 'Summer layers', appearance: '', outfit_key: 'local-outfit',
-    })
+    }, [])
   })
 
   it('keeps manual photo entry available when only text-only vision is configured and retries cleanup', async () => {
@@ -315,8 +314,11 @@ describe('Looks Task 9.11 browser actions', () => {
     const cancelled = { ...nextStage, state: 'cancelled', cleanup_warning: 'Temporary-file cleanup will retry.' }
     vi.spyOn(api, 'post').mockImplementation(async (path, body) => {
       if (path.endsWith('/cancel')) return cancelled
-      if (path.endsWith('/save')) return saved(body.name)
       throw new Error(`Unexpected POST ${path}`)
+    })
+    const versionedPost = vi.spyOn(api, 'postVersioned').mockImplementation(async (path, body) => {
+      if (path.endsWith('/save')) return saved(body.name)
+      throw new Error(`Unexpected versioned POST ${path}`)
     })
     vi.spyOn(api, 'uploadMultipart').mockResolvedValueOnce(stage).mockResolvedValueOnce(nextStage)
     const get = api.get
@@ -342,10 +344,10 @@ describe('Looks Task 9.11 browser actions', () => {
     await click(button('Describe this photo manually'))
     await setValue(field('Look name'), 'Manual photo notes')
     await setValue(field('Constant appearance'), 'a neat dark braid')
-    await click(button('Save look'))
-    expect(post).toHaveBeenCalledWith(`/api/looks/photo-stages/${stage.photo_id}/save`, {
+    await click(button('Save look only'))
+    expect(versionedPost).toHaveBeenCalledWith(`/api/looks/photo-stages/${stage.photo_id}/save`, {
       name: 'Manual photo notes', appearance: 'a neat dark braid', garments: [],
-    })
+    }, [])
 
     await chooseFile('Choose one photo', syntheticPhoto())
     await click(button('Cancel photo stage'))
@@ -369,12 +371,15 @@ describe('Looks Task 9.11 browser actions', () => {
     const post = api.post
     vi.spyOn(api, 'post').mockImplementation(async (path, body) => {
       if (path.endsWith('/extract')) return proposal
+      throw new Error(`Unexpected POST ${path}`)
+    })
+    vi.spyOn(api, 'postVersioned').mockImplementation(async (path, body) => {
       if (path.endsWith('/save-extracted')) return {
         ...saved(body.name),
         appearance: body.appearance,
         outfit: { outfit_key: 'photo-outfit', garments: body.garments.map((item, index) => ({ key: `garment-${index}`, ...item })) },
       }
-      throw new Error(`Unexpected POST ${path}`)
+      throw new Error(`Unexpected versioned POST ${path}`)
     })
     const get = api.get
     get.mockImplementation(async (path) => {
@@ -401,15 +406,17 @@ describe('Looks Task 9.11 browser actions', () => {
     await click(button('Add new garment'))
     await setValue(field('Garment 3 worn wording'), 'a cotton collar')
     await setValue(field('Resolution for uncertain detail 2'), 'omit')
-    expect(button('Save look').disabled).toBe(false)
-    const checks = Array.from(container.querySelectorAll('input[type="checkbox"]'))
+    expect(button('Save look only').disabled).toBe(false)
+    const checks = Array.from(container.querySelectorAll(
+      'fieldset[aria-label="Photo extraction review"] input[type="checkbox"]',
+    ))
     await act(async () => {
       checks[0].click()
       checks[1].click()
       await flush()
     })
-    await click(button('Save look'))
-    const call = post.mock.calls.find(([path]) => path.endsWith('/save-extracted'))
+    await click(button('Save look only'))
+    const call = api.postVersioned.mock.calls.find(([path]) => path.endsWith('/save-extracted'))
     expect(call[1]).toEqual({
       proposal_id: proposal.proposal_id,
       name: 'Reviewed photo look',

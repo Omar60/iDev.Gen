@@ -95,9 +95,19 @@ an explicit `include_automation` option while preserving its historical empty
 request and response. These proposals create no look or profile. Reviewed API
 clients can add `request_id` and the four-confirmation `automation` companion
 to create a look version and its ready profile revision 1 atomically, with
-durable idempotent replay. The current browser editor still saves ordinary
-looks without the combined profile review; incomplete profiles can use that
-explicit look-only path. The portable look-v1 format remains unchanged.
+durable idempotent replay. The Looks editor now shares controlled appearance
+ownership, coverage, baseline, and inventory review between pending drafts and
+the saved-profile editor. A complete review saves the look and profile in one
+request, including manual looks, imported-outfit conversions, photo proposals,
+and new versions; no later publication step is required. Photo profile
+suggestions are opt-in and remain unaccepted until reviewed. Missing facts and
+incomplete inventory stay visible as blockers, with an explicit **Save look
+only** action for the ordinary look. If a combined response is uncertain, the
+Looks view retains the exact request and UUID in memory for identical replay,
+including across editor unmount/remount in the same app tab. Reloading the page
+or closing the tab clears that local recovery snapshot, so resolve an unknown
+save first. The saved-profile editor keeps its publication, copy-preview, and
+history actions. The portable look-v1 format remains unchanged.
 
 In Looks, **Archive** removes a look from active lists while retaining its
 versions and session history. Archived looks cannot be edited or selected for

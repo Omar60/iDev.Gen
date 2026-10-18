@@ -24,8 +24,9 @@
 - Backend verification is `python -m pytest`; frontend verification is
   `npm --prefix frontend test`; frontend production output is checked with
   `npm --prefix frontend run build`.
-- GitHub Actions runs the backend suite and frontend build on Python 3.12 and
-  Node 22.
+- GitHub Actions runs the backend suite on Python 3.12 after installing the
+  frontend lockfile with Node 22 and `npm ci`; a separate Node 22 job runs
+  `npm ci` and builds the frontend.
 
 ## External Services and Infrastructure
 

@@ -70,7 +70,7 @@ describe('Looks manual editor', () => {
     await openNewLook()
     await setValue(field('Look name'), name)
     if (appearance) await setValue(field('Constant appearance'), appearance)
-    await click(button('Save look'))
+    await click(button('Save look only'))
   }
 
   beforeEach(() => {
@@ -97,7 +97,7 @@ describe('Looks manual editor', () => {
       if (path === '/api/components?all=1') return []
       throw new Error(`Unexpected GET ${path}`)
     })
-    vi.spyOn(api, 'post').mockImplementation(async (path, body) => {
+    vi.spyOn(api, 'postVersioned').mockImplementation(async (path, body) => {
       if (path === '/api/looks') return savedLook({ ...body, version: 1 })
       if (/^\/api\/looks\/[^/]+\/versions$/.test(path)) {
         const key = decodeURIComponent(path.split('/')[3])
@@ -115,7 +115,7 @@ describe('Looks manual editor', () => {
   })
 
   it('makes Looks discoverable and saves an appearance-only look manually', async () => {
-    const post = api.post
+    const post = api.postVersioned
     window.location.hash = '#/looks'
     await render(<App />)
     expect(container.querySelector('nav a[href="#/looks"]')?.textContent).toBe('Looks')
@@ -126,20 +126,20 @@ describe('Looks manual editor', () => {
     await setValue(field('Constant appearance'), 'short dark hair and subtle makeup')
     expect(container.textContent).toContain('Review this description for clothing')
     expect(container.textContent).toContain('not automatic detection')
-    await click(button('Save look'))
+    await click(button('Save look only'))
 
     expect(post).toHaveBeenCalledWith('/api/looks', {
       name: 'Quiet studio',
       appearance: 'short dark hair and subtle makeup',
       garments: [],
-    })
+    }, [])
     expect(container.textContent).toContain('Saved as version 1')
     expect(container.textContent).toContain('Previous versions remain available')
     expect(container.textContent).not.toContain('look-studio')
   })
 
   it('reuses an existing outfit without exposing its key or sending garment definitions', async () => {
-    const post = api.post
+    const post = api.postVersioned
     await render()
     await openNewLook()
     await setValue(field('Look name'), 'Layered look')
@@ -147,7 +147,7 @@ describe('Looks manual editor', () => {
     expect(container.querySelector('[aria-label="Outfit removal order"]')?.textContent)
       .toContain('a single-piece blue dress')
     expect(container.textContent).not.toContain('outfit-layered')
-    await click(button('Save look'))
+    await click(button('Save look only'))
 
     const body = post.mock.calls[0][1]
     expect(body).toEqual({ name: 'Layered look', appearance: '', outfit_key: 'outfit-layered' })
@@ -155,7 +155,7 @@ describe('Looks manual editor', () => {
   })
 
   it('adds one-piece clothing, layers and accessories, reorders rows, and removes an optional row', async () => {
-    const post = api.post
+    const post = api.postVersioned
     await render()
     await openNewLook()
     await setValue(field('Look name'), 'Layered accessory look')
@@ -173,7 +173,7 @@ describe('Looks manual editor', () => {
     await setValue(field('Garment 5 worn wording'), 'a temporary row')
     await click(button('Remove garment 5'))
     expect(container.textContent).toContain('No body-part categories are required.')
-    await click(button('Save look'))
+    await click(button('Save look only'))
 
     const body = post.mock.calls[0][1]
     expect(body).toEqual({
@@ -267,7 +267,7 @@ describe('Looks manual editor', () => {
     summaries = [summary('look-studio', 2, 'Studio look')]
     versions['look-studio:1'] = savedLook({ version: 1, appearance: 'first appearance' })
     versions['look-studio:2'] = savedLook({ version: 2, appearance: 'latest appearance' })
-    const post = api.post
+    const post = api.postVersioned
     await render()
     await click(button('Studio look · version 2'))
     expect(field('Constant appearance').value).toBe('latest appearance')
@@ -277,14 +277,14 @@ describe('Looks manual editor', () => {
     await setValue(field('Version history'), '1')
     expect(field('Constant appearance').value).toBe('first appearance')
     await setValue(field('Constant appearance'), 'corrected appearance')
-    await click(button('Save look'))
+    await click(button('Save look only'))
 
     expect(post).toHaveBeenCalledWith('/api/looks/look-studio/versions', {
       name: 'Studio look',
       appearance: 'corrected appearance',
       garments: [],
       expected_version: '2',
-    }, { losslessVersions: true, integerFields: ['expected_version'] })
+    }, ['expected_version'])
     expect(container.textContent).toContain('Saved as version 3')
     expect(Array.from(field('Version history').options).map((option) => option.textContent))
       .toEqual(['Version 1', 'Version 2', 'Version 3 · latest'])
@@ -324,13 +324,13 @@ describe('Looks manual editor', () => {
   })
 
   it('keeps the form intact and shows a readable disabled-feature error after a failed save', async () => {
-    vi.spyOn(api, 'post').mockRejectedValue(Object.assign(
+    vi.spyOn(api, 'postVersioned').mockRejectedValue(Object.assign(
       new Error('Resource planning feature is disabled.'), { status: 503 },
     ))
     await render()
     await openNewLook()
     await setValue(field('Look name'), 'Still editable')
-    await click(button('Save look'))
+    await click(button('Save look only'))
 
     expect(container.querySelector('[role="alert"]')?.textContent)
       .toContain('Resource planning is disabled.')
@@ -350,7 +350,7 @@ describe('Looks manual editor', () => {
       if (path === '/api/wardrobe') return inventory
       throw new Error(`Unexpected GET ${path}`)
     })
-    vi.spyOn(api, 'post').mockImplementation(async (_path, body) => savedLook({
+    vi.spyOn(api, 'postVersioned').mockImplementation(async (_path, body) => savedLook({
       key: 'look-race',
       version: 1,
       name: body.name,
@@ -360,7 +360,7 @@ describe('Looks manual editor', () => {
     await click(button('Refresh'))
     await openNewLook()
     await setValue(field('Look name'), 'Race look')
-    await click(button('Save look'))
+    await click(button('Save look only'))
     expect(button('Race look · version 1')).toBeTruthy()
     expect(container.textContent).not.toContain('Loading saved looks…')
 
@@ -388,7 +388,7 @@ describe('Looks manual editor', () => {
       }
       throw new Error(`Unexpected GET ${path}`)
     })
-    vi.spyOn(api, 'post').mockImplementation(async (_path, body) => savedLook({
+    vi.spyOn(api, 'postVersioned').mockImplementation(async (_path, body) => savedLook({
       key: 'look-race',
       version: Number(body.expected_version) + 1,
       name: body.name,
@@ -398,7 +398,7 @@ describe('Looks manual editor', () => {
     await click(button('Refresh'))
     await click(button('Race look · version 1'))
     await setValue(field('Constant appearance'), 'newer appearance')
-    await click(button('Save look'))
+    await click(button('Save look only'))
     expect(button('Race look · version 2')).toBeTruthy()
     expect(Array.from(field('Version history').options).map((option) => option.textContent))
       .toEqual(['Version 1', 'Version 2 · latest'])

@@ -1,5 +1,40 @@
 # Project Diary
 
+## Integrated Review Group 3 Acceptance
+
+Accept a combined result only when it matches the frozen request, not merely
+internally consistent returned identities. Preserve unresolved requests across
+SPA remount and document the local-memory boundary. Keep saved-editor actions
+and accessibility contracts when sharing controlled inputs. Connected tests
+must use real frontend payloads against real HTTP services and a portable
+launcher; backend CI must install the already-declared frontend toolchain.
+
+A diagnostic dump followed by an access violation does not prove application
+causality. The existing 40-take test passed alone and the final complete xdist
+suite passed after omitting the diagnostic dump. Preserve those distinct
+outcomes, the user's normal-xdist timing preference and all assertions. Only
+Group 3 is accepted; 11/16 tasks are complete and Group 4 remains untouched.
+Check continuity wording before sealing the Git handoff: an accepted and
+committed group must not still describe its acceptance commit as future work.
+
+## Integrated Review Identity and Recovery
+
+Share controlled review inputs without moving saved-profile publication,
+copy/history actions or their accessibility contracts. Keep row identity stable
+while deriving ordered garment indices only at proposal/save. Validate combined
+responses against the frozen request's target, exact successor version and
+content, not merely internally consistent look/profile fields. Fence late UI
+updates and retain unresolved requests across SPA unmount/remount; document the
+current-tab memory boundary rather than claiming durable browser recovery.
+
+Connected Python/frontend acceptance needs a portable Node launcher and the
+existing frontend dependencies installed in backend CI; do not add a
+Windows-shell assumption or skip coverage. A stalled run under inconsistent
+worker permissions does not establish that xdist is faulty. Preserve normal
+repository parallelism for the complete gate unless evidence requires a bounded
+diagnostic exception. Stop automatic retries when the user takes over a stuck
+gate; failed or incomplete runs never justify task marks or an acceptance commit.
+
 ## Atomic Look and Profile Acceptance
 
 Keep the existing look allocator, profile publisher and readiness checker under

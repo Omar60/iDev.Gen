@@ -25,6 +25,25 @@ live wardrobe catalogue later changes or an item is retired. A name-only edit
 can have the same content digest as the prior version because the digest covers
 appearance and outfit content, not the name or version number.
 
+The editor also reviews an automation profile for the exact pending look.
+Assign each Unicode appearance span to permanent appearance or a listed
+garment, record chest, hips, legs and feet for the baseline and each garment
+state, and explicitly confirm inventory, baseline, profile review, and removal
+order. These controlled review controls are shared with the saved-profile
+editor; publication, copy preview, and revision history remain available there.
+Every new look, imported-outfit conversion, and new version starts with
+unassigned appearance and unknown or absent coverage facts. Suggestions are
+optional and editable, and their proposal identity stays separate from the
+final reviewed look digest.
+
+**Save look + automation profile** is enabled only after the complete review.
+It creates the immutable look version and ready profile revision 1 together;
+there is no follow-up publication step. When facts are missing or the inventory
+is incomplete, the editor lists the blockers and offers the explicit
+**Save look only** action. This ordinary save creates no profile. A rejected
+combined write does not report a partial success, and the entered draft stays
+available for correction.
+
 When a version has no saved outfit, its `outfit` is `null`. That only means no
 separate outfit was saved: appearance text may still describe clothing, so
 review it manually.
@@ -55,12 +74,30 @@ then save to create a named look.
 
 **From photo** stages one JPEG, PNG, or WebP for preview. Describe it manually,
 or extract an editable proposal when Setup confirms a configured text assistant
-and explicit vision model. Review the appearance and garment list, correct or
-omit every unresolved detail, and confirm garment removal order before saving.
-Manual save remains available when extraction is unavailable. Cancel the stage
-or refresh its status; if cleanup reports a warning, retry cleanup from the
-view. This photo input describes a saved look and never becomes a generation
-reference.
+and explicit vision model. Photo automation suggestions are optional: enable
+**Include optional automation profile suggestions with photo extraction** before
+extracting. The ordinary photo proposal remains available if companion facts
+are unavailable. Review the appearance and garment list, correct or omit every
+unresolved detail, and confirm garment removal order before saving. Those photo
+confirmations remain separate from the profile review; editing appearance,
+garments, or order clears the corresponding acceptance. Manual save remains
+available when extraction is unavailable. Cancel the stage or refresh its
+status; if cleanup reports a warning, retry cleanup from the view. This photo
+input describes a saved look and never becomes a generation reference.
+
+If a combined save's response is lost or its returned identity cannot be
+verified, the Looks view disables further edits and retains the exact request
+body and UUID in memory for the current browser tab. **Retry the identical
+combined save** replays that same request; do not start a fresh save while its
+result is unknown. The recovery snapshot survives Looks editor unmount/remount
+inside the single-page app, but a full page reload or closing the tab clears the
+local snapshot, so resolve an unknown save before reloading. A stable known
+refusal releases the pending request for correction and another reviewed
+attempt. The backend's idempotency receipt remains durable when the write
+committed.
+
+On success, `{version}` below is the actual saved decimal look version. The
+combined save shows `Saved look version {version} and automation profile revision 1. The profile is ready.`; an explicit look-only save shows `Saved as version {version}. Previous versions remain available; no automation profile was created.` If a combined save completes after its editor closes, the view shows `A combined save completed after its editor closed. The saved-look list was refreshed.` This last notice refreshes the list without restoring or overwriting a closed form.
 
 With MiniMax, `MiniMax-M3.1-Flash-Preview` can be used as both the text and
 explicit vision model when the key has access. The transport separates provider
@@ -131,10 +168,10 @@ the existing extraction error behavior. The photo companion and its redacted
 request evidence expire with the existing staged proposal; neither image bytes
 nor a data URI are included in that evidence.
 
-The current browser editor does not yet show this combined automation review or
-save. The backend combined-save API below is available to reviewed clients;
-suggestions remain unaccepted until that request supplies the final profile and
-all four confirmations. The browser still supports ordinary look-only saves.
+The browser applies this same combined-save contract to manual looks, outfit
+conversion, photo review, and new versions. Suggestions remain unaccepted until
+the user checks the final facts and all four confirmations; the server also
+validates the final profile against the exact saved snapshot.
 
 ### Atomic combined look/profile saves
 

@@ -1,6 +1,60 @@
 # Latest Session Work
 
-## Current Handoff: Group 2 Accepted
+## Current Handoff: Group 3 Accepted
+
+Implementation deployment `looks-g3-20261017` and closure deployment
+`looks-g3-close-20261017` cover only Tasks 3.1-3.5 of
+`create-automation-profiles-with-looks`. The clean baseline was `2999a33` after
+`b7ab1c5`; both prior groups and their actual HTTP contracts were inspected.
+The 64-test prerequisite check passed. Main retains architecture and acceptance;
+G3-EXEC owned production/repairs and G3-TEST independent verification.
+
+The integrated editor shares controlled ownership/coverage/baseline/inventory
+inputs while retaining saved-profile publication, copy and history. Manual,
+converted-outfit, photo-manual, reviewed-photo and new-version saves use the
+existing atomic API. Required confirmations start unaccepted. Incomplete facts
+show blockers and an explicit look-only action. Photo uncertainty corrections
+and removal-order review remain explicit. Row identities and scalar Unicode
+spans survive editing; proposals are fenced across edits, A-to-B-to-A and
+unmount. Complete results must match the frozen request's target, exact
+successor version and content. Unknown results preserve the exact body/UUID
+across SPA remount; this memory-only recovery does not survive page reload or
+tab closure. No later publication step is required for a complete combined save.
+
+Independent review required response-to-attempt binding and remount recovery,
+and caught an accessible-label regression after control extraction. Main also
+caught a Windows-only launcher in the new connected contract tests and missing
+frontend dependencies in backend CI. The portable direct-Node launcher and
+Node 22/npm ci CI setup were repaired without adding packages or skipping tests.
+The GitHub workflow itself was not run.
+
+Final user-run normal-xdist Python evidence: 3,690 passed, two skipped,
+18 warnings, 495.36 seconds. G3-CLOSE-TEST independently inspected its complete
+log, confirmed no failure/crash markers and checked the current tree. Both new
+real FastAPI contract tests passed; they execute actual frontend helper output
+for manual/photo/conversion/version requests, exact large integers, replay and
+zero-write refusal. The symlink skip is environmental with its alternative
+passing; the 500-take benchmark is opt-in and the regular 40-take journey passed.
+Complete frontend: 698 tests in 43 files, zero skips; build, strict OpenSpec and
+tracked/new-file diff checks passed. Explicit privacy/control: 46 passed.
+Warnings concern existing Pydantic/deprecation notices and frontend bundle size.
+
+Earlier stalled/interrupted runs remain inconclusive. The diagnostic full run
+with a 120-second faulthandler dump suffered an access violation in the existing
+40-take journey; that test then passed alone in 165.46 seconds, and the final
+full normal-xdist run without that diagnostic passed. No causal fix is claimed.
+Respect the user's normal-xdist preference; do not repeat a thirty-minute serial
+suite merely to replace a passing final gate. Related verification processes
+were stopped, and two nonignored G3 scratch directories were moved reversibly
+outside the repository. Ignored local logs remain outside commit scope.
+
+Main accepted and marked only 3.1-3.5, reaching 11/16. The closure-document
+checks passed and Executor completed the explicitly delegated isolated commit.
+Archivist provides the read-only Git handoff and exact usage report. No unrelated
+changes were found. Group 3 is closed: no Group 4, push, sync, archive, real
+generation or visual fidelity claim. A later task requires authorization.
+
+## Previous Handoff: Group 2 Accepted
 
 Deployment `looks-g2-20261017` completed only Tasks 2.1-2.3 of
 `create-automation-profiles-with-looks` through internal Heavy Codex. Main read

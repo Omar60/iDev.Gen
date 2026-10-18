@@ -1,10 +1,8 @@
 import React, { useMemo, useRef, useState } from 'react'
 import { api, versionText } from '../api.js'
-import { assignScalarSpanOwner, scalarSpanFromUtf16Selection } from '../appearanceOwnership.js'
+import AutomationProfileReview, { REGIONS, readyPartition, unknownRegions } from '../components/AutomationProfileReview.jsx'
 import AutomationProfileSelector from '../components/AutomationProfileSelector.jsx'
 
-const REGIONS = ['chest', 'hips', 'legs', 'feet']
-const COVERAGE = ['unknown', 'full', 'partial', 'none']
 const digestPattern = /^[0-9a-f]{64}$/
 const SQLITE_MAX = 9223372036854775807n
 
@@ -13,8 +11,6 @@ const nonnegativeRevisionText = (value) => {
   if (!/^(?:0|[1-9]\d*)$/.test(text)) return null
   try { return BigInt(text) <= SQLITE_MAX ? text : null } catch { return null }
 }
-
-const unknownRegions = () => Object.fromEntries(REGIONS.map((region) => [region, 'unknown']))
 
 const userProvenance = (look) => ({
   origin: 'user',
@@ -40,24 +36,6 @@ const draftFromProfile = (profile, look) => ({
   baseline_coverage: profile.baseline_coverage ? structuredClone(profile.baseline_coverage) : null,
   inventory_complete: structuredClone(profile.inventory_complete),
 })
-
-const readyPartition = (appearance, segments) => {
-  let offset = 0
-  for (const segment of segments) {
-    if (
-      segment.start !== offset || segment.end <= segment.start
-      || segment.text !== Array.from(appearance).slice(segment.start, segment.end).join('')
-      || !segment.owner
-    ) return false
-    offset = segment.end
-  }
-  return offset === Array.from(appearance).length
-}
-
-const idFactoryFor = () => {
-  let next = 0
-  return () => `appearance-${Date.now().toString(36)}-${(++next).toString(36)}`
-}
 
 const identityPath = (identity) => {
   const query = new URLSearchParams({
@@ -114,10 +92,6 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
   const [inventoryConfirmed, setInventoryConfirmed] = useState(false)
   const [baselineConfirmed, setBaselineConfirmed] = useState(false)
   const [reviewConfirmed, setReviewConfirmed] = useState(false)
-  const [selection, setSelection] = useState(null)
-  const [ownerChoice, setOwnerChoice] = useState('')
-  const [pendingShortcut, setPendingShortcut] = useState('')
-  const [noneCoverageTargets, setNoneCoverageTargets] = useState([])
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -127,7 +101,7 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
   const [copySelections, setCopySelections] = useState([])
   const [copyPreview, setCopyPreview] = useState(null)
   const [copyConfirmed, setCopyConfirmed] = useState(false)
-  const appearanceRef = useRef(null)
+  const [reviewResetKey, setReviewResetKey] = useState(0)
   const sourceProfileIdentityRef = useRef(null)
   const copyPreviewRequestRef = useRef(0)
   const copyPreviewContextRef = useRef(null)
@@ -142,18 +116,7 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
       label: `Progressive garment · ${garment.wording}`,
     })),
   ], [savedLookIdentity])
-  const partitionValid = readyPartition(look.appearance, draft.appearance_segments)
-  const permanentProjection = draft.appearance_segments
-    .filter((segment) => segment.owner === 'permanent')
-    .map((segment) => segment.text)
-    .join('')
-  const noneTargetOptions = [
-    { id: 'baseline', kind: 'baseline', label: 'Baseline · every listed garment absent' },
-    ...garments.flatMap((garment) => [
-      { id: `${garment.key}\u0000worn`, kind: 'garment_state', garment_key: garment.key, state: 'worn', label: `${garment.wording} · worn` },
-      ...(garment.aside ? [{ id: `${garment.key}\u0000aside`, kind: 'garment_state', garment_key: garment.key, state: 'aside', label: `${garment.wording} · moved aside` }] : []),
-    ]),
-  ]
+  const partitionValid = readyPartition(look.appearance, draft.appearance_segments, owners)
   const nextRevision = BigInt(nonnegativeRevisionText(latestRevision) || '0') + 1n
   const canPublish = !disabled && !busy && reviewConfirmed && partitionValid
     && baselineConfirmed && inventoryConfirmed && nextRevision <= SQLITE_MAX
@@ -173,11 +136,8 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
     setInventoryConfirmed(false)
     setBaselineConfirmed(false)
     setReviewConfirmed(false)
-    setSelection(null)
-    setOwnerChoice('')
-    setPendingShortcut('')
-    setNoneCoverageTargets([])
     setNotice('')
+    setReviewResetKey((key) => key + 1)
   }
 
   const setSourceProfile = (profile) => {
@@ -220,106 +180,6 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
     } finally {
       setBusy(false)
     }
-  }
-
-  const updateCoverage = (selector, state, region, value) => {
-    invalidateCopyPreview()
-    draftRevisionRef.current += 1
-    setDraft((current) => {
-      const next = structuredClone(current)
-      const provenance = userProvenance(look)
-      if (selector === 'baseline') {
-        next.baseline_coverage ||= { regions: unknownRegions(), provenance }
-        next.baseline_coverage.regions[region] = value
-        next.baseline_coverage.provenance = provenance
-        setBaselineConfirmed(true)
-      } else {
-        next.garment_coverage[selector] ||= {}
-        next.garment_coverage[selector][state] ||= { regions: unknownRegions(), provenance }
-        next.garment_coverage[selector][state].regions[region] = value
-        next.garment_coverage[selector][state].provenance = provenance
-      }
-      setReviewConfirmed(false)
-      return next
-    })
-  }
-
-  const selectAppearanceSpan = (event) => {
-    try {
-      const next = scalarSpanFromUtf16Selection(
-        look.appearance, event.currentTarget.selectionStart,
-        event.currentTarget.selectionEnd,
-      )
-      setSelection(next.end > next.start ? next : null)
-    } catch {
-      setSelection(null)
-    }
-  }
-
-  const assignSelectedOwner = () => {
-    if (!selection || !ownerChoice) return
-    try {
-      invalidateCopyPreview()
-      draftRevisionRef.current += 1
-      setDraft((current) => ({
-        ...current,
-        appearance_segments: assignScalarSpanOwner(
-          look.appearance, current.appearance_segments,
-          selection.start, selection.end, ownerChoice, idFactoryFor(),
-        ),
-      }))
-      setSelection(null)
-      setReviewConfirmed(false)
-    } catch (cause) {
-      setError(errorText(cause))
-    }
-  }
-
-  const confirmShortcut = () => {
-    if (pendingShortcut === 'permanent') {
-      const length = Array.from(look.appearance).length
-      const segments = length ? [{
-        segment_id: 'appearance-permanent', start: 0, end: length,
-        text: look.appearance, owner: 'permanent',
-      }] : []
-      draftRevisionRef.current += 1
-      setDraft((current) => ({ ...current, appearance_segments: segments }))
-      invalidateCopyPreview()
-      setNotice('Preview accepted: every appearance clause is now asserted permanent for this exact look version.')
-    } else if (pendingShortcut === 'none') {
-      const selectedTargets = noneCoverageTargets
-      draftRevisionRef.current += 1
-      setDraft((current) => {
-        const next = structuredClone(current)
-        const provenance = userProvenance(look)
-        for (const target of selectedTargets) {
-          const regions = Object.fromEntries(REGIONS.map((region) => [region, 'none']))
-          if (target.kind === 'baseline') {
-            next.baseline_coverage = { regions, provenance }
-          } else {
-            const garment = garments.find((item) => item.key === target.garment_key)
-            if (!garment || (target.state === 'aside' && !garment.aside)) continue
-            next.garment_coverage[target.garment_key] ||= {}
-            next.garment_coverage[target.garment_key][target.state] = { regions, provenance }
-          }
-        }
-        return next
-      })
-      if (selectedTargets.some((target) => target.kind === 'baseline')) setBaselineConfirmed(true)
-      setNotice(`Preview accepted for selected states only: ${selectedTargets.map((target) => target.label).join('; ')}. Inventory completeness still needs its own confirmation.`)
-      setNoneCoverageTargets([])
-      invalidateCopyPreview()
-    }
-    setPendingShortcut('')
-    setReviewConfirmed(false)
-  }
-
-  const setNoneCoverageTarget = (target, checked) => {
-    invalidateCopyPreview()
-    setNoneCoverageTargets((current) => checked
-      ? current.some((item) => item.id === target.id) ? current : [...current, target]
-      : current.filter((item) => item.id !== target.id))
-    setReviewConfirmed(false)
   }
 
   const toggleCopySource = (garmentKey, sourceState, checked) => {
@@ -592,114 +452,36 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
         </div>
         {baseLoaded && <p className="muted" role="status">Editing from an immutable revision; Save creates the next revision.</p>}
 
-        <fieldset>
-          <legend>Appearance ownership</legend>
-          <p className="muted">Select a phrase in the saved appearance, choose its owner, and assign it. Every Unicode character must have exactly one owner.</p>
-          <label>
-            Saved appearance · select a phrase to assign or correct
-            <textarea
-              ref={appearanceRef}
-              aria-label="Saved appearance for ownership selection"
-              value={look.appearance}
-              readOnly
-              rows={Math.min(8, Math.max(3, look.appearance.split('\n').length + 1))}
-              onMouseUp={selectAppearanceSpan}
-              onKeyUp={selectAppearanceSpan}
-              onSelect={selectAppearanceSpan}
-            />
-          </label>
-          {selection && <p className="muted" role="status">Selected phrase: “{selection.text}”</p>}
-          <div className="row" style={{ flexWrap: 'wrap' }}>
-            <label>
-              Selected phrase owner
-              <select aria-label="Selected phrase owner" value={ownerChoice} onChange={(event) => setOwnerChoice(event.target.value)} disabled={disabled || busy}>
-                <option value="">Choose an owner…</option>
-                {owners.map((owner) => <option key={owner.value} value={owner.value}>{owner.label}</option>)}
-              </select>
-            </label>
-            <button type="button" onClick={assignSelectedOwner} disabled={disabled || busy || !selection || !ownerChoice}>Assign or correct selected phrase</button>
-          <button type="button" onClick={() => { invalidateCopyPreview(); setPendingShortcut('permanent') }} disabled={disabled || busy}>All appearance is permanent</button>
-          </div>
-          {!partitionValid && <p className="error" role="status">Ownership is incomplete. Assign every part of the saved appearance before publishing.</p>}
-          {draft.appearance_segments.length > 0 && (
-            <ul aria-label="Appearance ownership preview">
-              {draft.appearance_segments.map((segment) => (
-                <li key={segment.segment_id}>
-                  “{segment.text}” — {owners.find((owner) => owner.value === segment.owner)?.label || 'Unassigned'}
-                </li>
-              ))}
-            </ul>
-          )}
-          <p className="muted" aria-label="Permanent appearance projection preview">
-            Joined permanent appearance projection: {permanentProjection ? `“${permanentProjection}”` : 'empty'}
-          </p>
-        </fieldset>
-
-        <fieldset>
-          <legend>Supported-region coverage</legend>
-          <p className="muted">For each state, record chest, hips, legs and feet as full, partial, none or unknown. Unknown is never treated as none.</p>
-          <CoverageEditor title="Baseline · every listed garment absent" fact={draft.baseline_coverage} disabled={disabled || busy} onChange={(region, value) => updateCoverage('baseline', '', region, value)} />
-          {garments.map((garment) => (
-            <div key={garment.key} style={{ borderTop: '1px solid var(--line)', paddingTop: 8, marginTop: 8 }}>
-              <b>{garment.wording}</b>
-              <CoverageEditor title="Worn" fact={draft.garment_coverage[garment.key]?.worn} disabled={disabled || busy} onChange={(region, value) => updateCoverage(garment.key, 'worn', region, value)} />
-              {garment.aside && <CoverageEditor title={`Moved aside · ${garment.aside}`} fact={draft.garment_coverage[garment.key]?.aside} disabled={disabled || busy} onChange={(region, value) => updateCoverage(garment.key, 'aside', region, value)} />}
-            </div>
-          ))}
-          <button type="button" onClick={() => { invalidateCopyPreview(); setNoneCoverageTargets([]); setPendingShortcut('none') }} disabled={disabled || busy}>No coverage in supported regions</button>
-          {pendingShortcut === 'none' && <div aria-label="No-coverage target selection">
-            <p className="muted">Choose the exact states for this assertion. Unselected states and inventory confirmation stay unchanged.</p>
-            {noneTargetOptions.map((target) => (
-              <label key={target.id} style={{ display: 'block' }}>
-                <input
-                  type="checkbox"
-                  aria-label={`Assert no coverage for ${target.label}`}
-                  checked={noneCoverageTargets.some((item) => item.id === target.id)}
-                  onChange={(event) => setNoneCoverageTarget(target, event.target.checked)}
-                  disabled={disabled || busy}
-                />
-                {target.label}
-              </label>
-            ))}
-            {noneCoverageTargets.length === 0
-              ? <p className="muted" role="status">Choose one or more states to preview this assertion.</p>
-              : <ShortcutPreview
-                text={`Preview: assert none for chest, hips, legs and feet only in ${noneCoverageTargets.map((target) => target.label).join('; ')}. Inventory completeness stays unchanged.`}
-                onConfirm={confirmShortcut} onCancel={() => { setPendingShortcut(''); setNoneCoverageTargets([]) }}
-                disabled={disabled || busy}
-              />}
-          </div>}
-          {pendingShortcut === 'permanent' && <ShortcutPreview
-            text="This will assign every clause in the exact saved appearance to permanent appearance. Review the preview, including any removable-garment conflicts."
-            onConfirm={confirmShortcut} onCancel={() => setPendingShortcut('')}
-            disabled={disabled || busy}
-          />}
-          <div style={{ marginTop: 8 }}>
-            <label>
-              Inventory confirmation
-              <select
-                aria-label="Inventory confirmation"
-                value={draft.inventory_complete.value === null ? '' : String(draft.inventory_complete.value)}
-                disabled={disabled || busy}
-                onChange={(event) => {
-                  const value = event.target.value === '' ? null : event.target.value === 'true'
-                  invalidateCopyPreview()
-                  draftRevisionRef.current += 1
-                  setDraft((current) => ({ ...current, inventory_complete: {
-                    value, provenance: userProvenance(look),
-                  } }))
-                  setInventoryConfirmed(value !== null)
-                  setReviewConfirmed(false)
-                }}
-              >
-                <option value="">Choose explicitly…</option>
-                <option value="true">I confirm the listed garment inventory is complete</option>
-                <option value="false">The listed garment inventory is incomplete</option>
-              </select>
-            </label>
-            {!inventoryConfirmed && <p className="error" role="status">Explicit inventory confirmation is required before publishing.</p>}
-          </div>
-        </fieldset>
+        <AutomationProfileReview
+          key={reviewResetKey}
+          appearance={look.appearance}
+          garments={garments.map((garment) => ({
+            id: garment.key,
+            wording: garment.wording,
+            aside: garment.aside,
+            wornLabel: 'Worn',
+            asideLabel: `Moved aside · ${garment.aside}`,
+          }))}
+          draft={draft}
+          onDraftChange={(next) => {
+            invalidateCopyPreview()
+            draftRevisionRef.current += 1
+            setDraft(next)
+          }}
+          inventoryConfirmed={inventoryConfirmed}
+          onInventoryConfirmed={setInventoryConfirmed}
+          baselineConfirmed={baselineConfirmed}
+          onBaselineConfirmed={setBaselineConfirmed}
+          reviewConfirmed={reviewConfirmed}
+          onReviewConfirmed={setReviewConfirmed}
+          provenance={userProvenance(look)}
+          reviewLabel="I reviewed ownership, every coverage state, the baseline and inventory for this exact saved-look version."
+          appearanceLabel="Saved appearance · select a phrase to assign or correct"
+          appearanceInputLabel="Saved appearance for ownership selection"
+          onNotice={setNotice}
+          showReviewConfirmation={false}
+          disabled={disabled || busy}
+        />
 
         <fieldset>
           <legend>Copy reviewed state facts</legend>
@@ -789,35 +571,5 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
         {latestRevision !== '0' && <p className="muted">Current latest revision for CAS: {latestRevision}. Editing an older revision still publishes after the latest.</p>}
       </div>
     </details>
-  )
-}
-
-function CoverageEditor({ title, fact, disabled = false, onChange }) {
-  return (
-    <fieldset style={{ marginTop: 6 }} aria-label={`${title} coverage`}>
-      <legend>{title}</legend>
-      <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
-        {REGIONS.map((region) => (
-          <label key={region}>
-            {region[0].toUpperCase() + region.slice(1)}
-            <select aria-label={`${title} ${region}`} value={fact?.regions?.[region] || 'unknown'} onChange={(event) => onChange(region, event.target.value)} disabled={disabled}>
-              {COVERAGE.map((coverage) => <option key={coverage} value={coverage}>{coverage}</option>)}
-            </select>
-          </label>
-        ))}
-      </div>
-    </fieldset>
-  )
-}
-
-function ShortcutPreview({ text, onConfirm, onCancel, disabled = false }) {
-  return (
-    <div className="panel" aria-label="Profile shortcut preview">
-      <p>{text}</p>
-      <div className="row">
-        <button type="button" onClick={onConfirm} disabled={disabled}>Confirm this user assertion</button>
-        <button type="button" onClick={onCancel} disabled={disabled}>Cancel preview</button>
-      </div>
-    </div>
   )
 }

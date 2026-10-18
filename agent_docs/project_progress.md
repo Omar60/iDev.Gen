@@ -1,37 +1,43 @@
 # Project Progress
 
-## Current Deployment: Group 2 Accepted
+## Current Deployment: Group 3 Accepted
 
-Deployment `looks-g2-20261017` used Heavy internal Codex for only Tasks 2.1-2.3
-of `create-automation-profiles-with-looks`. Main accepted the group after
-independent verification and two targeted replay repairs. Progress is 6/16.
-The initially clean checkout contained accepted Group 1 commit `b7ab1c5`;
-fresh prerequisite checks passed 48 focused tests and strict OpenSpec.
+Deployment `looks-g3-close-20261017` closes only Tasks 3.1-3.5 of
+`create-automation-profiles-with-looks`, following implementation deployment
+`looks-g3-20261017`. The initially clean baseline was Group 2 commit `2999a33`,
+following Group 1 `b7ab1c5`. Main accepted the implementation after independent
+code, contract, diff and test review. OpenSpec progress is 11/16.
 
 ## Implemented Boundary
 
-Reviewed API saves create the immutable look version, exact profile revision 1,
-accepted evidence and durable receipt atomically. Manual and extracted photo
-saves reuse existing callbacks and defer cleanup until the outer commit.
-Identical requests replay the exact response after byte cleanup or source
-catalogue removal; changed UUID reuse conflicts. Accepted user provenance is
-server-owned. Unknown or conflicting facts cannot produce a ready combined
-result. Look-only calls, portable-v1 and historical sessions stay compatible.
+Looks shares controlled appearance ownership, coverage, baseline and inventory
+review with the saved-profile editor. Complete explicit review saves a look
+and its ready profile revision 1 together for manual, outfit conversion,
+photo and new-version paths. Missing facts retain blockers and explicit
+look-only saving. Suggestions are opt-in and unaccepted; edits invalidate
+acceptance and fence late responses. Exact versions, Unicode spans and stable
+row identities are preserved. Unknown saves retain their exact request/UUID
+across SPA unmount/remount; full reload or tab closure loses that local snapshot.
+Saved-profile publication, copy and history remain available. Portable-v1 and
+historical sessions remain unchanged. Backend CI installs the existing Node
+frontend toolchain for connected cross-runtime contract tests.
 
-The browser still saves ordinary looks; integrated review is Group 3. There is
-no historical backfill or portable schema change. No provider/GPU generation,
-real configuration/data writes, push, sync or archive were performed.
+## Verification and Stop Boundary
 
-## Verification and Continuation
+The final user-run normal-xdist Python log passed 3,690 tests, with two skips
+and 18 warnings in 495.36 seconds; Tester independently inspected the log and
+current tree. The skips are unavailable native symlinks and the opt-in 500-take
+benchmark. The regular 40-take journey passed. Frontend passed 698 tests in 43
+files without skips; build and strict OpenSpec passed. Explicit independent
+privacy/control passed 46 tests; tracked/new-file diff checks passed.
 
-Independent acceptance: 8 adversarial tests; focused matrix 176 passed and one
-skipped; complete project-venv Python suite 3,688 passed, two skipped and 18
-warnings in 422.19 seconds. Privacy/control passed 46 tests; strict OpenSpec and
-tracked/new-file diff checks passed. No frontend files changed. Only closure
-documents and task marks changed after these production gates; compact closure
-checks precede the authorized isolated Conventional Commit.
+Earlier interrupted/stalled runs and one diagnostic-run access violation are
+not passing evidence or a proven production root cause. No assertions were
+weakened. Verification used temporary data and fake providers, without real
+GPU/provider generation. The existing bundle-size/dependency warnings remain.
 
-G2-EXEC owned production and repairs; G2-TEST independently inspected actual
-diff and persistence. Main owns acceptance and these continuity documents;
-Archivist owns the closing documentation and usage report. Close the Group 2
-commit, then stop. Group 3 requires a later authorization.
+Main marked only 3.1-3.5 after acceptance. The authorized isolated Conventional
+Commit closes Group 3; Executor completed the explicitly delegated Git operation
+after the closure checks. Archivist provides the final read-only Git handoff
+and exact Heavy usage report. Group 3 is closed: no Group 4, push, sync or
+archive was performed. All remaining tasks need a later authorization.

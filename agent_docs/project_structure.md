@@ -180,8 +180,10 @@ Verified baseline from the repository layout and application entry points.
   replay the stored response, including after staged-photo cleanup, which runs
   only after commit. Prospective garment references map to keys assigned by the
   save, and profile identity/readiness bind to the final look digest. These
-  combined review/save operations are API-only; the browser editor does not yet
-  expose them. The API contract is in `docs/looks.md`.
+  operations are available in the Looks editor, which shares appearance
+  ownership, coverage, baseline, inventory, and confirmation controls with the
+  saved-profile editor. Manual and photo-derived proposals feed the same
+  reviewed save; the API contract and user flow are in `docs/looks.md`.
   `frontend/src/appearanceOwnership.js` maps browser UTF-16 selection offsets to
   exact Unicode-scalar spans; `frontend/src/views/Looks.jsx` provides saved-look
   editing, JSON import/export, and photo review.

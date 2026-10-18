@@ -158,7 +158,7 @@ describe('Task 9.11 independent exact-version boundaries', () => {
     expect(calls.some((call) => call.path === detailPath)).toBe(true)
 
     await setValue(container.querySelector('[aria-label="Constant appearance"]'), 'updated appearance')
-    await click(button('Save look'))
+    await click(button('Save look only'))
 
     expect(container.textContent).toContain(`Saved as version ${nextVersion}.`)
     expect(calls.some((call) => call.path === `/api/looks/look-boundary/versions/${nextVersion}`)).toBe(false)
