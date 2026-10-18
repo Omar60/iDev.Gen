@@ -1,5 +1,28 @@
 # Project Diary
 
+## Connected Look Automation Group 5 Acceptance
+
+Separate atomic-save and Full Auto tests do not prove their connection. Begin
+at the real combined save and verify identities through every materialized
+stage and submitted prompt. Use overlapping layers as well as an accessory;
+different body regions alone do not demonstrate layering. An aside remains
+worn, so fixtures must not describe an item already resting elsewhere. Reuse
+the existing canonical progression.
+
+Adapter graph equality and serialized HTTP-body evidence are distinct. Capture
+the real client's body at the fake boundary, compare positive-prompt UTF-8 bytes
+against preparation and shots, and read receipt counts from persistence. Audits
+must fail on disagreement, not print hardcoded counts or return success after
+false comparisons. Synthetic outputs never prove pixel fidelity.
+
+Preserve failed full-suite evidence. An existing submission-refusal test takes
+its baseline before intentional lease renewal; crossing a second can change
+lease fields and fail its no-write assertion. Diagnose against unchanged HEAD
+without absorbing an unrelated repair or weakening assertions. The final full
+suite passed intact. Report policy-rejected cleanup and unexecuted negative
+injection explicitly. Only Group 5 is newly accepted, closing 16/16; stop without
+push, sync, archive or a new change.
+
 ## Exact Profile Selection and Complete Removal, Group 4
 
 Keep sole-ready discovery opt-in and verify the exact loaded identity before

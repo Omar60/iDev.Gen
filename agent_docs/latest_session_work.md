@@ -1,6 +1,54 @@
 # Latest Session Work
 
-## Current Handoff: Group 4 Accepted
+## Current Handoff: Group 5 Accepted
+
+Deployment `automation-profiles-g5-20261018` closes Tasks 5.1-5.3 of
+`create-automation-profiles-with-looks`, reaching 16/16 after independent
+acceptance. Baseline `b5fb396` was clean, 52 commits ahead of origin. Explorer
+inspected actual Group 1-4 commits/code; Tester verified current contracts in
+the full suites. Main retained architecture and acceptance; G5-TEST owned tests
+and gates, G5-BROWSER the rendered demo and HTTP audit, and G5-DOC the evidence
+guides. No production defect was demonstrated or production code changed.
+
+Connected tests cover manual assistant-free and reviewed-photo combined saves,
+exact profile revision 1 and garment identities, accepted corrections, preflight,
+explicit authorization, preparation, review, submission and runner execution.
+Five layered items yield seven stages; exact seven-take and longer thirteen-take
+journeys retain the inner blouse after removing the jacket, the final
+accessory still-on aside, then the empty inventory. Permanent appearance omits
+the accessory clause. Wardrobes, prepared prompts, shots and FakeComfy positives
+agree. Unknown coverage, conflicting baseline and insufficient count block
+without allocation. Exact save/create replays, including after execution,
+preserve identities and do not duplicate work.
+
+Rendered browser evidence covers photo-provider failure/retry, integrated save,
+new version and history, exact sole-ready profile, full timeline, explicit
+consent and thirteen completed takes. Assistant-free incomplete facts block
+combined save while normal-only saving and manual creation remain available.
+The separate independently repeated HTTP audit uses real save/preflight/create,
+reads actual authorization receipts and checks all thirteen prepared/shot/HTTP
+positive strings as UTF-8 bytes. Its ten checks passed and mismatches now fail
+explicitly. UI and API audit are distinct evidence; neither certifies pixels.
+The acceptance guides retain the 45-scenario matrix and reproducible commands.
+
+Final project-venv normal-xdist Python passed 3,698 tests, two skips and 18
+warnings in 689.12 seconds. Frontend passed 724 tests in 44 files; build, strict
+OpenSpec, 46 privacy/control tests, compilation, new-file scans and diff checks
+passed. A preceding full gate failed an unchanged test whose snapshot precedes
+intentional lease renewal. A temporary delay reproduced that pre-existing
+defect without repository edits; the final full suite passed intact. Skips
+remain the opt-in benchmark and unavailable native symlinks; dependency and
+bundle warnings remain. Logs stay outside the repository.
+
+Main accepted and marked only 5.1-5.3. Final documentation checks and the
+explicitly delegated isolated commit close this group; Archivist seals Git and
+the exact Heavy usage report. Stop here: no push, sync, archive, next change,
+remote providers or GPU work. Five earlier synthetic demo temp directories
+remain after policy-rejected cleanup; no matching processes/listeners remain.
+Negative audit injection was also policy-blocked and is not claimed executed.
+The corrected positive audit was independently rerun successfully.
+
+## Previous Handoff: Group 4 Accepted
 
 Deployment `looks-g4-20261017` covers only Tasks 4.1-4.2 of
 `create-automation-profiles-with-looks`. Baseline `3b44921` was clean, with

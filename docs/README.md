@@ -14,6 +14,11 @@
   40-take browser journey, synthetic provider boundary, and acceptance evidence.
 - [Task 7.2 Full Auto recovery walkthrough](task-7-2-recovery-walkthrough.md) — connected
   conflict, cancellation, browser-reopen, and backend-restart journeys.
+- [Automation profiles Group 5 acceptance](automation-profiles-group-5-acceptance.md) —
+  connected acceptance matrix for look/profile saving, Full Auto progression,
+  and repository gates.
+- [Automation profiles Group 5 browser walkthrough](automation-profiles-group-5-browser.md) —
+  isolated browser journeys and the prepared-to-submitted prompt-byte audit.
 - [Asking for candidates](catalogue-candidate-prompt.md) — the request that writes new
   component wordings, and the one that writes a reading vocabulary.
 - [Known limitations](known-limitations.md) — what the tool deliberately does not do yet.
