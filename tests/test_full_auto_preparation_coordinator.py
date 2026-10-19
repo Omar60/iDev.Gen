@@ -245,12 +245,15 @@ def test_full_auto_coordinator_heartbeat_keeps_long_assistant_io_owned(
     original_renew = resource_full_auto.renew_run_claim
     initial = datetime.fromisoformat(original_now().replace("Z", "+00:00"))
     clock = [initial]
+    clock_enabled = [False]
     step = [timedelta(seconds=20)]
     renewal_errors = []
     renewal_times = []
 
     def track_renewal(claim, **kwargs):
         renewal_times.append(asyncio.get_running_loop().time())
+        if clock_enabled[0]:
+            clock[0] += step[0]
         try:
             return original_renew(claim, **kwargs)
         except Exception as exc:
@@ -263,13 +266,15 @@ def test_full_auto_coordinator_heartbeat_keeps_long_assistant_io_owned(
         return await original_run_structured(*args, **kwargs)
 
     def fake_now():
-        value = clock[0]
-        clock[0] += step[0]
-        return value.isoformat(timespec="seconds")
+        return clock[0].isoformat(timespec="seconds")
 
     monkeypatch.setattr(main.enhance, "run_structured", delayed_assistant)
     monkeypatch.setattr(resource_full_auto, "renew_run_claim", track_renewal)
     monkeypatch.setattr(resource_full_auto, "RUN_HEARTBEAT_INTERVAL", timedelta(milliseconds=5))
+    monkeypatch.setattr(
+        resource_full_auto, "ASSISTANT_SLOT_HEARTBEAT_INTERVAL",
+        timedelta(milliseconds=5),
+    )
 
     async def run_with_long_io():
         task = asyncio.create_task(main._run_prepare_takes_operation(
@@ -279,11 +284,18 @@ def test_full_auto_coordinator_heartbeat_keeps_long_assistant_io_owned(
         before = db.one(
             "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
         )["lease_started_at"]
+        clock_enabled[0] = True
         monkeypatch.setattr(db, "now", fake_now)
-        await asyncio.sleep(0.1)
-        after = db.one(
-            "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
-        )["lease_started_at"]
+        async def wait_for_renewal():
+            while True:
+                after = db.one(
+                    "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
+                )["lease_started_at"]
+                if datetime.fromisoformat(after) - datetime.fromisoformat(before) >= timedelta(seconds=60):
+                    return after
+                await asyncio.sleep(0.01)
+
+        after = await asyncio.wait_for(wait_for_renewal(), timeout=15)
         assert datetime.fromisoformat(after) - datetime.fromisoformat(before) >= timedelta(seconds=60), (renewal_errors, renewal_times)
         step[0] = timedelta(0)
         release.set()

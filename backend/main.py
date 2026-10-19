@@ -1814,6 +1814,11 @@ def get_saved_look_version(
     return saved_looks.get_version(look_key, version)
 
 
+@app.get("/api/looks/{look_key:path}/versions/{version}")
+def reject_path_style_saved_look_version(look_key: str, version: str):
+    raise HTTPException(status_code=404)
+
+
 @app.get("/api/looks/{look_key:path}/versions/{version}/export")
 def export_saved_look_version(
     look_key: str, version: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),

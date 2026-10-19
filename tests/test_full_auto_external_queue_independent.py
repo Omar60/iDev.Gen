@@ -345,6 +345,11 @@ def test_external_race_uses_one_normal_priority_post_and_excludes_queue_time_fro
     monkeypatch.setattr(runner_mod, "POLL_SECONDS", 0.001)
     monkeypatch.setattr(runner_mod, "CANCELLATION_QUEUE_POLL_SECONDS", 0.005)
     monkeypatch.setattr(runner_mod, "SHOT_TIMEOUT", 0.25)
+    retry_schedules = []
+    monkeypatch.setattr(
+        main, "_schedule_full_auto_run_after_delay",
+        lambda scheduled_run_id, delay: retry_schedules.append((scheduled_run_id, delay)),
+    )
     resource_full_auto.advance_run(execute_owner, "waiting_runner")
 
     external_running = []
@@ -414,11 +419,10 @@ def test_external_race_uses_one_normal_priority_post_and_excludes_queue_time_fro
                 and resource_full_auto.get_run(run_id)["waiting_reason"] == "external_queue_busy"
             ),
         )
-        coordinator.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await coordinator
+        await asyncio.wait_for(coordinator, timeout=5)
 
     asyncio.run(observe_race_and_settle())
+    assert retry_schedules == [(run_id, 15.0)]
     assert fake.attempts == 1
     assert len(prompt_kwargs) == 1
     assert not {"priority", "front", "number", "queue_position"} & set(prompt_kwargs[0])

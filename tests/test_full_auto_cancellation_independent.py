@@ -534,6 +534,16 @@ def test_explicit_resume_observing_a_verified_running_prompt_stays_cancel_reques
             f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
             json=_control_body(run_id),
         )
+        if (
+            cancelled.status_code == 409
+            and cancelled.json().get("detail", {}).get("code") == "run_revision_stale"
+        ):
+            # Refresh once if the runner advanced the control revision in flight.
+            cancelled = await asyncio.to_thread(
+                client.post,
+                f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
+                json=_control_body(run_id),
+            )
         await asyncio.wait_for(runner._task, timeout=5)
         return cancelled, unrelated_prompt_id
 
