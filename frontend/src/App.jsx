@@ -14,8 +14,9 @@ import Catalogue from './views/Catalogue.jsx'
 import RoomImport from './views/RoomImport.jsx'
 import Resources from './views/Resources.jsx'
 import Looks from './views/Looks.jsx'
+import AppShell from './components/AppShell.jsx'
 
-// Hash router: three views plus one detail page. react-router would be a whole
+// Hash router: views and their detail pages. react-router would be a whole
 // dependency for what `location.hash` already does. The query string is
 // stripped before splitting, so the slideshow's `#/slideshow?interval=3…` is
 // still routed to its view and the view itself reads the params.
@@ -30,39 +31,6 @@ function useHash() {
 }
 
 export const go = (path) => { window.location.hash = path }
-
-function ComfyStatus() {
-  const [st, setSt] = useState(null)
-  useEffect(() => {
-    const tick = () => api.get('/api/comfy/status').then(setSt).catch(() => setSt({ online: false }))
-    tick()
-    const id = setInterval(tick, 5000)
-    return () => clearInterval(id)
-  }, [])
-  const vram = st?.vram_free ? `${(st.vram_free / 1e9).toFixed(1)}/${(st.vram_total / 1e9).toFixed(0)} GB` : ''
-  return (
-    <div className="status">
-      {st && !st.output_dir_ok &&
-        <a className="badge failed" href="#/setup"
-           title={`comfy_output_dir: ${st.output_dir || 'not configured'}`}>
-          Finish setup
-        </a>}
-      <span className={'dot' + (st?.online ? ' on' : '')} />
-      {st?.online ? `ComfyUI ${st.version || ''} · ${vram}` : 'ComfyUI offline'}
-      {/* The badge names WHICH session is running, because the status route has
-          always served it and nothing read it. One session runs at a time, so a
-          second start is refused with "A session is already running" — and until
-          this link existed the operator had no way to reach the one that is, on
-          a machine with three hundred sessions in the library. */}
-      {st?.busy && (st.running_session
-        ? <a className="badge running" href={`#/session/${st.running_session}`}
-             title={`session ${st.running_session} is generating`}>
-            generating · #{st.running_session}
-          </a>
-        : <span className="badge running">generating</span>)}
-    </div>
-  )
-}
 
 export default function App() {
   const hash = useHash()
@@ -84,39 +52,19 @@ export default function App() {
   }, [])
 
   return (
-    <>
-      <header className="topbar">
-        <span className="brand">iDev<span style={{ color: 'var(--accent)' }}>.Gen</span></span>
-        <nav>
-          <a href="#/models">Models</a>
-          <a href="#/sessions">Sessions</a>
-          <a href="#/resources">Resources</a>
-          <a href="#/looks">Looks</a>
-          <a href="#/judge">Judge</a>
-          <a href="#/catalogue">Catalogue</a>
-          <a href="#/library">Library</a>
-          <a href="#/slideshow">Slideshow</a>
-          <a href="#/rooms">Rooms</a>
-          <a href="#/workflows">Workflows</a>
-          <a href="#/setup">Setup</a>
-        </nav>
-        <span className="spacer" />
-        <ComfyStatus />
-      </header>
-      <main>
-        {view === 'model' && <ModelDetail id={Number(arg)} />}
-        {view === 'session' && <SessionView id={Number(arg)} />}
-        {view === 'resources' && <Resources requestedModelId={arg} />}
-        {view === 'looks' && <Looks />}
-        {view === 'judge' && <Judge />}
-        {view === 'catalogue' && <Catalogue />}
-        {view === 'rooms' && <RoomImport />}
-        {view === 'workflows' && <Workflows />}
-        {view === 'setup' && <Setup />}
-        {view === 'library' && <Library />}
-        {view === 'slideshow' && <Slideshow />}
-        {(view === 'models' || view === 'sessions') && <Models tab={view} />}
-      </main>
-    </>
+    <AppShell view={view} routeKey={path}>
+      {view === 'model' && <ModelDetail id={Number(arg)} />}
+      {view === 'session' && <SessionView id={Number(arg)} />}
+      {view === 'resources' && <Resources requestedModelId={arg} />}
+      {view === 'looks' && <Looks />}
+      {view === 'judge' && <Judge />}
+      {view === 'catalogue' && <Catalogue />}
+      {view === 'rooms' && <RoomImport />}
+      {view === 'workflows' && <Workflows />}
+      {view === 'setup' && <Setup />}
+      {view === 'library' && <Library />}
+      {view === 'slideshow' && <Slideshow />}
+      {(view === 'models' || view === 'sessions') && <Models tab={view} />}
+    </AppShell>
   )
 }

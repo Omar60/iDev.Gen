@@ -575,7 +575,7 @@ full-screen mode and the settings that ride in the URL.
 
 ## Setup
 
-Open **Setup** in the top bar on first run. *Detect from ComfyUI* asks the
+Open **Setup** under **System** in the navigation on first run. *Detect from ComfyUI* asks the
 running instance which path it was launched from and fills the folders in, so
 nothing is tied to a particular ComfyUI distribution — portable, git clone or a
 model manager all work. Fix anything it gets wrong and save.
@@ -587,7 +587,7 @@ Editing that file by hand is still fine; restart afterwards.
 | Key | What it is |
 |---|---|
 | `comfy_url` | ComfyUI's API. |
-| `comfy_output_dir` | The folder ComfyUI saves images into. Required — sessions refuse to run until it points somewhere real, and the top bar says so. |
+| `comfy_output_dir` | The folder ComfyUI saves images into. Required — sessions refuse to run until it points somewhere real, and the contextual header says so. |
 | `lora_dir` | ComfyUI's LoRA root. Optional: it only powers the `<name>.preview.jpeg` thumbnails model managers store next to each file. |
 | `data_dir` | Where the database and the sessions live. Relative to the repo unless absolute. Put it on a drive with room: each session is hundreds of MB. Changing it needs a restart. |
 | `llm_url` | Optional. An OpenAI-compatible endpoint for the prompt assistant — a local Ollama or LM Studio, or a hosted one (`https://api.minimax.io/v1` and friends). Empty turns the assistant off. *Find an assistant* in Setup probes the usual ports and fills it in. |

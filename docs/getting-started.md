@@ -25,9 +25,23 @@ npm --prefix frontend install && npm --prefix frontend run build
 .venv/bin/python -m uvicorn main:app --app-dir backend --port 8777
 ```
 
+## Navigation
+
+The sidebar groups all eleven sections into **Workspace**, **Assets**, **Review**
+and **System**. The current section stays highlighted, including model and
+session detail pages. Below 1200 px, use **Open navigation** in the contextual
+header. Escape or **Close navigation** closes the menu and returns focus to its
+button; choosing a different route moves focus to the page content. Keyboard
+users can also use **Skip to content**.
+
+The header shows ComfyUI **Checking**, **Online** or **Offline**, with the running
+session link and **Finish setup** warning when applicable. Wide existing screens
+scroll horizontally within their content area; the navigation stays in place.
+Existing bookmarked hash routes and query parameters continue to work.
+
 ## Setup
 
-Open **Setup** in the top bar and press **Detect from ComfyUI**. It asks the
+Open **Setup** under **System** in the navigation and press **Detect from ComfyUI**. It asks the
 running instance which path it was started from and proposes that install's
 `output/` and `models/loras/` folders. Check them, then Save.
 
