@@ -60,6 +60,16 @@ and want an API key next to it. Then *List its models*. Any other
 OpenAI-compatible endpoint works too — type its base URL over the top and the
 buttons stop being lit, which is not an error.
 
+The API key field is masked by default. **Show** reveals it and **Hide** masks it
+again without changing its value or sending a request. **Save** keeps the exact
+value entered; clear the field and Save to remove a stored key. The key is still
+stored in `config.json` as before: masking the field does not encrypt that file.
+
+Setup separates **ComfyUI and storage**, **Prompt assistant**, and **Current state**.
+The state summary reflects the last configuration response; saving refreshes it.
+Saving, detection and model discovery announce progress. Errors are announced
+and receive keyboard focus while the entered fields remain available for correction.
+
 A hosted endpoint leaves the GPU to ComfyUI, which a local model shares with it.
 Some OpenAI-compatible endpoints list model IDs without reporting image
 capabilities. In that case, enter a provider-supported ID in **Vision model**;

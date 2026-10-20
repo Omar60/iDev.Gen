@@ -584,6 +584,11 @@ Settings land in `config.json`, which is **not in git** (it holds absolute paths
 from your machine) and is created from `config.example.json` on first start.
 Editing that file by hand is still fine; restart afterwards.
 
+Setup groups connections and storage, the optional assistant, and current status.
+The API key is hidden by default; **Show** and **Hide** only change its visibility.
+Its storage and saving behavior stay the same. Clear the field and Save to remove
+the saved key. See [UI foundations](docs/ui-foundations.md) for the scoped design patterns.
+
 | Key | What it is |
 |---|---|
 | `comfy_url` | ComfyUI's API. |
