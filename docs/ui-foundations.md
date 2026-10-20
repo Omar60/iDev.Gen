@@ -4,6 +4,10 @@ The first consumer is Setup. Import `frontend/src/ui/foundations.css` and opt in
 with a `.studio-ui` wrapper. Every rule and token is scoped to that wrapper;
 existing screens, the hash router and the app shell retain their own styles.
 
+Workflows also opts in to these tokens and patterns. Its additional layout and
+mapping styles live in `frontend/src/views/Workflows.css`, scoped under
+`.studio-ui.workflows-page`, so Setup retains the same foundation rules.
+
 ## Semantic tokens
 
 | Role | Tokens |

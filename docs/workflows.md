@@ -26,8 +26,24 @@ detection walks the graph rather than guessing by node name:
   `Reference strength` is only taken from an IPAdapter node — a bare `weight`
   widget sits on half the nodes of a busy graph.
 
-Fix anything it got wrong in the table: every row is a dropdown of the actual
-widgets in your graph, listed as `#id ClassName · widget`.
+Fix anything it got wrong in the mapping editor: every row is a dropdown of the
+actual literal widgets in your graph, listed as `#id ClassName · widget`.
+Import and saved workflows sit beside the editor on wide screens and above it
+on smaller screens. Opening a workflow moves keyboard focus to the editor.
+Importing only creates a draft; **Save workflow** persists it.
+
+Each slot shows its technical name, mapping state, selected node, widget path
+and original graph value. Values are read only, including empty strings,
+booleans and numbers. On mobile the same information stacks below the slot.
+**Connected inputs** expands a read-only list of graph links; they are never
+offered as editable mapping destinations.
+
+A saved mapping to a connected or missing input remains visible and is carried
+through unchanged until you choose another literal widget or *do not control*.
+Connected mappings are ignored during generation. **Detect missing slots** only
+fills empty mappings and preserves existing manual choices; save to keep the
+result. The mapped count includes non-empty map entries, including saved entries
+for slots not listed by the current app.
 
 ## Kinds
 
@@ -147,3 +163,10 @@ confirmation.
 
 Click a workflow's name to reopen it, change the mapping and save. Models and
 sessions keep pointing at it; existing photos are untouched.
+
+Cancel, opening another workflow and starting another import ask before
+discarding unsaved changes. These confirmations cover the editor's own actions;
+global navigation keeps its existing behavior. Delete always asks for
+confirmation, and a server refusal leaves the workflow and draft available.
+Errors receive focus and keep the draft; successful saves and deletes move
+focus to Saved workflows. No generation is started from this screen.

@@ -697,7 +697,10 @@ edits an existing photo — up to three reference images, denoise and reference
 strength. The mapping is
 auto-detected on import (it follows conditioning links, so it works even when the
 prompt goes through `FluxGuidance` and friends) and can be fixed by hand in the
-table. **Anything left unmapped keeps the workflow's own value** — so a workflow
+mapping editor. The Studio dark layout separates import, saved workflows and
+mapping review; rows stack on mobile without dropping node paths or values.
+Each mapping shows its original graph value and connection state, read only.
+**Anything left unmapped keeps the workflow's own value** — so a workflow
 full of exotic nodes still works even if only the prompt is driven.
 
 Give each graph a **kind** while you are there (text to image, photo edit,

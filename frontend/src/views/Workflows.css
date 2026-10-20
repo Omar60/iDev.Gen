@@ -1,0 +1,37 @@
+.studio-ui.workflows-page .workflow-feedback:empty { margin: 0; }
+.studio-ui.workflows-page .workflow-feedback { margin: 0 0 var(--ui-gap-section); }
+.studio-ui.workflows-page .workflow-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: var(--ui-gap-section); align-items: start; }
+.studio-ui.workflows-page .workflow-library, .studio-ui.workflows-page .workflow-editor { min-width: 0; }
+.studio-ui.workflows-page .workflow-list { display: grid; gap: 12px; list-style: none; margin: var(--ui-gap-grid) 0 0; padding: 0; }
+.studio-ui.workflows-page .workflow-list-item { display: grid; gap: var(--ui-gap-inline); min-width: 0; padding-bottom: 12px; border-bottom: 1px solid var(--ui-color-border); }
+.studio-ui.workflows-page .workflow-list-item:last-child { border-bottom: 0; padding-bottom: 0; }
+.studio-ui.workflows-page .workflow-open { width: 100%; align-items: start; flex-direction: column; text-align: left; overflow-wrap: anywhere; }
+.studio-ui.workflows-page .workflow-name { font-size: var(--ui-text-body); }
+.studio-ui.workflows-page .workflow-open .ui-help { text-align: left; font-weight: 400; }
+.studio-ui.workflows-page .workflow-delete { justify-self: end; color: var(--ui-color-error); }
+.studio-ui.workflows-page .workflow-slot-heading { display: flex; flex-direction: column; align-items: start; gap: var(--ui-gap-field); min-width: 0; }
+.studio-ui.workflows-page .workflow-mappings { padding: 0; margin: 0; list-style: none; }
+.studio-ui.workflows-page .workflow-mapping { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: var(--ui-gap-grid); padding: var(--ui-gap-grid) 0; border-bottom: 1px solid var(--ui-color-border); }
+.studio-ui.workflows-page .workflow-mapping:first-child { padding-top: 0; }
+.studio-ui.workflows-page .workflow-mapping:last-child { border-bottom: 0; padding-bottom: 0; }
+.studio-ui.workflows-page .workflow-widget-detail { display: grid; gap: 4px; min-width: 0; }
+.studio-ui.workflows-page .workflow-value { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; margin: 0; font: 12px/1.5 ui-monospace, monospace; color: var(--ui-color-text); }
+.studio-ui.workflows-page .workflow-subtitle { margin: 0 0 var(--ui-gap-inline); font-size: var(--ui-text-body); color: var(--ui-color-text); font-weight: 600; }
+.studio-ui.workflows-page .workflow-warning { color: var(--ui-color-warning); margin: 0 0 var(--ui-gap-grid); }
+.studio-ui.workflows-page .workflow-connections { border-top: 1px solid var(--ui-color-border); padding-top: var(--ui-gap-grid); min-width: 0; }
+.studio-ui.workflows-page .workflow-connections summary { cursor: pointer; min-height: 44px; padding: 10px 0; color: var(--ui-color-text); font-size: var(--ui-text-label); touch-action: manipulation; }
+.studio-ui.workflows-page .workflow-connections summary:focus-visible, .studio-ui.workflows-page :is(#workflow-editor-title, #workflow-list-title):focus { outline: 2px solid var(--ui-color-accent); outline-offset: 3px; }
+.studio-ui.workflows-page .workflow-connections dl { margin: var(--ui-gap-inline) 0 0; }
+.studio-ui.workflows-page .workflow-connections dl > div { padding: 8px 0; border-top: 1px solid var(--ui-color-border); font-size: var(--ui-text-help); }
+.studio-ui.workflows-page .workflow-connections dd { margin: var(--ui-gap-field) 0 0; color: var(--ui-color-muted); }
+.studio-ui.workflows-page :is(.workflow-connections, .workflow-slot-heading, .workflow-widget-detail) { overflow-wrap: anywhere; }
+@media (max-width: 1099px) {
+  .studio-ui.workflows-page .workflow-layout { grid-template-columns: minmax(0, 1fr); }
+  .studio-ui.workflows-page .workflow-library { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); align-items: start; }
+  .studio-ui.workflows-page .workflow-list { margin-top: var(--ui-gap-inline); }
+}
+@media (max-width: 699px) {
+  .studio-ui.workflows-page .workflow-library, .studio-ui.workflows-page .workflow-mapping { grid-template-columns: minmax(0, 1fr); }
+  .studio-ui.workflows-page .workflow-slot-heading { flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--ui-gap-inline); }
+  .studio-ui.workflows-page .workflow-slot-heading > .ui-label { flex-basis: 100%; }
+}
