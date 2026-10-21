@@ -228,6 +228,9 @@ def test_truncated_or_appended_polyglot_container_is_refused_before_staging(phot
 @pytest.mark.parametrize("missing_crc_bytes", [1, 2, 3, 4])
 def test_png_iend_crc_cannot_be_truncated_or_corrupted(photo_api, missing_crc_bytes):
     client, _ = photo_api
+    _, _, existing = _stage(photo_api)
+    before = db.q("SELECT * FROM look_photo_stage ORDER BY rowid")
+    assert any(row["photo_id"] == existing["photo_id"] for row in before)
     png = _image_bytes("PNG")
     truncated = _upload(client, png[:-missing_crc_bytes])
     assert truncated.status_code == 422, truncated.text
@@ -235,11 +238,14 @@ def test_png_iend_crc_cannot_be_truncated_or_corrupted(photo_api, missing_crc_by
     corrupted_crc = png[:-1] + bytes([png[-1] ^ 0x01])
     corrupted = _upload(client, corrupted_crc)
     assert corrupted.status_code == 422, corrupted.text
-    assert db.one("SELECT COUNT(*) AS c FROM look_photo_stage")["c"] == 0
+    assert db.q("SELECT * FROM look_photo_stage ORDER BY rowid") == before
 
 
 def test_webp_riff_length_and_single_frame_contract_are_enforced(photo_api):
     client, _ = photo_api
+    _, _, existing = _stage(photo_api)
+    before = db.q("SELECT * FROM look_photo_stage ORDER BY rowid")
+    assert any(row["photo_id"] == existing["photo_id"] for row in before)
     valid = _image_bytes("WEBP")
     wrong_length = bytearray(valid)
     wrong_length[4:8] = (int.from_bytes(wrong_length[4:8], "little") + 1).to_bytes(4, "little")
@@ -249,11 +255,14 @@ def test_webp_riff_length_and_single_frame_contract_are_enforced(photo_api):
     response = _upload(client, animated)
     assert response.status_code == 422, response.text
     assert _error_code(response) == "multiple_frames_unsupported"
-    assert db.one("SELECT COUNT(*) AS c FROM look_photo_stage")["c"] == 0
+    assert db.q("SELECT * FROM look_photo_stage ORDER BY rowid") == before
 
 
 def test_unsupported_image_and_multiple_multipart_parts_are_refused(photo_api):
     client, _ = photo_api
+    _, _, existing = _stage(photo_api)
+    before = db.q("SELECT * FROM look_photo_stage ORDER BY rowid")
+    assert any(row["photo_id"] == existing["photo_id"] for row in before)
     gif_buffer = BytesIO()
     Image.new("RGB", (8, 8), (3, 4, 5)).save(gif_buffer, format="GIF")
     assert _upload(client, gif_buffer.getvalue(), filename="valid.jpg", content_type="image/jpeg").status_code == 422
@@ -270,7 +279,7 @@ def test_unsupported_image_and_multiple_multipart_parts_are_refused(photo_api):
     headers = {"content-type": f"multipart/form-data; boundary={BOUNDARY}"}
     assert client.post(UPLOAD_URL, content=two_files, headers=headers).status_code == 422
     assert client.post(UPLOAD_URL, content=extra_field, headers=headers).status_code == 422
-    assert db.one("SELECT COUNT(*) AS c FROM look_photo_stage")["c"] == 0
+    assert db.q("SELECT * FROM look_photo_stage ORDER BY rowid") == before
 
 
 def test_exact_file_byte_limit_excludes_multipart_framing_and_one_byte_over_is_rejected(photo_api):

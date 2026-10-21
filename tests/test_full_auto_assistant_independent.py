@@ -755,9 +755,35 @@ def test_cancel_settlement_rechecks_child_lease_after_sqlite_lock_wait(
     ) == before
 
 
+@pytest.mark.parametrize(
+    ("resume_delay_seconds", "expected_code", "expected_changed_fields"),
+    [
+        pytest.param(
+            0, "budget_exhausted", ["assistant_allowance"],
+            id="same-second-budget-exhaustion",
+        ),
+        pytest.param(
+            1, "authorization_scope_changed", ["deadline", "assistant_allowance"],
+            id="next-second-deadline-change",
+        ),
+    ],
+)
 def test_latest_exhausted_grant_hides_old_unused_calls_and_resume_requires_new_acceptance(
-    client, seeded, monkeypatch,
+    client, seeded, monkeypatch, resume_delay_seconds, expected_code,
+    expected_changed_fields,
 ):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    clock = [now]
+    monkeypatch.setattr(db, "now", lambda: clock[0].isoformat(timespec="seconds"))
+    real_datetime_type = guided_sessions.datetime
+
+    class FrozenDateTime(real_datetime_type):
+        @classmethod
+        def now(cls, tz=None):
+            value = clock[0]
+            return value if tz is not None else value.replace(tzinfo=None)
+
+    monkeypatch.setattr(guided_sessions, "datetime", FrozenDateTime)
     _configure_assistant(monkeypatch)
     session_id, run_id, revision, targets = _create_run(client, seeded, photo_count=4)
     initial = db.one("SELECT revision FROM full_auto_run WHERE run_id = ?", run_id)
@@ -814,17 +840,29 @@ def test_latest_exhausted_grant_hides_old_unused_calls_and_resume_requires_new_a
     assert status.json()["allowances"]["assistant_calls_remaining_lower_bound"] == 0
     assert status.json()["can_resume"] is False
 
+    clock[0] = now + timedelta(seconds=resume_delay_seconds)
+    comparison = guided_sessions.compare_full_auto_resume_scope(
+        run_id, config=lambda: main.CONFIG,
+    )
+    assert comparison["changed_fields"] == expected_changed_fields
+    authorizations_before_rejection = db.q(
+        "SELECT authorization_sequence FROM full_auto_run_authorization "
+        "WHERE run_id = ? ORDER BY authorization_sequence", run_id,
+    )
     no_change_body = _control_body(run_id, revision)
     no_change_resume = client.post(
         f"/api/sessions/{session_id}/full-auto/{run_id}/resume",
         json=no_change_body,
     )
     assert no_change_resume.status_code == 409, no_change_resume.text
-    assert no_change_resume.json()["detail"]["code"] == "budget_exhausted"
+    detail = no_change_resume.json()["detail"]
+    assert detail["code"] == expected_code
+    if expected_code == "authorization_scope_changed":
+        assert detail["current"]["changed_fields"] == expected_changed_fields
     assert db.q(
         "SELECT authorization_sequence FROM full_auto_run_authorization "
         "WHERE run_id = ? ORDER BY authorization_sequence", run_id,
-    ) == [{"authorization_sequence": 1}]
+    ) == authorizations_before_rejection == [{"authorization_sequence": 1}]
 
     # A genuinely changed scope plus a fresh explicit acceptance is the only
     # path that can extend the authorization chain beyond the exhausted grant.

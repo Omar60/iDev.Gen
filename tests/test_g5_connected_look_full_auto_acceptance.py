@@ -13,7 +13,7 @@ import pytest
 import db
 import main
 import session_plan
-from backend import resource_full_auto, saved_looks
+from backend import photo_staging, resource_full_auto, saved_looks
 from test_full_auto_preparation_coordinator import _install_provider
 from test_task31_acceptance import (
     _create_from_preflight,
@@ -47,6 +47,19 @@ _OUTPUT_TABLES = (
     "guided_session_request", "shot", "full_auto_submission_receipt",
     "full_auto_execution_attempt",
 )
+
+
+@pytest.fixture
+def clean_g5_photo_rows(client):
+    before = {row["photo_id"] for row in db.q("SELECT photo_id FROM look_photo_stage")}
+    yield
+    for row in db.q("SELECT photo_id, staged_path FROM look_photo_stage"):
+        if row["photo_id"] in before:
+            continue
+        cleaned, _warning = photo_staging._safe_unlink(row["photo_id"], row["staged_path"])
+        assert cleaned, f"Could not remove temporary G5 photo stage {row['photo_id']}"
+        db.run("DELETE FROM photo_look_proposal WHERE photo_id = ?", row["photo_id"])
+        db.run("DELETE FROM look_photo_stage WHERE photo_id = ?", row["photo_id"])
 
 
 @pytest.fixture(autouse=True)
@@ -471,7 +484,7 @@ def _run_full_auto(client, seeded, saved, photo_count, monkeypatch, make_runner)
     ids=("manual-exact-stage-count", "reviewed-photo-longer-interval"),
 )
 def test_integrated_look_profile_reaches_fake_comfy_with_exact_removal_arc(
-    client, seeded, monkeypatch, make_runner, source, photo_count,
+    client, seeded, monkeypatch, make_runner, source, photo_count, clean_g5_photo_rows,
 ):
     if source == "manual":
         body = _manual_save_body()
