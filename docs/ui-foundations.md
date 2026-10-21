@@ -8,6 +8,12 @@ Workflows also opts in to these tokens and patterns. Its additional layout and
 mapping styles live in `frontend/src/views/Workflows.css`, scoped under
 `.studio-ui.workflows-page`, so Setup retains the same foundation rules.
 
+The Sessions list also opts in. Its table/card layout is scoped under
+`.studio-ui.sessions-page` in `frontend/src/views/SessionsList.css`; it uses
+the existing field, button, state and notice patterns. The single table retains
+explicit table roles when styled as mobile cards. Other Models views and the
+shared foundation rules are unchanged.
+
 ## Semantic tokens
 
 | Role | Tokens |

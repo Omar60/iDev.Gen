@@ -518,6 +518,15 @@ Verify the guarded route on the live process with `POST /api/sessions/{sid}/plan
 
 A binary that predates this flag cannot be protected by it and must not write to the upgraded database. Restore the separately verified **pre-upgrade** backup before starting such a binary; the backup created immediately before downgrade contains the upgraded database and serves as a safety snapshot, not as that pre-upgrade restore point.
 
+## Sessions
+
+**Sessions** provides a compact list across models, with name/model identity,
+status, completed photos and creation dates. Search by name, look or wardrobe
+using Enter or **Search**; **Clear search** restores the newest-first list.
+Unnamed sessions display their ID without renaming stored data. Session names
+are direct links, and the table becomes cards on mobile. See the
+[sessions list](docs/sessions.md#sessions-list).
+
 ## Library
 
 Sessions are reachable through the model that owns them — **Library** lists

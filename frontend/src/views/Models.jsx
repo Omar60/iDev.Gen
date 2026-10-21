@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api, loraPreview } from '../api'
 import { go } from '../App.jsx'
 import CanvasSize from './CanvasSize.jsx'
+import SessionsList from './SessionsList.jsx'
 
 const EMPTY = {
   name: '', lora_name: '', trigger: '', lora_strength: 1.0,
@@ -11,7 +12,6 @@ const EMPTY = {
 
 export default function Models({ tab }) {
   const [models, setModels] = useState([])
-  const [sessions, setSessions] = useState([])
   const [workflows, setWorkflows] = useState([])
   const [loras, setLoras] = useState([])
   const [models_, setModels_] = useState({})
@@ -20,7 +20,6 @@ export default function Models({ tab }) {
 
   const reload = () => {
     api.get('/api/models').then(setModels).catch((e) => setError(e.message))
-    api.get('/api/sessions').then(setSessions).catch(() => {})
   }
   useEffect(() => {
     reload()
@@ -38,7 +37,7 @@ export default function Models({ tab }) {
     } catch (e) { setError(e.message) }
   }
 
-  if (tab === 'sessions') return <SessionsList sessions={sessions} />
+  if (tab === 'sessions') return <SessionsList />
 
   return (
     <>
@@ -191,31 +190,6 @@ export function ModelForm({ form, setForm, loras, workflows, models = {} }) {
           <textarea value={form.base_negative} onChange={(e) => set('base_negative', e.target.value)} />
         </div>
       </div>
-    </>
-  )
-}
-
-function SessionsList({ sessions }) {
-  return (
-    <>
-      <h1>Sessions</h1>
-      <table style={{ marginTop: 12 }}>
-        <thead>
-          <tr><th>Session</th><th>Model</th><th>Status</th><th>Progress</th><th>Created</th></tr>
-        </thead>
-        <tbody>
-          {sessions.map((s) => (
-            <tr key={s.id} style={{ cursor: 'pointer' }} onClick={() => go(`/session/${s.id}`)}>
-              <td>{s.name}</td>
-              <td className="muted">{s.model_name}</td>
-              <td><span className={'badge ' + s.status}>{s.status}</span></td>
-              <td className="muted">{s.done_count}/{s.shot_count}</td>
-              <td className="muted">{s.created_at.slice(0, 16).replace('T', ' ')}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {!sessions.length && <p className="muted">No sessions yet.</p>}
     </>
   )
 }

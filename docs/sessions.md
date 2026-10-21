@@ -4,6 +4,27 @@
 strength, base prompt and default size. A session is one shoot with that model —
 and, like a real shoot, one **look**.
 
+## Sessions list
+
+**Sessions** lists every model's sessions, newest first. Search matches a
+case-insensitive substring of the session name, look or wardrobe; press Enter
+or **Search** to submit, and **Clear search** to return to the full list.
+For `resource-v1`, look and initial wardrobe are projected from the saved plan.
+Model names and session IDs are not search fields.
+
+Each session name is a link to `#/session/<id>`, supporting keyboard activation
+and opening in another tab. Empty or whitespace-only names display
+`Session #<id>` and **Unnamed session**, without changing the saved name.
+The desktop table becomes cards on small screens, retaining the model, ID,
+status, completed-photo count and stored creation date. The count describes
+successful photos, not whether every shot succeeded; **Done** can include
+failed shots. Sessions without shots say **No shots yet**.
+
+Loading, an empty inventory, no search results and request errors have distinct
+messages. Errors receive focus and offer a retry of the last submitted query.
+Creating a session remains in its model's view; **Library** retains its tag
+filters and photo previews. The list does not paginate or change stored data.
+
 ## Session kinds
 
 Under the hood there are two paths — paint from noise, or edit a photo — and
