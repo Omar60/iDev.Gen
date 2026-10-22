@@ -518,6 +518,15 @@ Verify the guarded route on the live process with `POST /api/sessions/{sid}/plan
 
 A binary that predates this flag cannot be protected by it and must not write to the upgraded database. Restore the separately verified **pre-upgrade** backup before starting such a binary; the backup created immediately before downgrade contains the upgraded database and serves as a safety snapshot, not as that pre-upgrade restore point.
 
+## Models
+
+**Models** shows compact character cards with a LoRA preview, name and session
+count. Missing previews remain visible as a placeholder; they do not prevent
+editing or session creation. The detail view groups identity, workflow and
+generation defaults, and prompt defaults. **New session** opens resource-based
+setup; **Legacy session** retains the original manual creation flow. See
+[models and defaults](docs/models.md).
+
 ## Sessions
 
 **Sessions** provides a compact list across models, with name/model identity,

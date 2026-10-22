@@ -1,0 +1,56 @@
+.studio-ui:is(.models-page, .model-detail-page) .model-page-header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: var(--ui-gap-grid); }
+.studio-ui:is(.models-page, .model-detail-page) .model-page-header > div:first-child { flex: 1 1 280px; min-width: 0; }
+.studio-ui:is(.models-page, .model-detail-page) .ui-page-title { overflow-wrap: anywhere; text-wrap: pretty; }
+.studio-ui:is(.models-page, .model-detail-page) .model-edit-form { margin-bottom: var(--ui-gap-section); }
+.studio-ui:is(.models-page, .model-detail-page) .model-form-section { margin: 0; min-inline-size: 0; }
+.studio-ui:is(.models-page, .model-detail-page) .model-form-section legend { padding: 0 var(--ui-gap-inline); margin-left: -8px; }
+.studio-ui:is(.models-page, .model-detail-page) .model-form-section textarea { min-height: 112px; }
+.studio-ui:is(.models-page, .model-detail-page) .ui-control::placeholder { color: var(--ui-color-muted); opacity: 1; }
+.studio-ui:is(.models-page, .model-detail-page) .ui-notice p { margin: 0 0 var(--ui-gap-inline); }
+.studio-ui:is(.models-page, .model-detail-page) .ui-notice p:last-child { margin-bottom: 0; }
+.studio-ui.models-page .model-list-summary { margin: 0 0 var(--ui-gap-inline); }
+.studio-ui:is(.models-page, .model-detail-page) .model-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: var(--ui-gap-grid); list-style: none; margin: 0; padding: 0; }
+.studio-ui:is(.models-page, .model-detail-page) .model-cards > li { min-width: 0; }
+.studio-ui:is(.models-page, .model-detail-page) .model-card { display: flex; gap: 16px; align-items: center; height: 100%; min-width: 0; padding: 16px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-surface); background: var(--ui-color-surface); color: var(--ui-color-text); }
+.studio-ui:is(.models-page, .model-detail-page) .model-card:hover { border-color: var(--ui-color-accent); text-decoration: none; }
+.studio-ui:is(.models-page, .model-detail-page) .model-card-body { min-width: 0; display: grid; gap: var(--ui-gap-inline); align-content: start; }
+.studio-ui:is(.models-page, .model-detail-page) .model-card-name { margin: 0; color: var(--ui-color-text); font-size: 17px; font-weight: 600; line-height: 1.35; letter-spacing: 0; text-transform: none; overflow-wrap: anywhere; }
+.studio-ui:is(.models-page, .model-detail-page) .model-card-count { margin: 0; color: var(--ui-color-muted); font-size: var(--ui-text-label); font-variant-numeric: tabular-nums; }
+.studio-ui:is(.models-page, .model-detail-page) .model-card-file { margin: 0; color: var(--ui-color-muted); font-size: var(--ui-text-help); overflow-wrap: anywhere; }
+.studio-ui:is(.models-page, .model-detail-page) .model-preview { display: grid; place-content: center; gap: var(--ui-gap-inline); width: 96px; height: 128px; flex: 0 0 96px; color: var(--ui-color-muted); background: var(--ui-color-field); border-radius: var(--ui-radius-control); text-align: center; font-size: var(--ui-text-help); }
+.studio-ui:is(.models-page, .model-detail-page) .model-preview img { display: block; width: 96px; height: 128px; object-fit: cover; border-radius: inherit; }
+.studio-ui:is(.models-page, .model-detail-page) .model-preview svg { margin-inline: auto; }
+.studio-ui:is(.models-page, .model-detail-page) .model-preview span { padding: 0 8px; overflow-wrap: anywhere; }
+.studio-ui:is(.models-page, .model-detail-page) .model-card:focus-visible,
+.studio-ui.model-detail-page .model-back:focus-visible { outline: 2px solid var(--ui-color-accent); outline-offset: 3px; border-radius: var(--ui-radius-control); }
+.studio-ui.models-page .model-empty { margin-top: var(--ui-gap-grid); }
+.studio-ui.models-page .model-empty .ui-section-title { margin-bottom: var(--ui-gap-inline); }
+.studio-ui.model-detail-page > .ui-page-header { margin-bottom: 0; }
+.studio-ui.model-detail-page .model-back { display: inline-flex; align-items: center; min-height: 44px; margin-bottom: var(--ui-gap-inline); }
+.studio-ui.model-detail-page .model-detail-actions { flex: 0 1 auto; }
+.studio-ui.model-detail-page a.ui-button { text-decoration: none; }
+.studio-ui.model-detail-page .model-delete { color: var(--ui-color-error); }
+.studio-ui.model-detail-page .model-overview { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: var(--ui-gap-section); align-items: start; }
+.studio-ui.model-detail-page .model-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px var(--ui-gap-section); }
+.studio-ui.model-detail-page .model-summary > div { display: block; padding: 0; border: 0; min-width: 0; }
+.studio-ui.model-detail-page .model-summary dd { margin: var(--ui-gap-field) 0 0; }
+.studio-ui.model-detail-page .model-session-status { justify-self: start; text-transform: capitalize; }
+.studio-ui.model-detail-page .model-legacy-form:focus { outline: 2px solid var(--ui-color-accent); outline-offset: 3px; }
+.studio-ui.model-detail-page .model-legacy-form > .ui-section-title { margin-bottom: var(--ui-gap-grid); }
+.studio-ui.model-detail-page .model-legacy-form > .ui-form-grid { margin-block: var(--ui-gap-grid); }
+.studio-ui.model-detail-page .model-look-toggle { display: flex; align-items: center; gap: var(--ui-gap-inline); min-height: 44px; }
+.studio-ui.model-detail-page .model-look-toggle input { width: auto; margin: 0; }
+.studio-ui.model-detail-page .model-file-picker { position: relative; }
+.studio-ui.model-detail-page .model-file-picker:focus-within { outline: 2px solid var(--ui-color-accent); outline-offset: 3px; }
+.studio-ui.model-detail-page .model-file-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+@media (max-width: 699px) {
+  .studio-ui.model-detail-page .model-summary { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 479px) {
+  .studio-ui:is(.models-page, .model-detail-page) .model-page-header > .ui-button { width: 100%; }
+  .studio-ui.model-detail-page .model-detail-actions { width: 100%; }
+  .studio-ui.model-detail-page .model-detail-actions > .ui-button { flex: 1 1 auto; }
+  .studio-ui.model-detail-page .model-detail-actions > .ui-button--primary { flex-basis: 100%; }
+  .studio-ui.model-detail-page .model-overview { gap: 16px; }
+}
+.studio-ui.model-detail-page.ui-stack { display: grid; gap: var(--ui-gap-section); }

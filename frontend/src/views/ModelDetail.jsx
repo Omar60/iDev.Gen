@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react'
-import { api, shotImage } from '../api'
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { api, loraPreview, shotImage } from '../api'
+import ModelPreview from '../components/ModelPreview.jsx'
 import { go } from '../App.jsx'
 import { ModelForm, BaseModelSelect, SamplerSelect } from './Models.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
@@ -66,6 +67,15 @@ export default function ModelDetail({ id }) {
   const llm = !!config.llm_ok
   const [writing, setWriting] = useState('')
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const errorRef = useRef(null)
+  const editRef = useRef(null)
+  const editTrigger = useRef(null)
+  const legacyRef = useRef(null)
+  const legacyTrigger = useRef(null)
+  const returnFocus = useRef(null)
+  const formId = useId()
+  const fieldId = (name) => `${formId}-${name}`
 
   const reload = () => api.get(`/api/models/${id}`).then(setModel).catch((e) => setError(e.message))
   useEffect(() => {
@@ -81,6 +91,15 @@ export default function ModelDetail({ id }) {
       setServedLibraries(d.libraries || [])
     }).catch(() => {})
   }, [id])
+  useEffect(() => { if (error) errorRef.current?.focus() }, [error, saving])
+  useEffect(() => { if (edit) editRef.current?.querySelector('input')?.focus() }, [!!edit])
+  useEffect(() => { if (newSession) legacyRef.current?.focus() }, [!!newSession])
+  useEffect(() => {
+    if (!saving && returnFocus.current) {
+      returnFocus.current.focus()
+      returnFocus.current = null
+    }
+  }, [!!edit, !!newSession, saving])
 
   // The two halves, deduplicated: the registry's default entry is the nine
   // tracked rooms, so the route hands back rooms the bundle already carries.
@@ -89,12 +108,31 @@ export default function ModelDetail({ id }) {
   const ROOM = ROOMS.find((r) => r.key === roomKey) || null
   const sessionActions = sessionCreationActions(id)
 
-  if (!model) return <p className="muted">{error || 'Loading…'}</p>
+  const sessionCards = useMemo(() => (model?.sessions || []).map((s) => (
+          <li key={s.id}><a className="model-card" href={`#/session/${s.id}`}>
+            <ModelPreview src={s.cover_shot_id ? shotImage(s.cover_shot_id) : null} emptyLabel="No photos yet" />
+            <div className="model-card-body">
+              <h3 className="model-card-name">{s.name?.trim() ? s.name : `Session #${s.id}`}</h3>
+              <p className="model-card-count">{s.done_count} / {s.shot_count} photos</p>
+              <span className="ui-state model-session-status" data-tone={s.status === 'done' ? 'success' : s.status === 'failed' ? 'error' : undefined}>{s.status || 'Unknown'}</span>
+            </div>
+          </a></li>
+        )), [model?.sessions])
+
+  if (!model) return <div className="studio-ui ui-page model-detail-page">
+    {error ? <div className="ui-notice" data-tone="error" role="alert" tabIndex={-1} ref={errorRef}>
+      <p>{error}</p><button className="ui-button" type="button" onClick={() => { setError(''); reload() }}>Retry loading model</button>
+    </div> : <p className="ui-help" role="status">Loading model…</p>}
+  </div>
 
   const saveModel = async () => {
-    try { await api.patch(`/api/models/${id}`, edit); setEdit(null); reload() }
+    setSaving(true); setError('')
+    try { await api.patch(`/api/models/${id}`, edit); returnFocus.current = editTrigger.current; setEdit(null); reload() }
     catch (e) { setError(e.message) }
+    finally { setSaving(false) }
   }
+  const cancelEdit = () => { returnFocus.current = editTrigger.current; setEdit(null); setError('') }
+  const cancelSession = () => { returnFocus.current = legacyTrigger.current; setNewSession(null) }
 
   const startSession = () => {
     const draft = newSessionDraft()
@@ -181,56 +219,75 @@ export default function ModelDetail({ id }) {
   }
 
   return (
-    <>
-      {error && <div className="error">{error}</div>}
-      <div className="row" style={{ justifyContent: 'space-between' }}>
-        <h1>{model.name}</h1>
-        <div className="row">
-          <button onClick={() => setEdit(edit ? null : { ...model })}>{edit ? 'Cancel' : 'Edit'}</button>
-          <button className="primary" onClick={() => go(sessionActions.primary.path)}>+ New session</button>
-          <button onClick={startSession} disabled={!!newSession}>Legacy session</button>
-          <button className="danger" onClick={async () => {
+    <div className="studio-ui ui-page model-detail-page ui-stack">
+      {error && <div className="ui-notice" data-tone="error" role="alert" tabIndex={-1} ref={errorRef}>
+        <p>{error}</p><p className="ui-help">Your entries are kept. Review the settings and try again.</p>
+      </div>}
+      <header className="ui-page-header model-page-header">
+        <div><a className="model-back" href="#/models">Models</a>
+          <h1 className="ui-page-title">{model.name?.trim() ? model.name : `Model #${model.id}`}</h1>
+          <p className="ui-help">Model #{model.id}</p></div>
+        <div className="ui-actions model-detail-actions">
+          <a className="ui-button ui-button--primary" href={`#${sessionActions.primary.path}`}>+ New session</a>
+          <button className="ui-button" type="button" ref={editTrigger} aria-expanded={!!edit} aria-controls="edit-model-form"
+            disabled={saving} onClick={() => { if (edit) cancelEdit(); else { setError(''); setEdit({ ...model }) } }}>{edit ? 'Cancel editing' : 'Edit model'}</button>
+          <button className="ui-button" type="button" ref={legacyTrigger} aria-expanded={!!newSession} aria-controls="legacy-session-form"
+            onClick={startSession} disabled={!!newSession}>Legacy session</button>
+          <button className="ui-button model-delete" type="button" onClick={async () => {
             if (confirm(`Delete the model "${model.name}" and all its sessions?`)) {
-              await api.del(`/api/models/${id}`); go('/models')
+              try { await api.del(`/api/models/${id}`); go('/models') }
+              catch (e) { setError(e.message) }
             }
           }}>Delete</button>
         </div>
-      </div>
-      <p className="muted">
-        {model.lora_name || 'no LoRA'} · trigger “{model.trigger || '—'}” · strength {model.lora_strength}
-      </p>
+      </header>
+      <section className="ui-surface model-overview" aria-label="Model defaults">
+        <ModelPreview src={model.lora_name ? loraPreview(model.lora_name) : null} />
+        <dl className="ui-definition-list model-summary">
+          <div><dt>Character LoRA</dt><dd>{model.lora_name || 'No LoRA selected'}</dd></div>
+          <div><dt>Trigger word</dt><dd>{model.trigger || 'Not set'}</dd></div>
+          <div><dt>LoRA strength</dt><dd>{model.lora_strength}</dd></div>
+          <div><dt>Default workflow</dt><dd>{model.workflow_id ? workflows.find((w) => w.id === model.workflow_id)?.name || `Workflow #${model.workflow_id} — unavailable` : 'No default workflow'}</dd></div>
+          <div><dt>Default canvas</dt><dd>{model.settings?.width ?? 832} × {model.settings?.height ?? 1216}</dd></div>
+          <div><dt>Sessions</dt><dd>{model.sessions.length}</dd></div>
+        </dl>
+      </section>
+      <p className="ui-help">New session opens resource-based setup. Legacy session opens the original manual form.</p>
 
       {edit && (
-        <div className="panel" style={{ margin: '14px 0' }}>
+        <form className="model-edit-form ui-stack" id="edit-model-form" ref={editRef} noValidate aria-labelledby="edit-model-title"
+          aria-busy={saving} onSubmit={(event) => { event.preventDefault(); saveModel() }}>
+          <h2 className="ui-section-title" id="edit-model-title">Edit model</h2>
           <ModelForm form={edit} setForm={setEdit} loras={loras} workflows={workflows} models={baseModels} />
-          <div className="row" style={{ marginTop: 12 }}>
-            <button className="primary" onClick={saveModel}>Save</button>
+          <div className="ui-form-footer">
+            <button className="ui-button ui-button--primary" type="submit" disabled={saving}>{saving ? 'Saving model…' : 'Save model'}</button>
+            <button className="ui-button" type="button" disabled={saving} onClick={cancelEdit}>Cancel editing</button>
           </div>
-        </div>
+        </form>
       )}
 
       {newSession && (
-        <div className="panel" style={{ margin: '14px 0' }}>
-          <h3>Legacy session</h3>
+        <section className="ui-surface model-legacy-form" id="legacy-session-form" aria-labelledby="legacy-session-title" ref={legacyRef} tabIndex={-1}>
+          <h2 className="ui-section-title" id="legacy-session-title">Legacy session</h2>
           <div className="row" style={{ marginBottom: 4 }}>
             {Object.entries(KINDS).map(([k, spec]) => (
-              <button key={k} className={'chip' + (kind === k ? ' on' : '')}
+              <button key={k} className={'ui-button chip' + (kind === k ? ' on' : '')} aria-pressed={kind === k}
                       title={spec.blurb} onClick={() => setKind(k)}>{spec.label}</button>
             ))}
           </div>
           <p className="muted" style={{ margin: '0 0 8px' }}>{KINDS[kind].blurb}</p>
           {KINDS[kind].rule && <p className="rule">{KINDS[kind].rule}</p>}
 
-          <div className="grid-form">
-            <div>
-              <label>Name</label>
-              <input value={newSession.name} onChange={(e) => setNewSession({ ...newSession, name: e.target.value })} />
+          <div className="ui-form-grid">
+            <div className="ui-field">
+              <label className="ui-label" htmlFor={fieldId('session-name')}>Name</label>
+              <input className="ui-control" id={fieldId('session-name')} name="session_name" autoComplete="off" value={newSession.name} onChange={(e) => setNewSession({ ...newSession, name: e.target.value })} />
             </div>
-            <div>
-              <label title="The graph for takes with ref unticked — the ones painted from noise. An editing or camera-angle graph belongs in the next box, not this one.">
+            <div className="ui-field">
+              <label className="ui-label" htmlFor={fieldId('workflow')} title="The graph for takes with ref unticked — the ones painted from noise. An editing or camera-angle graph belongs in the next box, not this one.">
                 Workflow{KINDS[kind].refKind ? ' (new photos)' : ''}
               </label>
-              <select value={newSession.workflow_id ?? ''}
+              <select className="ui-control" id={fieldId('workflow')} value={newSession.workflow_id ?? ''}
                       onChange={(e) => setNewSession({ ...newSession, workflow_id: e.target.value ? Number(e.target.value) : null })}>
                 <option value="">— the model's —</option>
                 {forKind(workflows, 't2i').map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
@@ -239,11 +296,11 @@ export default function ModelDetail({ id }) {
             {/* Text to image only: a session with no editing graph is exactly what
                 the shoot kind is, so there is nothing to pick. */}
             {KINDS[kind].refKind && (
-              <div>
-                <label title="The graph that edits the session's reference photo instead of painting a new one. Takes marked ref run through it.">
+              <div className="ui-field">
+                <label className="ui-label" htmlFor={fieldId('reference-workflow')} title="The graph that edits the session's reference photo instead of painting a new one. Takes marked ref run through it.">
                   Reference workflow (edits)
                 </label>
-                <select value={newSession.reference_workflow_id ?? ''}
+                <select className="ui-control" id={fieldId('reference-workflow')} value={newSession.reference_workflow_id ?? ''}
                         onChange={(e) => setNewSession({ ...newSession, reference_workflow_id: e.target.value ? Number(e.target.value) : null })}>
                   <option value="">— pick the graph that edits —</option>
                   {forKind(workflows, KINDS[kind].refKind).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
@@ -259,13 +316,13 @@ export default function ModelDetail({ id }) {
                 )}
               </div>
             )}
-            <div style={{ gridColumn: 'span 2' }}>
-              <label>Base model</label>
+            <div className="ui-field ui-field-wide">
+              <label className="ui-label" htmlFor={fieldId('checkpoint')}>Base model</label>
               {/* Its recommended settings come with it — the boxes below fill in,
                   and stay editable. Overwriting and not filling blanks: steps and
                   cfg always hold a value, so a fill-the-blanks rule would never
                   fire and the shoot would run at the last model's numbers. */}
-              <BaseModelSelect value={newSession.settings.checkpoint} models={baseModels}
+              <BaseModelSelect className="ui-control" id={fieldId('checkpoint')} value={newSession.settings.checkpoint} models={baseModels}
                                onChange={(v) => setNewSession({ ...newSession,
                                  settings: { ...newSession.settings, checkpoint: v,
                                              ...(checkpointProfile(config, v) || {}) } })} />
@@ -275,49 +332,49 @@ export default function ModelDetail({ id }) {
                 </p>
               )}
             </div>
-            <div>
-              <label>Seeds</label>
-              <select value={newSession.seed_mode} onChange={(e) => setNewSession({ ...newSession, seed_mode: e.target.value })}>
+            <div className="ui-field">
+              <label className="ui-label" htmlFor={fieldId('seed-mode')}>Seeds</label>
+              <select className="ui-control" id={fieldId('seed-mode')} value={newSession.seed_mode} onChange={(e) => setNewSession({ ...newSession, seed_mode: e.target.value })}>
                 <option value="random">Random</option>
                 <option value="fixed">Fixed (from…)</option>
               </select>
             </div>
             {newSession.seed_mode === 'fixed' && (
-              <div>
-                <label>Starting seed</label>
-                <input type="number" value={newSession.seed} onChange={(e) => setNewSession({ ...newSession, seed: Number(e.target.value) })} />
+              <div className="ui-field">
+                <label className="ui-label" htmlFor={fieldId('seed')}>Starting seed</label>
+                <input className="ui-control" id={fieldId('seed')} type="number" value={newSession.seed} onChange={(e) => setNewSession({ ...newSession, seed: Number(e.target.value) })} />
               </div>
             )}
-            <CanvasSize width={newSession.settings.width} height={newSession.settings.height}
+            <CanvasSize studio idPrefix={fieldId('canvas')} width={newSession.settings.width} height={newSession.settings.height}
               onChange={(w, h) => setNewSession({ ...newSession, settings: { ...newSession.settings, width: w, height: h } })} />
-            <div><label>Steps</label><input type="number" value={newSession.settings.steps ?? 8}
+            <div className="ui-field"><label className="ui-label" htmlFor={fieldId('steps')}>Steps</label><input className="ui-control" id={fieldId('steps')} type="number" value={newSession.settings.steps ?? 8}
               onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, steps: Number(e.target.value) } })} /></div>
-            <div><label>CFG</label><input type="number" step="0.1" value={newSession.settings.cfg ?? 1}
+            <div className="ui-field"><label className="ui-label" htmlFor={fieldId('cfg')}>CFG</label><input className="ui-control" id={fieldId('cfg')} type="number" step="0.1" value={newSession.settings.cfg ?? 1}
               onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, cfg: parseFloat(e.target.value) } })} /></div>
-            <div><label title="Each Krea 2 finetune asks for its own. Only applied if the workflow maps the slot.">Sampler</label>
-              <SamplerSelect value={newSession.settings.sampler} options={baseModels.samplers}
+            <div className="ui-field"><label className="ui-label" htmlFor={fieldId('sampler')} title="Each Krea 2 finetune asks for its own. Only applied if the workflow maps the slot.">Sampler</label>
+              <SamplerSelect className="ui-control" id={fieldId('sampler')} value={newSession.settings.sampler} options={baseModels.samplers}
                 onChange={(v) => setNewSession({ ...newSession, settings: { ...newSession.settings, sampler: v } })} /></div>
-            <div><label title="simple, beta or bong_tangent, depending on the checkpoint. Only applied if the workflow maps the slot.">Scheduler</label>
-              <SamplerSelect value={newSession.settings.scheduler} options={baseModels.schedulers}
+            <div className="ui-field"><label className="ui-label" htmlFor={fieldId('scheduler')} title="simple, beta or bong_tangent, depending on the checkpoint. Only applied if the workflow maps the slot.">Scheduler</label>
+              <SamplerSelect className="ui-control" id={fieldId('scheduler')} value={newSession.settings.scheduler} options={baseModels.schedulers}
                 onChange={(v) => setNewSession({ ...newSession, settings: { ...newSession.settings, scheduler: v } })} /></div>
-            <div><label>LoRA strength</label><input type="number" step="0.05" value={newSession.settings.lora_strength ?? 1}
+            <div className="ui-field"><label className="ui-label" htmlFor={fieldId('strength')}>LoRA strength</label><input className="ui-control" id={fieldId('strength')} type="number" step="0.05" value={newSession.settings.lora_strength ?? 1}
               onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, lora_strength: parseFloat(e.target.value) } })} /></div>
             {/* Only worth showing once a reference workflow is picked: nothing else
                 reads them, and an unmapped slot changes nothing. */}
             {newSession.reference_workflow_id && (
               <>
-                <div><label title="How far an img2img edit may travel from the reference. Low keeps the face and changes little; high changes a lot and drifts.">Denoise</label>
-                  <input type="number" step="0.05" min="0" max="1" value={newSession.settings.denoise ?? ''} placeholder="workflow's own"
+                <div className="ui-field"><label className="ui-label" htmlFor={fieldId('denoise')} title="How far an img2img edit may travel from the reference. Low keeps the face and changes little; high changes a lot and drifts.">Denoise</label>
+                  <input className="ui-control" id={fieldId('denoise')} type="number" step="0.05" min="0" max="1" value={newSession.settings.denoise ?? ''} placeholder="workflow's own"
                     onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, denoise: e.target.value === '' ? undefined : parseFloat(e.target.value) } })} /></div>
-                <div><label title="IPAdapter weight, for graphs that use one.">Reference strength</label>
-                  <input type="number" step="0.05" value={newSession.settings.reference_strength ?? ''} placeholder="workflow's own"
+                <div className="ui-field"><label className="ui-label" htmlFor={fieldId('reference-strength')} title="IPAdapter weight, for graphs that use one.">Reference strength</label>
+                  <input className="ui-control" id={fieldId('reference-strength')} type="number" step="0.05" value={newSession.settings.reference_strength ?? ''} placeholder="workflow's own"
                     onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, reference_strength: e.target.value === '' ? undefined : parseFloat(e.target.value) } })} /></div>
               </>
             )}
           </div>
 
           <h3 style={{ marginTop: 16 }}>
-            <label style={{ fontSize: 'inherit', fontWeight: 'inherit', cursor: 'pointer' }}
+            <label className="model-look-toggle" style={{ fontSize: 'inherit', fontWeight: 'inherit', cursor: 'pointer' }}
                    title="Off: the look is not written into any prompt of this session. The text stays where it is, so it can be switched back on. Length is NOT the reason to switch it off: sessions 395-400 shot one calibrated cell against a room ladder and the camera arrived 7/10 with no room at all, 9/10 at 53 words and 10/10 at both 84 and 176 - the trend runs upward. Session 394 shot the same line twice, once whole and once with 87 to 187 words of blocks deleted, and got 9 of 16 either way. The room word budget is 200, above the longest length measured good and twice the longest room in the catalogue: it is a tripwire against an absurd input, not a limit anybody meets.">
               <input type="checkbox"
                      checked={newSession.settings.use_look !== false}
@@ -342,18 +399,20 @@ export default function ModelDetail({ id }) {
               nobody has imported a library on a fresh clone, and an empty
               select is a control that promises a filter it cannot apply. */}
           {allTags(ROOMS).length > 0 && (
-            <select value={roomTag} onChange={(e) => setRoomTag(e.target.value)}
+            <label className="ui-label">Room type<select className="ui-control" value={roomTag} onChange={(e) => setRoomTag(e.target.value)}
                     title="Narrow the rooms to one kind of place. The tags come from the library the room was imported from.">
               <option value="">Every kind of place</option>
               {allTags(ROOMS).map((tag) => (
                 <option key={tag} value={tag}>{tag}</option>
               ))}
-            </select>
+            </select></label>
           )}
-          <input value={roomText} onChange={(e) => setRoomText(e.target.value)}
+          <label className="ui-label" htmlFor={fieldId('room-search')}>Find a room</label>
+          <input className="ui-control" id={fieldId('room-search')} value={roomText} onChange={(e) => setRoomText(e.target.value)}
                  placeholder="Find a room…"
                  title="Matched against the room's label and against its own text, so a word that is only in the sentence still finds it." />
-          <select value={roomKey}
+          <label className="ui-label" htmlFor={fieldId('room')}>Measured room</label>
+          <select className="ui-control" id={fieldId('room')} value={roomKey}
                   title="Fill the look with a measured room. Every one of these was rendered; the text stays editable."
                   onChange={(e) => {
                     // Pick, replace and detach are one decision and it is made
@@ -386,7 +445,8 @@ export default function ModelDetail({ id }) {
               {lib.name}: no rooms here - {lib.reason}.
             </p>
           ))}
-          <textarea rows={2} value={newSession.look}
+          <label className="ui-label" htmlFor={fieldId('look')}>Look description</label>
+          <textarea className="ui-control" id={fieldId('look')} rows={2} value={newSession.look}
                     placeholder="hair down with a centre part, soft natural makeup, on a beach at golden hour"
                     onChange={(e) => setNewSession({ ...newSession, look: e.target.value })} />
           {/* Which room the look came from, and what it measured under this
@@ -424,17 +484,17 @@ export default function ModelDetail({ id }) {
           })()}
           {llm && (
             <div className="row" style={{ marginTop: 6 }}>
-              <button disabled={!newSession.look.trim() || !!writing}
+              <button className="ui-button" disabled={!newSession.look.trim() || !!writing}
                       title="Rewrite the hair, the makeup, the place and the light precisely. The clothes are not written here — they belong to the wardrobe below."
                       onClick={() => writeLook('look', () => rewriteLook(newSession.look))}>
-                {writing === 'look' ? '…' : '✨ Describe it precisely'}
+                {writing === 'look' ? '…' : 'Describe it precisely'}
               </button>
               {/* The native file input renders its label in the browser's locale,
                   so it is hidden behind our own, as everywhere else. */}
-              <label className="filebtn"
+              <label className="filebtn model-file-picker"
                      title="Read the clothes out of a photo into the wardrobe box. The look is not filled from the photo. Never the person — the character comes from the LoRA, and another face written here fights it in every frame.">
-                {writing === 'photo' ? '…' : '📷 Wardrobe from a photo…'}
-                <input type="file" accept="image/png,image/jpeg,image/webp" hidden
+                {writing === 'photo' ? '…' : 'Wardrobe from a photo…'}
+                <input className="model-file-input" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Wardrobe from a photo"
                        onChange={(e) => {
                          const file = e.target.files[0]
                          e.target.value = ''   // same file twice in a row still fires
@@ -450,23 +510,23 @@ export default function ModelDetail({ id }) {
             </div>
           )}
 
-          <h3 style={{ marginTop: 16 }}>Wardrobe</h3>
+          <h3 style={{ marginTop: 16 }} id={fieldId('wardrobe-title')}>Wardrobe</h3>
           <p className="muted" style={{ margin: '0 0 6px' }}>
             The clothes. This is the <b>starting point</b>, not a constant: it is written into
             every take, and a take that sets its own wardrobe wins. That is what lets one
             shoot open a jacket, push a top up and end with none of it, instead of every
             frame arguing with a sentence that says the jacket is still on.
           </p>
-          <textarea rows={2} value={newSession.wardrobe}
+          <textarea className="ui-control" aria-labelledby={fieldId('wardrobe-title')} rows={2} value={newSession.wardrobe}
                     placeholder="white linen midi dress, thin straps, square neckline, bare legs, flat tan leather sandals"
                     onChange={(e) => setNewSession({ ...newSession, wardrobe: e.target.value })} />
           {llm && (
             <div className="row" style={{ marginTop: 6 }}>
-              <button disabled={!newSession.wardrobe.trim() || !!writing}
+              <button className="ui-button" disabled={!newSession.wardrobe.trim() || !!writing}
                       title="Rewrite every garment precisely — colour, fabric, cut, and the counts. A vague garment comes back different in every photo."
                       onClick={() => writeLook('wardrobe',
                                                async () => ({ wardrobe: await rewriteWardrobe(newSession.wardrobe) }))}>
-                {writing === 'wardrobe' ? '…' : '✨ Describe it precisely'}
+                {writing === 'wardrobe' ? '…' : 'Describe it precisely'}
               </button>
               <span className="muted">
                 undressing is done take by take, in the wardrobe box on each row below
@@ -506,29 +566,23 @@ export default function ModelDetail({ id }) {
                        onChange={(shots) => setNewSession((cur) => ({ ...cur, shots }))} />
 
           <div className="row" style={{ marginTop: 12 }}>
-            <button className="primary" onClick={createSession}>
+            <button className="ui-button ui-button--primary" onClick={createSession}>
               Create session ({newSession.shots.reduce((n, s) => n + (s.prompt.trim() ? Math.max(1, s.count) : 0), 0)} photos)
             </button>
-            <button onClick={() => setNewSession(null)}>Cancel</button>
+            <button className="ui-button" type="button" onClick={cancelSession}>Cancel</button>
           </div>
-        </div>
+        </section>
       )}
 
-      <h2>Sessions</h2>
-      <div className="cards">
-        {model.sessions.map((s) => (
-          <a className="card" key={s.id} href={`#/session/${s.id}`}>
-            {s.cover_shot_id
-              ? <img className="thumb" src={shotImage(s.cover_shot_id)} alt="" />
-              : <div className="thumb" />}
-            <div className="body">
-              <div className="name">{s.name}</div>
-              <div className="muted">{s.done_count}/{s.shot_count} · <span className={'badge ' + s.status}>{s.status}</span></div>
-            </div>
-          </a>
-        ))}
-        {!model.sessions.length && <p className="muted">No sessions yet. Create one to start the shoot.</p>}
-      </div>
-    </>
+      <section aria-labelledby="model-sessions-title">
+      <div className="ui-section-heading"><h2 className="ui-section-title" id="model-sessions-title">Sessions</h2>
+        <span className="ui-state">{model.sessions.length}</span></div>
+      <p className="ui-section-description">Open a shoot to continue its preparation or review its photographs.</p>
+      <ul className="model-cards" aria-label="Model sessions">
+        {sessionCards}
+      </ul>
+      {!model.sessions.length && <p className="ui-surface ui-help">No sessions yet. Create one to start the shoot.</p>}
+      </section>
+    </div>
   )
 }

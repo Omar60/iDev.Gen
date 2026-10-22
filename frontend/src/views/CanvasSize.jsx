@@ -13,9 +13,10 @@ import { CANVAS_PRESETS, presetKey } from '../canvas.js'
  *  far is on it, and quietly rounding it to a true 2:3 would leave the notebook
  *  describing a canvas the app no longer offers.
  */
-export default function CanvasSize({ width, height, onChange }) {
+export default function CanvasSize({ width, height, onChange, idPrefix, studio = false }) {
   const w = width ?? 832
   const h = height ?? 1216
+  const fieldId = (name) => idPrefix ? `${idPrefix}-${name}` : undefined
 
   const pick = (key) => {
     const p = CANVAS_PRESETS.find((x) => x.key === key)
@@ -24,9 +25,9 @@ export default function CanvasSize({ width, height, onChange }) {
 
   return (
     <>
-      <div>
-        <label title="Delivery sizes are a crop of these, not a canvas of their own: shooting wider than 16:9 with a whole body in frame paints two of her.">Canvas</label>
-        <select value={presetKey(w, h)} onChange={(e) => pick(e.target.value)}>
+      <div className={studio ? 'ui-field' : undefined}>
+        <label className={studio ? 'ui-label' : undefined} htmlFor={fieldId('preset')} title="Delivery sizes are a crop of these, not a canvas of their own: shooting wider than 16:9 with a whole body in frame paints two of her.">Canvas</label>
+        <select className={studio ? 'ui-control' : undefined} id={fieldId('preset')} value={presetKey(w, h)} onChange={(e) => pick(e.target.value)}>
           <option value="">Custom</option>
           {CANVAS_PRESETS.map((p) => (
             <option key={p.key} value={p.key} title={`Delivers ${p.delivers}`}>
@@ -35,9 +36,9 @@ export default function CanvasSize({ width, height, onChange }) {
           ))}
         </select>
       </div>
-      <div><label>Width</label><input type="number" step="8" value={w}
+      <div className={studio ? 'ui-field' : undefined}><label className={studio ? 'ui-label' : undefined} htmlFor={fieldId('width')}>Width</label><input className={studio ? 'ui-control' : undefined} id={fieldId('width')} type="number" step="8" value={w}
         onChange={(e) => onChange(Number(e.target.value), h)} /></div>
-      <div><label>Height</label><input type="number" step="8" value={h}
+      <div className={studio ? 'ui-field' : undefined}><label className={studio ? 'ui-label' : undefined} htmlFor={fieldId('height')}>Height</label><input className={studio ? 'ui-control' : undefined} id={fieldId('height')} type="number" step="8" value={h}
         onChange={(e) => onChange(w, Number(e.target.value))} /></div>
     </>
   )

@@ -11,8 +11,15 @@ mapping styles live in `frontend/src/views/Workflows.css`, scoped under
 The Sessions list also opts in. Its table/card layout is scoped under
 `.studio-ui.sessions-page` in `frontend/src/views/SessionsList.css`; it uses
 the existing field, button, state and notice patterns. The single table retains
-explicit table roles when styled as mobile cards. Other Models views and the
-shared foundation rules are unchanged.
+explicit table roles when styled as mobile cards.
+
+Models inventory and detail opt in with `.studio-ui.models-page` and
+`.studio-ui.model-detail-page`. Their compact preview cards, summary and grouped
+forms are scoped in `frontend/src/views/Models.css`. `ModelPreview` is reused for
+character and session previews, with fixed image dimensions and a visible
+fallback. `CanvasSize` accepts optional `studio` and `idPrefix` props for these
+forms; callers that omit them keep their previous presentation and behavior.
+The shared foundation rules, Sessions list and shell are unchanged.
 
 ## Semantic tokens
 
