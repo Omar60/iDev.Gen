@@ -409,7 +409,7 @@ describe('Task 8.5 independent acceptance probes', () => {
     expect(container.textContent).toContain('Resource-v1 plan is missing')
     expect(container.textContent).not.toContain('Resource-v1 plan is missing; look and wardrobe are unavailable. Plan-owned')
 
-    const search = container.querySelector('input[placeholder="Search by name, look or wardrobe"]')
+    const search = container.querySelector('input[type="search"][name="q"]')
     expect(search).toBeTruthy()
     await act(async () => {
       changeValue(search, 'Plan-owned')

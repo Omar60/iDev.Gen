@@ -21,6 +21,12 @@ fallback. `CanvasSize` accepts optional `studio` and `idPrefix` props for these
 forms; callers that omit them keep their previous presentation and behavior.
 The shared foundation rules, Sessions list and shell are unchanged.
 
+Library opts in with `.studio-ui.library-page`. Gallery, cover, tag and filter
+rules live in `frontend/src/views/Library.css`; long user content wraps without
+clamping. Its cover component stays local because the gallery's 3:4 uncropped presentation
+differs from the compact portrait previews in Models. Shared foundations and
+other views remain unchanged.
+
 ## Semantic tokens
 
 | Role | Tokens |

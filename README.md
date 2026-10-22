@@ -546,6 +546,13 @@ the look and initial wardrobe come from the saved plan. Tags survive a session
 being cloned, and are matched whole: a query of `night` lists a `night` session
 and not a `nightclub` one. See [sessions](docs/sessions.md#tags-and-the-library).
 
+The Studio gallery keeps full session names and tags readable, including long
+unbroken text, and shows complete, uncropped photos in lazy-loaded portrait
+covers with visible missing/error states.
+Search updates after 250 ms; tag filters remain available across searches.
+Loading, empty results and retryable errors are distinct. See
+[library behavior](docs/sessions.md#tags-and-the-library).
+
 ## Slideshow
 
 **Slideshow** plays the keepers across every session in a random order, full

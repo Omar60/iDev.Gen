@@ -166,6 +166,25 @@ cover photograph — the highest-rated, non-rejected finished shot — so the
 screen shows one frame per session without a request per row. A query that
 matches nothing reads as *Nothing matched* rather than an empty area.
 
+The Studio gallery wraps full names, model names and tags without truncation.
+Unnamed historical sessions display `Session #<id>` without changing stored
+values. Covers reserve a 3:4 portrait area and load lazily; missing covers say **No cover
+yet**, and failed images say **Cover unavailable**. The underlying cover choice
+is unchanged. Images fit inside the frame without cropping or distortion;
+different proportions leave dark space around the image. Cards are native links, including opening a session in a new tab.
+
+Search keeps its 250 ms debounce and accepts Enter immediately. **Clear search**
+keeps the tag selection; **All tags** keeps the text query; **Clear filters**
+resets both and returns focus to search. Tag buttons expose their pressed state.
+The tag inventory still refreshes unfiltered on each applied filter change;
+when no filters apply, one request supplies both cards and tags. Late responses
+from superseded filters cannot replace the latest cards or tag inventory.
+
+Loading is announced separately from empty results. Failed list requests keep
+the filters for retry; a failed tag refresh keeps the last available tags and
+reports its own retry action. All matching sessions remain mounted: no paging
+or virtualization is introduced.
+
 ## The shots
 
 A shot is what varies within that look: pose, angle, framing, where in the place
