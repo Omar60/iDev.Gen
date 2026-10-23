@@ -4,6 +4,7 @@ import { go } from '../App.jsx'
 import CanvasSize from './CanvasSize.jsx'
 import AutomationProfileSelector from '../components/AutomationProfileSelector.jsx'
 import ResourceInventory from './ResourceInventory.jsx'
+import './ResourceImport.css'
 import { savedLookWardrobeStages } from '../wardrobe.js'
 import {
   extractCategories,
@@ -232,6 +233,31 @@ export default function Resources({ requestedModelId = '' }) {
   const [previewing, setPreviewing] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const importErrorRef = useRef(null)
+  const importPreviewRef = useRef(null)
+  const importFileRef = useRef(null)
+  const importNewSelectionRef = useRef(null)
+  const importFocusRevisionRef = useRef('')
+  const importReturnFocusRef = useRef(null)
+  useEffect(() => {
+    if (tab === 'import' && error) importErrorRef.current?.focus()
+  }, [tab, error])
+  useEffect(() => {
+    if (tab !== 'import' || selectionView?.state !== 'open' || !selectionView.preview) return
+    const identity = JSON.stringify([selectionView.selection_id, selectionView.selection_revision])
+    if (identity !== importFocusRevisionRef.current) {
+      importFocusRevisionRef.current = identity
+      importPreviewRef.current?.focus()
+    }
+  }, [tab, selectionView])
+  useEffect(() => {
+    if (tab !== 'import' || busy || importReturnFocusRef.current === null) return
+    const { epoch: focusEpoch, target } = importReturnFocusRef.current
+    importReturnFocusRef.current = null
+    if (focusEpoch === epochRef.current && (document.activeElement === document.body || (target === 'file' && document.activeElement === importNewSelectionRef.current))) {
+      (target === 'new' ? importNewSelectionRef : importFileRef).current?.focus()
+    }
+  }, [tab, busy, selectionView])
 
   // Translation mapping state per library key
   const [translationState, setTranslationState] = useState({})
@@ -1576,13 +1602,14 @@ export default function Resources({ requestedModelId = '' }) {
   }, [fullAutoEnabled, fullAutoPreflightInputSignature, guidedOutcomeUnknown, guidedRequestConflict])
 
   const canImport = isImportEligible(selectionView, { activeSelectionId, pendingMutation: busy })
+  const importClosed = selectionView?.state === 'cancelled' || selectionView?.state === 'expired'
   const previewReport = selectionView?.preview ? parsePreviewSummary(selectionView.preview) : null
   const commitReport = selectionView?.commit_result?.report || selectionView?.commit_result || null
 
   return (
     <>
-      {error && <div className="error">{error}</div>}
-      {notice && <div className="panel" style={{ marginBottom: 12, borderColor: 'var(--accent)' }}>{notice}</div>}
+      {error && tab !== 'import' && <div className="error">{error}</div>}
+      {notice && tab !== 'import' && <div className="panel" style={{ marginBottom: 12, borderColor: 'var(--accent)' }}>{notice}</div>}
 
       {guidedSceneKey && (
         <section className="panel" aria-label="Guided session setup" style={{ marginBottom: 14 }}>
@@ -2288,9 +2315,20 @@ export default function Resources({ requestedModelId = '' }) {
       )}
 
       {tab === 'import' && (
-        <>
-          <div className="panel" style={{ marginBottom: 16 }}>
-            <h2>Import Resources</h2>
+        <section className="studio-ui ui-page resource-import" aria-label="Resource import">
+          <ol className="import-steps" aria-label="Import steps">
+            <li aria-current={!importClosed && !selectionView?.preview && !commitReport && selectionView?.state !== 'committing' ? 'step' : undefined}>Select files</li>
+            <li aria-current={!importClosed && selectionView?.preview && !canImport && !commitReport && selectionView?.state !== 'committing' ? 'step' : undefined}>Review Preview</li>
+            <li aria-current={canImport || commitReport || selectionView?.state === 'committing' ? 'step' : undefined}>Confirm import</li>
+          </ol>
+          {error && <div className="ui-notice" data-tone="error" role="alert" tabIndex={-1} ref={importErrorRef}>
+            <h2 className="ui-section-title">Import needs attention</h2><p>{error}</p>
+            <p>Your current selection is kept. Retry the failed action or start a new selection.</p>
+          </div>}
+          {notice && <p className="ui-notice" role="status">{notice}</p>}
+          <p className="ui-help import-operation" role="status">{previewing ? 'Checking the current selection…' : busy ? 'Updating import state…' : 'Upload and Preview do not import resources. Commit requires your explicit action.'}</p>
+          <div className="panel ui-surface">
+            <h2 className="ui-section-title">Import Resources</h2>
             <p className="muted">
               Select source JSON resource files directly from your browser. The server validates declarations, verifies fingerprints, preserves exact bytes, and generates a preview before committing.
             </p>
@@ -2310,7 +2348,7 @@ export default function Resources({ requestedModelId = '' }) {
                 <div>
                   <b>Temporary Cleanup Notice:</b> {selectionView.cleanup_warning}
                 </div>
-                <button
+                <button className="ui-button"
                   type="button"
                   onClick={handleRetryCleanup}
                   disabled={checkingCleanup}
@@ -2322,7 +2360,7 @@ export default function Resources({ requestedModelId = '' }) {
             )}
 
             {selectionView && (
-              <div className="row" style={{ alignItems: 'center', gap: 10, marginBottom: 14, fontSize: 13 }}>
+              <div className="ui-actions import-selection-meta" role="status" style={{ alignItems: 'center', gap: 10, marginBottom: 14, fontSize: 13 }}>
                 <span><b>Selection:</b> <code>{selectionView.selection_id}</code></span>
                 <span><b>Revision:</b> {selectionView.selection_revision}</span>
                 <span className={`badge ${selectionView.state}`}>{selectionView.state}</span>
@@ -2331,30 +2369,32 @@ export default function Resources({ requestedModelId = '' }) {
                     {selectionView.state === 'committed' && 'Resources successfully committed.'}
                     {selectionView.state === 'cancelled' && 'Selection cancelled. Mutation and import are disabled.'}
                     {selectionView.state === 'expired' && 'Selection expired. Start a new selection to import resources.'}
-                    {selectionView.state === 'committing' && 'Commit is actively processing...'}
+                    {selectionView.state === 'committing' && 'Commit is actively processing…'}
                   </span>
                 )}
               </div>
             )}
 
-            <div className="row" style={{ alignItems: 'center', gap: 10, marginBottom: 8 }}>
-              <input
+            <label className="ui-label" htmlFor="resource-file-input">Source JSON files</label>
+            <p className="ui-help" id="import-file-help">Up to 20 files per selection, 10 MiB per file and 50 MiB total. Staged selections expire after 24 hours.</p>
+            <div className="row import-upload" style={{ alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <input className="ui-control"
                 type="file"
                 multiple
                 accept=".json"
-                id="resource-file-input"
+                id="resource-file-input" name="resource_files" ref={importFileRef} aria-describedby="import-file-help"
                 onChange={handleFilesChosen}
                 disabled={busy || (selectionView && selectionView.state !== 'open')}
               />
               <button
-                className="primary"
+                className="ui-button ui-button--primary"
                 onClick={() => uploadSelectedFiles()}
                 disabled={busy || selectedFiles.length === 0 || (selectionView && selectionView.state !== 'open')}
               >
                 {busy ? 'Uploading…' : selectedFiles.length > 0 ? `Upload ${selectedFiles.length} file(s)` : 'Upload'}
               </button>
               {selectionView && (
-                <button onClick={handleReset}>
+                <button className="ui-button" ref={importNewSelectionRef} onClick={() => { handleReset(); importReturnFocusRef.current = { epoch: epochRef.current, target: 'file' } }}>
                   New Selection
                 </button>
               )}
@@ -2364,32 +2404,31 @@ export default function Resources({ requestedModelId = '' }) {
                 Selected: {selectedFiles.map((f) => f.name).join(', ')}
               </div>
             )}
+            {selectedFiles.length > 0 && selectionView?.preview && <p className="ui-notice">
+              These local files are not staged yet. Commit uses only the current staged selection shown below.
+            </p>}
           </div>
 
           {/* Selection Staged Files & Actions */}
           {selectionView && (
-            <div className="panel" style={{ marginBottom: 16 }}>
+            <div className="panel ui-surface">
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                <h3 style={{ margin: 0 }}>Staged Files ({selectionView.files?.length ?? 0})</h3>
+                <h3 className="ui-section-title" style={{ margin: 0 }}>Staged Files ({selectionView.files?.length ?? 0})</h3>
                 <div className="row" style={{ gap: 8 }}>
-                  <button
+                  <button className="ui-button"
                     onClick={handlePreview}
                     disabled={busy || previewing || selectionView.state !== 'open' || (selectionView.files?.length ?? 0) === 0}
                   >
                     {previewing ? 'Processing…' : 'Preview Import'}
                   </button>
-                  <button
-                    className="primary"
-                    onClick={handleCommit}
-                    disabled={!canImport || busy}
-                    title={!canImport ? 'Requires an open selection with a current committable preview' : 'Commit import'}
-                  >
-                    {busy ? 'Processing…' : 'Commit Import'}
-                  </button>
                   {selectionView.state === 'open' && (
                     <button
-                      className="danger"
-                      onClick={handleCancel}
+                      className="ui-button"
+                      onClick={async () => {
+                        const focusEpoch = epochRef.current
+                        await handleCancel()
+                        importReturnFocusRef.current = { epoch: focusEpoch, target: 'new' }
+                      }}
                       disabled={busy}
                     >
                       Cancel Selection
@@ -2401,46 +2440,50 @@ export default function Resources({ requestedModelId = '' }) {
               {(!selectionView.files || selectionView.files.length === 0) ? (
                 <p className="muted" style={{ margin: 0 }}>No files added to this selection yet.</p>
               ) : (
-                <table>
+                <table role="table" aria-label="Staged files">
                   <thead>
-                    <tr>
-                      <th>File Name</th>
-                      <th>Size</th>
-                      <th>Declared Library</th>
-                      <th>Target Key</th>
-                      <th>Matched Auxiliary</th>
-                      <th>Effective Auxiliary</th>
-                      <th>Status</th>
-                      {selectionView.state === 'open' && <th style={{ textAlign: 'right' }}>Actions</th>}
+                    <tr role="row">
+                      <th scope="col">File Name</th>
+                      <th scope="col">Size</th>
+                      <th scope="col">Declared Library</th>
+                      <th scope="col">Target Key</th>
+                      <th scope="col">Matched Auxiliary</th>
+                      <th scope="col">Effective Auxiliary</th>
+                      <th scope="col">Status</th>
+                      {selectionView.state === 'open' && <th scope="col" style={{ textAlign: 'right' }}>Actions</th>}
                     </tr>
                   </thead>
                   <tbody>
                     {selectionView.files.map((file) => (
-                      <tr key={file.file_id}>
-                        <td><b>{file.file_name}</b></td>
-                        <td>{file.byte_count} B</td>
-                        <td>{file.declared_library ? <code>{file.declared_library}</code> : <span className="muted">—</span>}</td>
-                        <td>{file.effective_library_key ? <code>{file.effective_library_key}</code> : <span className="muted" style={{ color: 'var(--bad)' }}>Unresolved</span>}</td>
-                        <td>
+                      <tr role="row" key={file.file_id}>
+                        <td role="cell"><span className="import-cell-label" aria-hidden="true">File Name</span><div className="import-cell-value"><b>{file.file_name}</b></div></td>
+                        <td role="cell"><span className="import-cell-label" aria-hidden="true">Size</span><div className="import-cell-value">{file.byte_count} B</div></td>
+                        <td role="cell"><span className="import-cell-label" aria-hidden="true">Declared Library</span><div className="import-cell-value">{file.declared_library ? <code>{file.declared_library}</code> : <span className="muted">—</span>}</div></td>
+                        <td role="cell"><span className="import-cell-label" aria-hidden="true">Target Key</span><div className="import-cell-value">{file.effective_library_key ? <code>{file.effective_library_key}</code> : <span className="muted" style={{ color: 'var(--bad)' }}>Unresolved</span>}</div></td>
+                        <td role="cell"><span className="import-cell-label" aria-hidden="true">Matched Auxiliary</span><div className="import-cell-value">
                           {file.matched_auxiliary_kinds && file.matched_auxiliary_kinds.length > 0 ? (
-                            file.matched_auxiliary_kinds.map((k) => <span key={k} className="chip" style={{ fontSize: 11, marginRight: 4 }}>{k}</span>)
+                            file.matched_auxiliary_kinds.map((k) => <span key={k} className="ui-button" style={{ fontSize: 11, marginRight: 4 }}>{k}</span>)
                           ) : (
                             <span className="muted">—</span>
                           )}
-                        </td>
-                        <td>{file.effective_auxiliary_kind ? <code>{file.effective_auxiliary_kind}</code> : <span className="muted">—</span>}</td>
-                        <td><span className={`badge ${file.status}`}>{file.status}</span></td>
+                        </div></td>
+                        <td role="cell"><span className="import-cell-label" aria-hidden="true">Effective Auxiliary</span><div className="import-cell-value">{file.effective_auxiliary_kind ? <code>{file.effective_auxiliary_kind}</code> : <span className="muted">—</span>}</div></td>
+                        <td role="cell"><span className="import-cell-label" aria-hidden="true">Status</span><div className="import-cell-value"><span className={`badge ${file.status}`}>{file.status}</span></div></td>
                         {selectionView.state === 'open' && (
-                          <td style={{ textAlign: 'right' }}>
+                          <td role="cell" style={{ textAlign: 'right' }}><span className="import-cell-label" aria-hidden="true">Actions</span><div className="import-cell-value">
                             <button
-                              className="danger icon"
-                              onClick={() => handleRemoveFile(file.file_id)}
+                              className="ui-button"
+                              onClick={async () => {
+                                const focusEpoch = epochRef.current
+                                await handleRemoveFile(file.file_id)
+                                importReturnFocusRef.current = { epoch: focusEpoch, target: 'file' }
+                              }}
                               disabled={busy}
-                              title="Remove file from selection"
+                              title="Remove file from selection" aria-label={`Remove ${file.file_name} from selection`}
                             >
                               ✕
                             </button>
-                          </td>
+                          </div></td>
                         )}
                       </tr>
                     ))}
@@ -2452,7 +2495,8 @@ export default function Resources({ requestedModelId = '' }) {
               {selectionView.files && selectionView.files.length > 0 && selectionView.state === 'open' && (
                 <div style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
                   <button
-                    className="chip"
+                    className="ui-button"
+                    aria-expanded={showAdvanced} aria-controls="import-compatibility"
                     onClick={() => setShowAdvanced((v) => !v)}
                     style={{ fontSize: 12 }}
                   >
@@ -2460,8 +2504,8 @@ export default function Resources({ requestedModelId = '' }) {
                   </button>
 
                   {showAdvanced && (
-                    <div style={{ marginTop: 10, background: 'var(--panel-2)', padding: 12, borderRadius: 4 }}>
-                      <h4 style={{ margin: '0 0 8px' }}>Compatibility Targeting</h4>
+                    <div id="import-compatibility" style={{ marginTop: 10, background: 'var(--panel-2)', padding: 12, borderRadius: 4 }}>
+                      <h4 className="ui-section-title" style={{ margin: '0 0 8px' }}>Compatibility Targeting</h4>
                       <p className="muted" style={{ margin: '0 0 12px', fontSize: 12 }}>
                         Set explicit target library keys or select ambiguous auxiliary kinds when declared identities are missing, ambiguous, or conflict with historical libraries.
                       </p>
@@ -2484,9 +2528,10 @@ export default function Resources({ requestedModelId = '' }) {
 
                             <div className="row" style={{ alignItems: 'flex-end', gap: 10 }}>
                               <div style={{ flex: 2 }}>
-                                <label style={{ fontSize: 12 }}>Target Library Key</label>
+                                <label className="ui-label" htmlFor={`import-target-${file.file_id}`}>Target Library Key</label>
                                 <div className="row" style={{ gap: 6 }}>
-                                  <input
+                                  <input className="ui-control"
+                                    id={`import-target-${file.file_id}`} name="target_library_key" autoComplete="off" spellCheck={false}
                                     value={draftLib}
                                     onChange={(e) => setTargetDrafts((prev) => ({
                                       ...prev,
@@ -2496,7 +2541,7 @@ export default function Resources({ requestedModelId = '' }) {
                                     style={{ flex: 1 }}
                                   />
                                   {libraries.length > 0 && (
-                                    <select
+                                    <select className="ui-control"
                                       value=""
                                       onChange={(e) => {
                                         if (e.target.value) {
@@ -2507,7 +2552,7 @@ export default function Resources({ requestedModelId = '' }) {
                                         }
                                       }}
                                       style={{ width: 'auto' }}
-                                      title="Choose existing library key"
+                                      title="Choose existing library key" aria-label={`Existing library for ${file.file_name}`}
                                     >
                                       <option value="">Existing library…</option>
                                       {libraries.map((l) => (
@@ -2520,8 +2565,9 @@ export default function Resources({ requestedModelId = '' }) {
 
                               {file.matched_auxiliary_kinds && file.matched_auxiliary_kinds.length > 0 && (
                                 <div style={{ flex: 1 }}>
-                                  <label style={{ fontSize: 12 }}>Auxiliary Kind</label>
-                                  <select
+                                  <label className="ui-label" htmlFor={`import-aux-${file.file_id}`}>Auxiliary Kind</label>
+                                  <select className="ui-control"
+                                    id={`import-aux-${file.file_id}`} name="auxiliary_kind"
                                     value={draftAux}
                                     onChange={(e) => setTargetDrafts((prev) => ({
                                       ...prev,
@@ -2537,7 +2583,7 @@ export default function Resources({ requestedModelId = '' }) {
                               )}
 
                               <div>
-                                <button
+                                <button className="ui-button"
                                   onClick={() => {
                                     const patch = {}
                                     if (draftLib !== (file.effective_library_key || '')) {
@@ -2568,16 +2614,9 @@ export default function Resources({ requestedModelId = '' }) {
 
           {/* Preview Results */}
           {previewReport && (
-            <div className="panel" style={{ marginBottom: 16 }}>
+            <div className="panel ui-surface">
               <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-                <h2>Import Preview Results</h2>
-                <button
-                  className="primary"
-                  disabled={!canImport || busy}
-                  onClick={handleCommit}
-                >
-                  {busy ? 'Committing…' : 'Commit Import'}
-                </button>
+                <h2 className="ui-section-title" tabIndex={-1} ref={importPreviewRef}>Import Preview Results</h2>
               </div>
               <p className="muted" style={{ margin: '0 0 12px' }}>
                 Outcome classification is distinct from preparation readiness. Readiness is evaluated upon persistence.
@@ -2598,35 +2637,35 @@ export default function Resources({ requestedModelId = '' }) {
               {/* Accepted Outcomes */}
               {previewReport.accepted.length > 0 && (
                 <>
-                  <h3>Accepted Entries ({previewReport.accepted.length})</h3>
-                  <table style={{ marginBottom: 14 }}>
+                  <h3 className="ui-section-title">Accepted Entries ({previewReport.accepted.length})</h3>
+                  <table role="table" aria-label="Accepted entries" style={{ marginBottom: 14 }}>
                     <thead>
-                      <tr>
-                        <th>Source ID</th>
-                        <th>Library Key</th>
-                        <th>Kind</th>
-                        <th>Outcome</th>
-                        <th>New Digest</th>
-                        <th>Prior Digest</th>
+                      <tr role="row">
+                        <th scope="col">Source ID</th>
+                        <th scope="col">Library Key</th>
+                        <th scope="col">Kind</th>
+                        <th scope="col">Outcome</th>
+                        <th scope="col">New Digest</th>
+                        <th scope="col">Prior Digest</th>
                       </tr>
                     </thead>
                     <tbody>
                       {previewReport.accepted.map((acc, i) => (
-                        <tr key={i}>
-                          <td><b>{acc.source_id}</b></td>
-                          <td><code>{acc.library_key}</code></td>
-                          <td>{acc.kind}</td>
-                          <td>
+                        <tr role="row" key={i}>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Source ID</span><div className="import-cell-value"><b>{acc.source_id}</b></div></td>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Library Key</span><div className="import-cell-value"><code>{acc.library_key}</code></div></td>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Kind</span><div className="import-cell-value">{acc.kind}</div></td>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Outcome</span><div className="import-cell-value">
                             <span className={`badge ${acc.classification}`}>
                               {acc.classification}
                             </span>
-                          </td>
-                          <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                            {acc.new_content_digest ? `${acc.new_content_digest.slice(0, 10)}…` : '—'}
-                          </td>
-                          <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                            {acc.previous_content_digest ? `${acc.previous_content_digest.slice(0, 10)}…` : '—'}
-                          </td>
+                          </div></td>
+                          <td role="cell" style={{ fontFamily: 'monospace', fontSize: 12 }}><span className="import-cell-label" aria-hidden="true">New Digest</span><div className="import-cell-value">
+                            {acc.new_content_digest || '—'}
+                          </div></td>
+                          <td role="cell" style={{ fontFamily: 'monospace', fontSize: 12 }}><span className="import-cell-label" aria-hidden="true">Prior Digest</span><div className="import-cell-value">
+                            {acc.previous_content_digest || '—'}
+                          </div></td>
                         </tr>
                       ))}
                     </tbody>
@@ -2637,29 +2676,29 @@ export default function Resources({ requestedModelId = '' }) {
               {/* Auxiliary Outcomes */}
               {previewReport.auxiliary.length > 0 && (
                 <>
-                  <h3>Auxiliary Resources ({previewReport.auxiliary.length})</h3>
-                  <table style={{ marginBottom: 14 }}>
+                  <h3 className="ui-section-title">Auxiliary Resources ({previewReport.auxiliary.length})</h3>
+                  <table role="table" aria-label="Auxiliary outcomes" style={{ marginBottom: 14 }}>
                     <thead>
-                      <tr>
-                        <th>Kind</th>
-                        <th>Library Key</th>
-                        <th>Outcome</th>
-                        <th>Content Digest</th>
+                      <tr role="row">
+                        <th scope="col">Kind</th>
+                        <th scope="col">Library Key</th>
+                        <th scope="col">Outcome</th>
+                        <th scope="col">Content Digest</th>
                       </tr>
                     </thead>
                     <tbody>
                       {previewReport.auxiliary.map((aux, i) => (
-                        <tr key={i}>
-                          <td><code>{aux.kind}</code></td>
-                          <td><code>{aux.library_key}</code></td>
-                          <td>
+                        <tr role="row" key={i}>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Kind</span><div className="import-cell-value"><code>{aux.kind}</code></div></td>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Library Key</span><div className="import-cell-value"><code>{aux.library_key}</code></div></td>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Outcome</span><div className="import-cell-value">
                             <span className={`badge ${aux.classification}`}>
                               {aux.classification}
                             </span>
-                          </td>
-                          <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                            {aux.new_content_digest ? `${aux.new_content_digest.slice(0, 10)}…` : '—'}
-                          </td>
+                          </div></td>
+                          <td role="cell" style={{ fontFamily: 'monospace', fontSize: 12 }}><span className="import-cell-label" aria-hidden="true">Content Digest</span><div className="import-cell-value">
+                            {aux.new_content_digest || '—'}
+                          </div></td>
                         </tr>
                       ))}
                     </tbody>
@@ -2670,27 +2709,27 @@ export default function Resources({ requestedModelId = '' }) {
               {/* Unresolved items */}
               {previewReport.unresolved.length > 0 && (
                 <>
-                  <h3 style={{ color: 'var(--bad)' }}>
+                  <h3 className="ui-section-title" style={{ color: 'var(--bad)' }}>
                     Unresolved Items ({previewReport.unresolved.length})
                   </h3>
-                  <table style={{ marginBottom: 14 }}>
+                  <table role="table" aria-label="Unresolved items" style={{ marginBottom: 14 }}>
                     <thead>
-                      <tr>
-                        <th>Bucket</th>
-                        <th>Index</th>
-                        <th>Reason</th>
-                        <th>Received Type</th>
-                        <th>Expected Kind</th>
+                      <tr role="row">
+                        <th scope="col">Bucket</th>
+                        <th scope="col">Index</th>
+                        <th scope="col">Reason</th>
+                        <th scope="col">Received Type</th>
+                        <th scope="col">Expected Kind</th>
                       </tr>
                     </thead>
                     <tbody>
                       {previewReport.unresolved.map((un, i) => (
-                        <tr key={i}>
-                          <td><code>{un.bucket}</code></td>
-                          <td>{un.index}</td>
-                          <td style={{ color: 'var(--bad)' }}>{un.reason}</td>
-                          <td><code>{un.received_type || '—'}</code></td>
-                          <td><code>{un.expected_kind || '—'}</code></td>
+                        <tr role="row" key={i}>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Bucket</span><div className="import-cell-value"><code>{un.bucket}</code></div></td>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Index</span><div className="import-cell-value">{un.index}</div></td>
+                          <td role="cell" style={{ color: 'var(--bad)' }}><span className="import-cell-label" aria-hidden="true">Reason</span><div className="import-cell-value">{un.reason}</div></td>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Received Type</span><div className="import-cell-value"><code>{un.received_type || '—'}</code></div></td>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Expected Kind</span><div className="import-cell-value"><code>{un.expected_kind || '—'}</code></div></td>
                         </tr>
                       ))}
                     </tbody>
@@ -2701,21 +2740,21 @@ export default function Resources({ requestedModelId = '' }) {
               {/* Duplicates */}
               {previewReport.duplicates.length > 0 && (
                 <>
-                  <h3 style={{ color: 'var(--warn)' }}>
+                  <h3 className="ui-section-title" style={{ color: 'var(--warn)' }}>
                     Duplicate Identifiers ({previewReport.duplicates.length})
                   </h3>
-                  <table style={{ marginBottom: 14 }}>
+                  <table role="table" aria-label="Duplicate identifiers" style={{ marginBottom: 14 }}>
                     <thead>
-                      <tr>
-                        <th>Source ID</th>
-                        <th>Occurrences</th>
+                      <tr role="row">
+                        <th scope="col">Source ID</th>
+                        <th scope="col">Occurrences</th>
                       </tr>
                     </thead>
                     <tbody>
                       {previewReport.duplicates.map((dup, i) => (
-                        <tr key={i}>
-                          <td><code>{dup.source_id}</code></td>
-                          <td>{dup.occurrences}</td>
+                        <tr role="row" key={i}>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Source ID</span><div className="import-cell-value"><code>{dup.source_id}</code></div></td>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Occurrences</span><div className="import-cell-value">{dup.occurrences}</div></td>
                         </tr>
                       ))}
                     </tbody>
@@ -2726,23 +2765,23 @@ export default function Resources({ requestedModelId = '' }) {
               {/* Missing source entries */}
               {previewReport.missing.length > 0 && (
                 <>
-                  <h3>Missing Source Entries ({previewReport.missing.length})</h3>
-                  <table style={{ marginBottom: 14 }}>
+                  <h3 className="ui-section-title">Missing Source Entries ({previewReport.missing.length})</h3>
+                  <table role="table" aria-label="Missing source entries" style={{ marginBottom: 14 }}>
                     <thead>
-                      <tr>
-                        <th>Library Key</th>
-                        <th>Source ID</th>
-                        <th>Latest Stored Digest</th>
+                      <tr role="row">
+                        <th scope="col">Library Key</th>
+                        <th scope="col">Source ID</th>
+                        <th scope="col">Latest Stored Digest</th>
                       </tr>
                     </thead>
                     <tbody>
                       {previewReport.missing.map((mis, i) => (
-                        <tr key={i}>
-                          <td><code>{mis.library_key}</code></td>
-                          <td><code>{mis.source_id}</code></td>
-                          <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                        <tr role="row" key={i}>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Library Key</span><div className="import-cell-value"><code>{mis.library_key}</code></div></td>
+                          <td role="cell"><span className="import-cell-label" aria-hidden="true">Source ID</span><div className="import-cell-value"><code>{mis.source_id}</code></div></td>
+                          <td role="cell" style={{ fontFamily: 'monospace', fontSize: 12 }}><span className="import-cell-label" aria-hidden="true">Latest Stored Digest</span><div className="import-cell-value">
                             {mis.latest_content_digest}
-                          </td>
+                          </div></td>
                         </tr>
                       ))}
                     </tbody>
@@ -2752,10 +2791,28 @@ export default function Resources({ requestedModelId = '' }) {
             </div>
           )}
 
+          {selectionView && <section className="ui-surface import-confirm" aria-label="Confirm resource import">
+            <h2 className="ui-section-title">Confirm import</h2>
+            <p>{canImport ? 'A current committable Preview is available. Review all outcomes above before importing its accepted set.'
+              : selectionView.state === 'committed' ? 'This selection has already been committed. Review its recorded result below.'
+                : selectionView.state === 'committing' ? 'The server is processing this import. Keep this selection to follow its result.'
+                  : selectionView.state !== 'open' ? 'This selection is closed. Start a new selection to continue.'
+                    : 'Generate a current committable Preview before importing. File or target changes require a fresh Preview.'}</p>
+            <p className="ui-help" id="import-confirm-help">Import persists the accepted resources. It does not translate them, create a session or generate images. Outcome classification is separate from readiness.</p>
+            <button type="button" className="ui-button ui-button--primary" onClick={handleCommit} disabled={!canImport || busy} aria-describedby="import-confirm-help">
+              {busy ? 'Processing…' : 'Commit Import'}
+            </button>
+          </section>}
+
+          {selectionView?.preview && <details className="ui-surface import-technical"><summary>Safe preview report</summary>
+            <pre>{JSON.stringify(selectionView.preview.report, null, 2)}</pre>
+          </details>}
+
           {/* Commit Result */}
           {commitReport && (
-            <div className="panel" style={{ marginBottom: 16 }}>
-              <h2>Commit Report</h2>
+            <div className="panel ui-surface">
+              <h2 className="ui-section-title">Commit Report</h2>
+              <details className="import-technical"><summary>Safe commit report</summary><pre>{JSON.stringify(commitReport, null, 2)}</pre></details>
               <div className="row" style={{ gap: 8, marginBottom: 10 }}>
                 <span className="badge done">Recorded: {commitReport.summary?.recorded ?? 0}</span>
                 <span className="badge new">New Revisions: {commitReport.summary?.new_scene_revisions ?? 0}</span>
@@ -2767,7 +2824,7 @@ export default function Resources({ requestedModelId = '' }) {
               </p>
               <div className="row" style={{ marginTop: 12 }}>
                 <button
-                  className="primary"
+                  className="ui-button ui-button--primary"
                   onClick={async () => {
                     try {
                       await awaitCurrentLibraryRefresh(reloadLibraries())
@@ -2784,15 +2841,15 @@ export default function Resources({ requestedModelId = '' }) {
           {/* Legacy Path Import (Compatibility) */}
           <div style={{ marginTop: 20 }}>
             <button
-              className="chip"
+              className="ui-button"
               onClick={() => setShowLegacyPathImport((v) => !v)}
               style={{ fontSize: 12 }}
             >
               {showLegacyPathImport ? '▼ Hide Legacy Path Import' : '► Legacy Path Import (Compatibility)'}
             </button>
             {showLegacyPathImport && (
-              <div className="panel" style={{ marginTop: 10 }}>
-                <h3>Legacy Path Import</h3>
+              <div className="panel ui-surface" style={{ marginTop: 10 }}>
+                <h3 className="ui-section-title">Legacy Path Import</h3>
                 <p className="muted">
                   Legacy path-based input for local filesystem paths. Kept for backwards compatibility.
                 </p>
@@ -2800,16 +2857,18 @@ export default function Resources({ requestedModelId = '' }) {
                 {selections.map((sel, idx) => (
                   <div key={idx} className="row" style={{ marginBottom: 8 }}>
                     <div style={{ flex: 3 }}>
-                      <label>File path</label>
-                      <input
+                      <label className="ui-label" htmlFor={`legacy-import-path-${idx}`}>File path</label>
+                      <input className="ui-control"
+                        id={`legacy-import-path-${idx}`} name="legacy_path" autoComplete="off" spellCheck={false}
                         value={sel.path}
                         placeholder="e.g. /path/to/source_library.json"
                         onChange={(e) => updateSelection(idx, 'path', e.target.value)}
                       />
                     </div>
                     <div style={{ flex: 2 }}>
-                      <label>Library Key</label>
-                      <input
+                      <label className="ui-label" htmlFor={`legacy-import-key-${idx}`}>Library Key</label>
+                      <input className="ui-control"
+                        id={`legacy-import-key-${idx}`} name="legacy_library_key" autoComplete="off" spellCheck={false}
                         value={sel.library_key}
                         placeholder="e.g. rooms_main"
                         onChange={(e) => updateSelection(idx, 'library_key', e.target.value)}
@@ -2817,7 +2876,7 @@ export default function Resources({ requestedModelId = '' }) {
                     </div>
                     {selections.length > 1 && (
                       <div style={{ alignSelf: 'flex-end', marginBottom: 2 }}>
-                        <button className="danger icon" onClick={() => removeSelectionRow(idx)} title="Remove row">
+                        <button className="ui-button" onClick={() => removeSelectionRow(idx)} title="Remove row">
                           ✕
                         </button>
                       </div>
@@ -2826,9 +2885,9 @@ export default function Resources({ requestedModelId = '' }) {
                 ))}
 
                 <div className="row" style={{ marginTop: 12 }}>
-                  <button onClick={addSelectionRow}>+ Add file</button>
+                  <button className="ui-button" onClick={addSelectionRow}>+ Add file</button>
                   <button
-                    className="primary"
+                    className="ui-button ui-button--primary"
                     disabled={busy || !selections.some((s) => s.path.trim() && s.library_key.trim())}
                     onClick={runLegacyPreview}
                   >
@@ -2836,7 +2895,7 @@ export default function Resources({ requestedModelId = '' }) {
                   </button>
                   {legacyRawPreview && (
                     <button
-                      className="primary"
+                      className="ui-button ui-button--primary"
                       disabled={busy}
                       onClick={runLegacyCommit}
                     >
@@ -2853,7 +2912,7 @@ export default function Resources({ requestedModelId = '' }) {
               </div>
             )}
           </div>
-        </>
+        </section>
       )}
     </>
   )

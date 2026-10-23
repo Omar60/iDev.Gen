@@ -35,6 +35,12 @@ and guided creation stay outside that scope. The split view stacks below
 1,000 px. Exact identifiers and diagnostic text wrap without truncation, and
 keyboard selection moves focus between the revision list and detail heading.
 
+Import opts in separately with `.studio-ui.resource-import` and local
+`ResourceImport.css`. It reuses foundation surfaces, controls, notices and focus
+styles; responsive table labels are hidden from assistive technology while
+native table headers and explicit cell roles retain their relationships.
+Inventory and translation controls stay outside this style scope.
+
 | Role | Tokens |
 |---|---|
 | Surfaces | `--ui-color-canvas`, `--ui-color-surface`, `--ui-color-field`, `--ui-color-info-surface` |

@@ -365,6 +365,10 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
   determines whether it can be used. A temporary cleanup warning belongs to the
   import selection; **Retry cleanup status** reloads that selection and retries
   its existing lazy cleanup.
+  The Studio import surface separates file selection, Preview outcomes and one
+  explicit **Commit Import** action. Responsive file/report tables retain exact
+  identities, with expandable safe technical reports and focused error recovery.
+  See [resource import](docs/sessions.md#resource-import-and-preview).
 - **Translations & Readiness**: Preview and apply translation maps directly from
   the UI, inspect readiness and diagnostic sidecar errors, and follow the
   displayed next action: translate missing required fields or correct malformed

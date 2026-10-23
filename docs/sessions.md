@@ -1621,6 +1621,29 @@ live readiness; late inspection responses cannot replace a newer selection.
 Auxiliary resources remain separately inspectable. Translation controls, Import
 and guided creation retain their existing workflows and authorization semantics.
 
+### Resource import and Preview
+
+Import separates local file selection/upload, Preview review and explicit
+confirmation. **Upload** stages bytes; **Preview Import** evaluates the current
+server selection; neither action commits resources. One **Commit Import**
+button is available in the confirmation section, enabled only by the existing
+current-preview eligibility checks. Selecting more local files does not add them
+to an existing staged Preview until they are uploaded.
+
+Staged files retain their declared/effective identities, auxiliary choices,
+byte counts and server status. Preview keeps new, updated, unchanged,
+unresolved, duplicate and missing outcomes distinct from readiness. Full digests
+remain readable. **Safe preview report** and **Safe commit report** expand only
+the existing normalized public report, including technical diagnostics; private
+staging paths, fingerprints and authorization tokens are not displayed.
+
+Tables become labelled stacked rows below 1,000 px. File selection and explicit
+compatibility controls have associated labels. Failed actions focus the error
+notice and retain selection/results for retry; a newly accepted Preview focuses
+its results heading. **New Selection** resets the same existing lifecycle and
+returns focus to the file picker. Revision/epoch protections and explicit
+compatibility, cancel, cleanup and Legacy paths retain their existing semantics.
+
 **+ New session** from a model opens the **Resources** browser with that model
 selected. For a ready room, **Create session** opens a write-free guided form
 with the character and exact room revision selected. It accepts a photo count

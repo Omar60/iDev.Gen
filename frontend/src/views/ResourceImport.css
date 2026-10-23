@@ -1,0 +1,44 @@
+.studio-ui.resource-import { display: grid; gap: var(--ui-gap-grid); }
+.studio-ui.resource-import .ui-section-title { margin: 0 0 12px; }
+.studio-ui.resource-import .import-steps { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 0; padding: 16px 16px 16px 32px; color: var(--ui-color-muted); font-size: var(--ui-text-label); border-bottom: 1px solid var(--ui-color-border); }
+.studio-ui.resource-import .import-steps li { padding-left: 4px; }
+.studio-ui.resource-import .import-steps [aria-current="step"] { color: var(--ui-color-accent); font-weight: 600; }
+.studio-ui.resource-import .import-operation { margin: 0; }
+.studio-ui.resource-import :is(.row, .ui-actions) > * { min-width: 0; }
+.studio-ui.resource-import :is(p, code, b, td, th, .ui-button, .import-selection-meta) { overflow-wrap: anywhere; }
+.studio-ui.resource-import :is(.ui-button, select) { white-space: normal; }
+.studio-ui.resource-import .import-upload { margin-top: 12px; }
+.studio-ui.resource-import input[type="file"] { flex: 1 1 320px; max-width: 100%; }
+.studio-ui.resource-import input[type="file"]::file-selector-button { color: var(--ui-color-text); background: var(--ui-color-info-surface); border: 1px solid var(--ui-color-control-border); border-radius: var(--ui-radius-control); padding: 8px; margin-right: 12px; cursor: pointer; }
+.studio-ui.resource-import table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-top: 16px; font-size: var(--ui-text-label); }
+.studio-ui.resource-import :is(th, td) { text-align: left; vertical-align: top; padding: 12px 8px; border-bottom: 1px solid var(--ui-color-border); }
+.studio-ui.resource-import th { color: var(--ui-color-muted); font-weight: 600; }
+.studio-ui.resource-import td { font-variant-numeric: tabular-nums; }
+.studio-ui.resource-import .import-cell-label { display: none; }
+.studio-ui.resource-import .import-cell-value { min-width: 0; }
+.studio-ui.resource-import .badge { display: inline-flex; max-width: 100%; padding: 3px 8px; white-space: normal; color: var(--ui-color-muted); border: 1px solid var(--ui-color-control-border); background: var(--ui-color-field); border-radius: var(--ui-radius-control); }
+.studio-ui.resource-import :is(.badge.new, .badge.done, .badge.committed) { color: var(--ui-color-success); border-color: #397455; }
+.studio-ui.resource-import :is(.badge.updated, .badge.unresolved, .badge.reserved, .badge.committing) { color: var(--ui-color-warning); border-color: #806d40; }
+.studio-ui.resource-import :is(.badge.failed, .badge.expired, .badge.cancelled) { color: var(--ui-color-error); border-color: #87525a; }
+.studio-ui.resource-import .import-confirm { border-color: var(--ui-color-control-border); }
+.studio-ui.resource-import .import-confirm p { max-width: 76ch; }
+.studio-ui.resource-import .import-confirm > button { margin-top: 16px; }
+.studio-ui.resource-import .import-technical summary { min-height: 44px; padding-block: 10px; cursor: pointer; font-size: var(--ui-text-label); }
+.studio-ui.resource-import .import-technical pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: var(--ui-color-field); border-radius: var(--ui-radius-control); font-size: var(--ui-text-help); }
+.studio-ui.resource-import :is(summary, h2[tabindex]):focus-visible { outline: 2px solid var(--ui-color-accent); outline-offset: 3px; }
+.studio-ui.resource-import h2[tabindex] { scroll-margin-top: 100px; }
+.studio-ui.resource-import .ui-notice p { margin: 8px 0; }
+@media (max-width: 999px) {
+  .studio-ui.resource-import table, .studio-ui.resource-import tbody { display: block; }
+  .studio-ui.resource-import thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; clip-path: inset(50%); overflow: hidden; }
+  .studio-ui.resource-import tbody { display: grid; gap: 12px; }
+  .studio-ui.resource-import tbody tr { display: block; min-width: 0; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-control); padding: 8px; }
+  .studio-ui.resource-import td { display: grid; grid-template-columns: minmax(90px, .5fr) minmax(0, 1fr); gap: 12px; padding: 10px 4px; }
+  .studio-ui.resource-import td:last-child { border-bottom: 0; }
+  .studio-ui.resource-import .import-cell-label { display: block; color: var(--ui-color-muted); font-size: var(--ui-text-help); text-align: left; }
+}
+@media (max-width: 499px) {
+  .studio-ui.resource-import .import-steps { flex-direction: column; gap: 8px; }
+  .studio-ui.resource-import .row > div { flex-basis: 100% !important; }
+  .studio-ui.resource-import .row select { width: 100% !important; }
+}
