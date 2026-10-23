@@ -1,0 +1,42 @@
+.studio-ui.resource-guided { margin-bottom: var(--ui-gap-section); }
+.studio-ui.resource-guided .ui-lead { margin-block: 12px 24px; }
+.studio-ui.resource-guided .guided-layout { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(260px, .85fr); gap: var(--ui-gap-section); align-items: start; }
+.studio-ui.resource-guided .guided-identity { min-width: 0; padding: 16px; background: var(--ui-color-field); border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-control); }
+.studio-ui.resource-guided .guided-identity .ui-definition-list > div { grid-template-columns: minmax(80px, .35fr) minmax(0, 1fr); gap: 8px; padding-block: 10px; }
+.studio-ui.resource-guided .guided-identity > .ui-help { margin-top: 16px; }
+.studio-ui.resource-guided .guided-section { margin-top: var(--ui-gap-section); padding-top: var(--ui-gap-section); border-top: 1px solid var(--ui-color-border); }
+.studio-ui.resource-guided .guided-section > .ui-section-title { margin-bottom: 8px; }
+.studio-ui.resource-guided :is(p, code, dd, li, .ui-button) { overflow-wrap: anywhere; }
+.studio-ui.resource-guided :is(.row, .ui-form-grid) > * { min-width: 0; }
+.studio-ui.resource-guided :is(label, legend) { font-size: var(--ui-text-label); color: var(--ui-color-text); }
+.studio-ui.resource-guided .ui-form-grid > div > label { display: block; margin-bottom: 6px; font-weight: 600; }
+.studio-ui.resource-guided .ui-form-grid .ui-help { margin-top: 6px; }
+.studio-ui.resource-guided textarea { resize: vertical; min-height: 110px; }
+.studio-ui.resource-guided .ui-button { white-space: normal; }
+.studio-ui.resource-guided .muted { color: var(--ui-color-muted); font-size: var(--ui-text-label); }
+.studio-ui.resource-guided .ui-notice { margin-block: 12px; }
+.studio-ui.resource-guided .ui-notice > .ui-section-title { margin-bottom: 8px; }
+.studio-ui.resource-guided .ui-notice > p { margin: 8px 0; }
+.studio-ui.resource-guided :is(h2[tabindex], summary) { scroll-margin-top: 90px; }
+.studio-ui.resource-guided :is(h2[tabindex], summary):focus-visible { outline: 2px solid var(--ui-color-accent); outline-offset: 3px; }
+.studio-ui.resource-guided summary { min-height: 44px; padding-block: 10px; cursor: pointer; font-weight: 600; }
+.studio-ui.resource-guided input:is([type="checkbox"], [type="radio"]) { width: 22px; height: 22px; flex: 0 0 22px; margin: 0 8px 0 0; accent-color: var(--ui-color-accent); }
+.studio-ui.resource-guided label:has(> input:is([type="checkbox"], [type="radio"])) { display: inline-flex; min-height: 44px; align-items: center; cursor: pointer; }
+.studio-ui.resource-guided .guided-full-auto > label { margin-top: 12px; }
+.studio-ui.resource-guided .guided-eligibility { display: grid; gap: 8px; margin: 0; padding: 16px 16px 16px 32px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-control); font-size: var(--ui-text-label); }
+.studio-ui.resource-guided [aria-label="Full Auto consent summary"] { border-color: var(--ui-color-control-border); }
+.studio-ui.resource-guided [aria-label="Full Auto consent summary"] p { max-width: 80ch; }
+.studio-ui.resource-guided .guided-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--ui-gap-grid); margin-top: var(--ui-gap-section); padding-top: var(--ui-gap-section); border-top: 1px solid var(--ui-color-border); }
+.studio-ui.resource-guided .guided-footer > div { flex: 1 1 300px; }
+.studio-ui.resource-guided .guided-footer .ui-help { margin-top: 8px; }
+.studio-ui.resource-guided :is(a, button.link) { overflow-wrap: anywhere; }
+.studio-ui.resource-guided button.link { min-height: 44px; white-space: normal; }
+.studio-ui.resource-guided [aria-label="Full Auto setup"] select { width: 100%; min-width: 0; min-height: 44px; color: var(--ui-color-text); background: var(--ui-color-field); border: 1px solid var(--ui-color-control-border); border-radius: var(--ui-radius-control); padding: var(--ui-padding-control); }
+@media (max-width: 999px) { .studio-ui.resource-guided .guided-layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 499px) {
+  .studio-ui.resource-guided .row > * { flex-basis: 100%; }
+  .studio-ui.resource-guided .guided-footer > button { width: 100%; }
+}
+
+.studio-ui.resource-guided .ui-page-title { text-transform: none; color: var(--ui-color-text); }
+@media (max-width: 499px) { .studio-ui.resource-guided .guided-identity .ui-definition-list > div { grid-template-columns: minmax(0, 1fr); } }

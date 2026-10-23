@@ -1621,6 +1621,38 @@ live readiness; late inspection responses cannot replace a newer selection.
 Auxiliary resources remain separately inspectable. Translation controls, Import
 and guided creation retain their existing workflows and authorization semantics.
 
+### Guided creation review
+
+**Create session** on a ready structured room opens the existing guided form.
+Character, Ready scene, Photo count and optional Brief remain its four initial
+inputs. Photo count defaults to twelve (integer 1–500); Brief allows up to 2,000
+characters. A separate identity panel shows the selected character ID, library,
+source ID, revision and complete content digest. On smaller screens the panel
+stacks below the inputs. Changing scene keeps the current count/brief; it does
+not apply source changes or create a session.
+
+Saved looks remain optional for manual/assisted creation. The loaded exact
+version and digest remain visible. Advanced retains authoring mode, workflow
+override, fixed/vary dimensions, canvas and shared overrides. The normal creation
+action states its current mode and remains separate from Full Auto authorization.
+
+Opt-in Full Auto retains its existing read-only profile/consent checks. Initial
+input checks are not a declaration of final eligibility: server preflight still
+checks exact scope, compatible workflow, stage counts and settings. The consent
+summary retains exact identities, progression endpoints, canvas/framing,
+provider, allowances, policy and expiry. Only **Generate without pauses** grants
+its existing preparation/approval/submission/initial-execution authorization.
+Ineligible profiles still link to correction in Looks without removing the
+manual/assisted path. No opening, editing or visual navigation action grants
+consent or starts generation.
+
+Keyboard focus moves to the guided heading on open and to creation errors after
+failure. **Cancel** returns focus to the opening control when it still exists.
+An unknown creation outcome locks the current inputs and exposes **Retry
+creation** for the same frozen request; an idempotency conflict instead exposes
+**Start a new creation attempt**. These recovery semantics and stale-response
+protections are unchanged.
+
 ### Translation review and readiness
 
 The translation workspace keeps library readiness separate from editable drafts.

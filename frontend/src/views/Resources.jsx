@@ -6,6 +6,7 @@ import AutomationProfileSelector from '../components/AutomationProfileSelector.j
 import ResourceInventory from './ResourceInventory.jsx'
 import './ResourceImport.css'
 import './ResourceTranslations.css'
+import './ResourceGuided.css'
 import { savedLookWardrobeStages } from '../wardrobe.js'
 import {
   extractCategories,
@@ -1625,6 +1626,22 @@ export default function Resources({ requestedModelId = '' }) {
     return () => { fullAutoPreflightRequestRef.current += 1 }
   }, [fullAutoEnabled, fullAutoPreflightInputSignature, guidedOutcomeUnknown, guidedRequestConflict])
 
+  const guidedHeadingRef = useRef(null)
+  const guidedErrorRef = useRef(null)
+  const guidedReturnFocusRef = useRef(null)
+  const guidedWasOpenRef = useRef(false)
+  const guidedOpen = Boolean(guidedSceneKey)
+  useEffect(() => {
+    if (guidedOpen) {
+      guidedReturnFocusRef.current = document.activeElement
+      guidedHeadingRef.current?.focus()
+    } else if (guidedWasOpenRef.current && document.activeElement === document.body) {
+      if (guidedReturnFocusRef.current?.isConnected) guidedReturnFocusRef.current.focus()
+    }
+    guidedWasOpenRef.current = guidedOpen
+  }, [guidedOpen])
+  useEffect(() => { if (guidedOpen && error) guidedErrorRef.current?.focus() }, [guidedOpen, error])
+
   const canImport = isImportEligible(selectionView, { activeSelectionId, pendingMutation: busy })
   const importClosed = selectionView?.state === 'cancelled' || selectionView?.state === 'expired'
   const previewReport = selectionView?.preview ? parsePreviewSummary(selectionView.preview) : null
@@ -1632,14 +1649,14 @@ export default function Resources({ requestedModelId = '' }) {
 
   return (
     <>
-      {error && tab !== 'import' && <div className="error">{error}</div>}
+      {error && tab !== 'import' && !guidedSceneKey && <div className="error">{error}</div>}
       {notice && tab !== 'import' && <div className="panel" style={{ marginBottom: 12, borderColor: 'var(--accent)' }}>{notice}</div>}
 
       {guidedSceneKey && (
-        <section className="panel" aria-label="Guided session setup" style={{ marginBottom: 14 }}>
+        <section className="studio-ui ui-page resource-guided" aria-label="Guided session setup"><div className="ui-surface">
           <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2 style={{ margin: 0 }}>Start a guided session</h2>
-            <button
+            <h2 className="ui-page-title" tabIndex={-1} ref={guidedHeadingRef}>Start a guided session</h2>
+            <button className="ui-button"
               type="button"
               disabled={busy || guidedOutcomeUnknown}
               onClick={() => {
@@ -1662,11 +1679,15 @@ export default function Resources({ requestedModelId = '' }) {
               Cancel
             </button>
           </div>
-          <div className="grid-form" style={{ marginTop: 12 }}>
+          <p className="ui-lead">Choose a character and an exact ready scene, then set the photo count and optional brief. Saved looks and Advanced settings remain optional for manual/assisted creation.</p>
+          {error && !guidedOutcomeUnknown && !guidedRequestConflict && <div className="ui-notice error" data-tone="error" role="alert" tabIndex={-1} ref={guidedErrorRef}><h3 className="ui-section-title">Creation needs attention</h3><p>{error}</p><p>Your current inputs are kept. Review the issue below before retrying.</p></div>}
+          {busy && <p className="ui-notice" role="status">Sending the current creation request…</p>}
+          <div className="guided-layout"><section aria-label="Initial authoring inputs"><h3 className="ui-section-title">Session basics</h3>
+          <div className="ui-form-grid" style={{ marginTop: 12 }}>
             <div>
               <label htmlFor="guided-character">Character</label>
-              <select
-                id="guided-character"
+              <select className="ui-control"
+                id="guided-character" name="guided-character" aria-describedby="guided-character-help"
                 value={guidedCharacterId}
                 onChange={(event) => {
                   setGuidedCharacterId(event.target.value)
@@ -1678,11 +1699,12 @@ export default function Resources({ requestedModelId = '' }) {
                 <option value="">Choose a character</option>
                 {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
               </select>
+              <p className="ui-help" id="guided-character-help">Character defaults supply the workflow and canvas unless Advanced overrides them.</p>
             </div>
             <div>
               <label htmlFor="guided-scene">Ready scene</label>
-              <select
-                id="guided-scene"
+              <select className="ui-control"
+                id="guided-scene" name="guided-scene" aria-describedby="guided-scene-help"
                 value={guidedSceneKey}
                 onChange={(event) => setGuidedSceneKey(event.target.value)}
                 disabled={guidedLocked}
@@ -1690,11 +1712,12 @@ export default function Resources({ requestedModelId = '' }) {
               >
                 {readyRoomChoices.map((choice) => <option key={choice.key} value={choice.key}>{choice.label}</option>)}
               </select>
+              <p className="ui-help" id="guided-scene-help">Only ready structured rooms are listed. The full immutable identity is shown beside these inputs.</p>
             </div>
             <div>
               <label htmlFor="guided-photo-count">Photo count</label>
-              <input
-                id="guided-photo-count"
+              <input className="ui-control"
+                id="guided-photo-count" name="guided-photo-count" aria-describedby="guided-count-help"
                 type="number"
                 min="1"
                 max="500"
@@ -1704,29 +1727,43 @@ export default function Resources({ requestedModelId = '' }) {
                 onChange={(event) => setGuidedPhotoCount(event.target.value)}
                 disabled={guidedLocked}
               />
+              <p className="ui-help" id="guided-count-help">Enter a whole number from 1 to 500. The default is 12.</p>
             </div>
             <div>
               <label htmlFor="guided-brief">Brief (optional)</label>
-              <textarea
-                id="guided-brief"
+              <textarea className="ui-control"
+                id="guided-brief" name="guided-brief" rows={4} aria-describedby="guided-brief-help"
                 maxLength={2000}
                 value={guidedBrief}
                 onChange={(event) => setGuidedBrief(event.target.value)}
                 disabled={guidedLocked}
               />
+              <p className="ui-help" id="guided-brief-help">Optional direction for this session; maximum 2,000 characters.</p>
             </div>
-          </div>
+          </div></section>
+          <aside className="guided-identity" aria-label="Selected session identity">
+            <h3 className="ui-section-title">Selected for this session</h3>
+            <dl className="ui-definition-list">
+              <div><dt>Character</dt><dd>{guidedCharacter?.name || 'Choose a character'}<p className="ui-help">Model ID: {guidedCharacter?.id ?? 'Not selected'}</p></dd></div>
+              <div><dt>Resource</dt><dd>{guidedSceneChoice?.label || 'The selected revision is no longer available. Choose a ready scene.'}</dd></div>
+              <div><dt>Library key</dt><dd><code>{guidedSceneChoice?.libraryKey || 'Unavailable'}</code></dd></div>
+              <div><dt>Source ID</dt><dd><code>{guidedSceneChoice?.revision.source_id || 'Unavailable'}</code></dd></div>
+              <div><dt>Revision</dt><dd>{guidedSceneChoice?.revision.revision_id ?? 'Not recorded'}</dd></div>
+              <div><dt>Content digest</dt><dd><code>{guidedSceneChoice?.revision.content_digest || 'Unavailable'}</code></dd></div>
+            </dl>
+            <p className="ui-help">The request binds this exact revision. Changing the scene does not rewrite its source or existing sessions.</p>
+          </aside></div>
 
-          <section aria-label="Optional exact saved look" style={{ marginTop: 14 }}>
-            <h3 style={{ margin: '0 0 6px' }}>Optional saved look</h3>
+          <section className="guided-section" aria-label="Optional exact saved look">
+            <h3 className="ui-section-title" style={{ margin: '0 0 6px' }}>Optional saved look</h3>
             <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
               Select an immutable version to apply its appearance and initial outfit at creation. Manual creation keeps its normal review and run controls.
             </p>
             {guidedSavedLooksLoading && <p className="muted" role="status">Loading saved looks…</p>}
-            {guidedSavedLooksError && <p className="error" role="alert">{guidedSavedLooksError}</p>}
-            <div className="grid-form">
+            {guidedSavedLooksError && <p className="ui-notice error" data-tone="error" role="alert">{guidedSavedLooksError}</p>}
+            <div className="ui-form-grid">
               <label htmlFor="guided-saved-look">Saved look
-                <select
+                <select className="ui-control"
                   id="guided-saved-look"
                   value={guidedSavedLookKey}
                   onChange={(event) => selectGuidedSavedLook(event.target.value)}
@@ -1739,7 +1776,7 @@ export default function Resources({ requestedModelId = '' }) {
               <div>
                 <label htmlFor="guided-saved-look-version">Exact saved-look version</label>
                 <div className="row">
-                  <input
+                  <input className="ui-control"
                     id="guided-saved-look-version"
                     type="text"
                     inputMode="numeric"
@@ -1755,7 +1792,7 @@ export default function Resources({ requestedModelId = '' }) {
                     }}
                     disabled={guidedLocked || !guidedSavedLookKey}
                   />
-                  <button
+                  <button className="ui-button"
                     type="button"
                     onClick={() => void loadGuidedSavedLookVersion(guidedSavedLookKey, guidedSavedLookVersion)}
                     disabled={guidedLocked || !guidedSavedLookKey || !versionText(guidedSavedLookVersion) || guidedSavedLookLoading}
@@ -1766,7 +1803,7 @@ export default function Resources({ requestedModelId = '' }) {
               </div>
             </div>
             {guidedSavedLookLoading && <p className="muted" role="status">Verifying the immutable saved-look version…</p>}
-            {guidedSavedLookError && <p className="error" role="alert">{guidedSavedLookError}</p>}
+            {guidedSavedLookError && <p className="ui-notice error" data-tone="error" role="alert">{guidedSavedLookError}</p>}
             {guidedSavedLookIdentity && (
               <div className="muted" aria-label="Loaded exact saved look" style={{ marginTop: 8 }}>
                 <p>Loaded {guidedSavedLook.name} · version {guidedSavedLookIdentity.version} · {guidedSavedLookIdentity.content_digest}</p>
@@ -1775,7 +1812,7 @@ export default function Resources({ requestedModelId = '' }) {
               </div>
             )}
             {guidedSharedOverridesConflict && (
-              <p className="error" role="alert">
+              <p className="ui-notice error" data-tone="error" role="alert">
                 Clear the Advanced look and initial-wardrobe overrides before using this exact saved look. They will not be replaced silently.
               </p>
             )}
@@ -1788,7 +1825,7 @@ export default function Resources({ requestedModelId = '' }) {
           )}
           {assistantConfigured === null && <p className="muted">Checking assistant configuration…</p>}
           {guidedCharacter && !guidedCharacterHasDefaultWorkflow && !guidedWorkflowOverrideId && (
-            <div className="error" role="alert">
+            <div className="ui-notice error" data-tone="error" role="alert">
               This character has no default workflow. <a href={`#/model/${guidedCharacter.id}`}>Assign a character default</a> or{' '}
               <button type="button" className="link" onClick={() => setGuidedAdvancedOpen(true)}>
                 choose an Advanced workflow override
@@ -1796,7 +1833,9 @@ export default function Resources({ requestedModelId = '' }) {
             </div>
           )}
 
-          <section aria-label="Full Auto setup" style={{ marginTop: 14 }}>
+          <section className="guided-section guided-full-auto" aria-label="Full Auto setup">
+            <h3 className="ui-section-title">Full Auto — explicit authorization</h3>
+            <p className="ui-help">Opt in to inspect eligibility and a read-only consent summary. Only Generate without pauses authorizes preparation, policy approval, submission and initial generation attempts.</p>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600 }}>
               <input
                 id="guided-full-auto"
@@ -1814,10 +1853,18 @@ export default function Resources({ requestedModelId = '' }) {
               Enable opt-in Full Auto
             </label>
             <div hidden={!fullAutoEnabled} style={{ display: fullAutoEnabled ? 'grid' : 'none', gap: 9, marginTop: 8 }}>
+                <p className="ui-help">These input checks are preliminary. The server checks workflow compatibility, stage count and Advanced settings before issuing the consent summary.</p>
+                <ul className="guided-eligibility" aria-label="Full Auto eligibility">
+                  <li>{guidedCharacter && guidedSceneChoice ? 'Selected' : 'Required'}: character and exact ready scene</li>
+                  <li>{assistantConfigured === null ? 'Checking' : assistantConfigured ? 'Configured' : 'Required'}: text assistant</li>
+                  <li>{guidedHasWorkflow ? 'Selected' : 'Required'}: character workflow or explicit override</li>
+                  <li>{guidedSavedLookIdentity ? 'Loaded' : 'Required'}: exact saved-look version</li>
+                  <li>{guidedProfileMatchesLook ? 'Ready' : 'Required'}: matching exact ready automation profile</li>
+                </ul>
                 <p className="muted" style={{ margin: 0 }}>
                   Full Auto requires an exact ready saved-look profile and Automatic mode. It keeps manual creation available when a look is ineligible.
                 </p>
-                {fullAutoEnabled && assistantConfigured === false && <p className="error" role="alert">Full Auto needs a configured text assistant. <a href="#/setup">Configure assistant</a>; manual creation remains available.</p>}
+                {fullAutoEnabled && assistantConfigured === false && <p className="ui-notice error" data-tone="error" role="alert">Full Auto needs a configured text assistant. <a href="#/setup">Configure assistant</a>; manual creation remains available.</p>}
                 {guidedSavedLookKey && !guidedSavedLookIdentity && <p className="muted" role="status">Load the selected exact saved-look version to continue.</p>}
                 {!guidedSavedLookKey && <p className="muted" role="status">Choose an exact saved-look version to continue.</p>}
                 {guidedSavedLookIdentity && (
@@ -1835,7 +1882,7 @@ export default function Resources({ requestedModelId = '' }) {
                   </div>
                 )}
                 {guidedSavedLookIdentity && guidedFullAutoWardrobeStages.length > 0 && (
-                  <div className="panel" aria-label="Full Auto progression preview">
+                  <div className="ui-surface" aria-label="Full Auto progression preview">
                     <p>Minimum take count: {guidedFullAutoWardrobeStages.length}. Current count: {Number(guidedPhotoCount) || 0}. Full Auto will not skip stages.</p>
                     <ol aria-label="Full Auto progression stages">
                       {guidedFullAutoWardrobeStages.map((wardrobe, index) => (
@@ -1855,13 +1902,13 @@ export default function Resources({ requestedModelId = '' }) {
                     Full body, head to toe
                   </label>
                 </fieldset>
-                {guidedSharedOverridesConflict && <p className="error" role="alert">Clear both Advanced shared overrides before requesting Full Auto consent.</p>}
+                {guidedSharedOverridesConflict && <p className="ui-notice error" data-tone="error" role="alert">Clear both Advanced shared overrides before requesting Full Auto consent.</p>}
                 {fullAutoPreflightLoading && <p className="muted" role="status">Refreshing the read-only Full Auto consent summary…</p>}
-                {fullAutoPreflightError && <p className="error" role="alert">{fullAutoPreflightError}</p>}
-                {fullAutoRefreshNotice && <p className="panel" role="status">{fullAutoRefreshNotice}</p>}
+                {fullAutoPreflightError && <p className="ui-notice error" data-tone="error" role="alert">{fullAutoPreflightError}</p>}
+                {fullAutoRefreshNotice && <p className="ui-surface" role="status">{fullAutoRefreshNotice}</p>}
                 {fullAutoQuote && fullAutoQuote.signature === fullAutoPreflightInputSignature && (
-                  <div className="panel" aria-label="Full Auto consent summary">
-                    <h3 style={{ marginTop: 0 }}>Review before Generate without pauses</h3>
+                  <div className="ui-surface" aria-label="Full Auto consent summary">
+                    <h3 className="ui-section-title" style={{ marginTop: 0 }}>Review before Generate without pauses</h3>
                     <p>Saved look: {fullAutoQuote.summary.saved_look.look_key} · version {versionText(fullAutoQuote.summary.saved_look.version)} · {fullAutoQuote.summary.saved_look.content_digest}</p>
                     <p>Automation profile: revision {versionText(fullAutoQuote.summary.automation_profile.revision)} · {fullAutoQuote.summary.automation_profile.digest}</p>
                     <p>Room: {fullAutoQuote.summary.room.library_key} / {fullAutoQuote.summary.room.source_id} · {fullAutoQuote.summary.room.content_digest}</p>
@@ -1881,9 +1928,8 @@ export default function Resources({ requestedModelId = '' }) {
                     <p>Authorization expires (UTC): {fullAutoQuote.summary.authorization_expires_at}</p>
                     <p>One click authorizes automatic preparation, configured policy review and approval, submission, and one initial execution attempt per take. Policy review is automated and does not guarantee visual results.</p>
                     <p>After creation, the backend continues if this browser closes and resumes unchanged work after a backend restart. Canvas and framing guide composition but do not guarantee visible feet, anatomy, or exact garment reproduction.</p>
-                    <button
+                    <button className="ui-button ui-button--primary primary"
                       type="button"
-                      className="primary"
                       disabled={guidedLocked || fullAutoPreflightLoading || !guidedFullAutoInputsReady || fullAutoQuote.signature !== fullAutoPreflightInputSignature}
                       onClick={submitFullAutoCreation}
                     >
@@ -1894,12 +1940,12 @@ export default function Resources({ requestedModelId = '' }) {
               </div>
           </section>
 
-          <details open={guidedAdvancedOpen} onToggle={(event) => setGuidedAdvancedOpen(event.currentTarget.open)}>
+          <details className="guided-section guided-advanced" open={guidedAdvancedOpen} onToggle={(event) => setGuidedAdvancedOpen(event.currentTarget.open)}>
             <summary>Advanced</summary>
-            <div className="grid-form" style={{ marginTop: 10 }}>
+            <div className="ui-form-grid" style={{ marginTop: 10 }}>
               <div>
                 <label htmlFor="guided-mode">Authoring mode</label>
-                <select
+                <select className="ui-control"
                   id="guided-mode"
                   value={guidedMode}
                   onChange={(event) => setGuidedMode(event.target.value)}
@@ -1912,7 +1958,7 @@ export default function Resources({ requestedModelId = '' }) {
               </div>
               <div>
                 <label htmlFor="guided-workflow-override">Workflow override</label>
-                <select
+                <select className="ui-control"
                   id="guided-workflow-override"
                   value={guidedWorkflowOverrideId}
                   onChange={(event) => setGuidedWorkflowOverrideId(event.target.value)}
@@ -1931,17 +1977,17 @@ export default function Resources({ requestedModelId = '' }) {
                 {workflows.length === 0 && <p className="muted">No workflows are available. <a href="#/workflows">Open Workflows</a>.</p>}
               </div>
             </div>
-            <h3 style={{ margin: '14px 0 6px' }}>Variation locks</h3>
+            <h3 className="ui-section-title" style={{ margin: '14px 0 6px' }}>Variation locks</h3>
             <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
               All four choices vary by default. Fix a choice only when every take should use the same value.
             </p>
-            <div className="grid-form">
+            <div className="ui-form-grid">
               {GUIDED_DIMENSIONS.map(([field, label]) => {
                 const setting = guidedVariationPolicy[field] || { mode: 'vary', value: '' }
                 return (
                   <div key={field}>
                     <label htmlFor={`guided-${field}-mode`}>{label}</label>
-                    <select
+                    <select className="ui-control"
                       id={`guided-${field}-mode`}
                       value={setting.mode}
                       onChange={(event) => setGuidedVariationPolicy((previous) => ({
@@ -1954,7 +2000,7 @@ export default function Resources({ requestedModelId = '' }) {
                       <option value="fixed">Fixed</option>
                     </select>
                     {setting.mode === 'fixed' && (
-                      <input
+                      <input className="ui-control"
                         aria-label={`Fixed ${label.toLowerCase()}`}
                         value={setting.value}
                         onChange={(event) => setGuidedVariationPolicy((previous) => ({
@@ -1969,7 +2015,7 @@ export default function Resources({ requestedModelId = '' }) {
                 )
               })}
             </div>
-            <h3 style={{ margin: '14px 0 6px' }}>Session canvas</h3>
+            <h3 className="ui-section-title" style={{ margin: '14px 0 6px' }}>Session canvas</h3>
             <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
               By default, the session inherits the character's current canvas. A canvas override applies only to this session.
             </p>
@@ -1989,7 +2035,7 @@ export default function Resources({ requestedModelId = '' }) {
                 disabled={guidedLocked}
                 style={{ border: 0, padding: 0, margin: '10px 0 0' }}
               >
-                <div className="grid-form">
+                <div className="ui-form-grid">
                   <CanvasSize
                     width={guidedCanvasSize.width}
                     height={guidedCanvasSize.height}
@@ -2001,11 +2047,11 @@ export default function Resources({ requestedModelId = '' }) {
                 </p>
               </fieldset>
             )}
-            <h3 style={{ margin: '14px 0 6px' }}>Shared overrides</h3>
-            <div className="grid-form">
+            <h3 className="ui-section-title" style={{ margin: '14px 0 6px' }}>Shared overrides</h3>
+            <div className="ui-form-grid">
               <div>
                 <label htmlFor="guided-look">Look override</label>
-                <textarea
+                <textarea className="ui-control"
                   id="guided-look"
                   rows={3}
                   value={guidedLook}
@@ -2016,7 +2062,7 @@ export default function Resources({ requestedModelId = '' }) {
               </div>
               <div>
                 <label htmlFor="guided-initial-wardrobe">Initial wardrobe override</label>
-                <textarea
+                <textarea className="ui-control"
                   id="guided-initial-wardrobe"
                   rows={3}
                   value={guidedInitialWardrobe}
@@ -2032,7 +2078,8 @@ export default function Resources({ requestedModelId = '' }) {
           </details>
 
           {guidedOutcomeUnknown && (
-            <div className="error" role="alert">
+            <div className="ui-notice error" data-tone="error" role="alert" tabIndex={-1} ref={guidedErrorRef}>
+              <p>{error}</p>
               The creation result is unknown. Retry the same request to retrieve its stored result.
               <button type="button" disabled={busy} onClick={retryGuidedCreation}>
                 {busy ? 'Retrying…' : 'Retry creation'}
@@ -2040,17 +2087,18 @@ export default function Resources({ requestedModelId = '' }) {
             </div>
           )}
           {guidedRequestConflict && (
-            <div className="error" role="alert">
+            <div className="ui-notice error" data-tone="error" role="alert" tabIndex={-1} ref={guidedErrorRef}>
+              <p>{error}</p>
               This request ID is already bound to different creation details. Start a new attempt to use a fresh request ID.
               <button type="button" disabled={busy} onClick={startGuidedCreationAttempt}>
                 Start a new creation attempt
               </button>
             </div>
           )}
-          <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
-            <button
+          <div className="guided-footer">
+            <div><h3 className="ui-section-title">Create a manual/assisted draft</h3><p className="ui-help">Current authoring mode: {guidedMode || 'Checking…'}. This action creates the draft. It does not authorize Full Auto, even when its opt-in controls are open.</p></div>
+            <button className="ui-button ui-button--primary primary"
               type="button"
-              className="primary"
               disabled={guidedLocked || !guidedCharacter || !guidedHasWorkflow || !guidedMode || assistantConfigured === null
                 || (guidedSavedLookKey && !guidedSavedLookIdentity)}
               onClick={submitGuidedCreation}
@@ -2058,7 +2106,7 @@ export default function Resources({ requestedModelId = '' }) {
               {busy ? 'Creating…' : fullAutoEnabled ? 'Create manual/assisted session' : 'Create guided session'}
             </button>
           </div>
-        </section>
+        </div></section>
       )}
 
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>

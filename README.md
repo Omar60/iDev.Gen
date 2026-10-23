@@ -677,6 +677,9 @@ without mandatory decomposition.)
 With an endpoint set, the app writes the text it has always asked you to write —
 and writes it by the rules that are otherwise only in these docs:
 
+  Guided creation retains four initial inputs, with the exact character/resource
+  identity beside them and separate optional saved-look, Advanced and Full Auto
+  sections. Creation errors preserve inputs and expose explicit recovery actions.
 - a **brief** — *“a rooftop at sunset, streetwear, standing, sitting and
   walking”* — fills the look, the wardrobe and as many takes as you ask for,
   none of them repeating what the two boxes already state;

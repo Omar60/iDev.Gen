@@ -92,3 +92,13 @@ stacked cells preserve native table headers and hide duplicate labels from
 assistive technology. Reused feedback and projected-preview summaries do not
 change operation eligibility or readiness. Inventory and Import styles remain
 outside this scope.
+
+## Guided resource creation
+
+`.studio-ui.resource-guided` scopes `ResourceGuided.css` to the creation form.
+It reuses foundation controls, surfaces, notices and focus states, with a
+responsive identity column. Optional saved-look, Full Auto authorization and
+Advanced settings use section boundaries rather than new workflow stages.
+AutomationProfileSelector and CanvasSize are styled only inside this scope;
+their shared components and behavior are unchanged. Inventory, Import and
+translation surfaces remain outside it.
