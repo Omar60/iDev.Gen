@@ -114,6 +114,53 @@ describe('Looks manual editor', () => {
     vi.restoreAllMocks()
   })
 
+  it('searches names locally without replacing a hidden draft or changing selection', async () => {
+    summaries = [summary('look-studio', 1, 'Studio look'), summary('look-second', 2, 'Second look')]
+    versions['look-studio:1'] = savedLook()
+    await render()
+    await click(button('Studio look · version 1'))
+    await setValue(field('Constant appearance'), 'unsaved appearance')
+    const reads = api.get.mock.calls.length
+    const search = container.querySelector('input[type="search"]')
+    await setValue(search, '  SECOND  ')
+    expect(button('Studio look · version 1')).toBeUndefined()
+    expect(button('Second look · version 2').disabled).toBe(true)
+    expect(field('Constant appearance').value).toBe('unsaved appearance')
+    expect(api.get.mock.calls.length).toBe(reads)
+    await setValue(search, 'no match')
+    expect(container.textContent).toContain('No looks match this name')
+    await setValue(search, '')
+    expect(button('Studio look · version 1').getAttribute('aria-current')).toBe('true')
+    expect(field('Constant appearance').value).toBe('unsaved appearance')
+  })
+
+  it('moves focus between workspace sections without unmounting or saving the draft', async () => {
+    await render()
+    await openNewLook()
+    await setValue(field('Look name'), 'Draft retained')
+    const form = container.querySelector('form')
+    await click(button('Browse saved looks'))
+    expect(document.activeElement.textContent).toBe('Saved looks')
+    await click(button('Go to editor · unsaved changes'))
+    expect(document.activeElement.textContent).toBe('New look')
+    expect(container.querySelector('form')).toBe(form)
+    expect(field('Look name').value).toBe('Draft retained')
+    expect(api.postVersioned).not.toHaveBeenCalled()
+  })
+
+  it('focuses a failed conventional save and retains the editable values for recovery', async () => {
+    await render()
+    await openNewLook()
+    await setValue(field('Look name'), 'Recoverable draft')
+    vi.spyOn(api, 'postVersioned').mockRejectedValueOnce(new Error('Save unavailable. Try again.'))
+    await click(button('Save look only'))
+    expect(document.activeElement.getAttribute('role')).toBe('alert')
+    expect(document.activeElement.textContent).toContain('Save unavailable')
+    expect(field('Look name').value).toBe('Recoverable draft')
+    await click(button('Save look only'))
+    expect(container.textContent).toContain('Saved as version 1')
+  })
+
   it('makes Looks discoverable and saves an appearance-only look manually', async () => {
     const post = api.postVersioned
     window.location.hash = '#/looks'
@@ -241,6 +288,7 @@ describe('Looks manual editor', () => {
     expect(button('Studio look · version 1')).toBeFalsy()
     expect(field('Look name')).toBeFalsy()
     expect(container.textContent).toContain('Archived Studio look. Its versions and session history are retained.')
+    expect(document.activeElement.textContent).toBe('Saved looks')
     await act(async () => {
       resolveStaleList([summary('look-studio', 1, 'Studio look')])
       await staleList

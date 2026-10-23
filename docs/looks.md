@@ -735,3 +735,30 @@ Looks JSON. The gate also applies to direct domain callers. Photo-stage status,
 preview, and cancel remain available, as does the existing `/api/wardrobe/import`
 behavior. A stale `expected_version` returns `409`; invalid input returns `422`,
 and a missing look version returns `404`.
+
+## Conventional editor layout
+
+Saved looks and the conventional editor share a two-column workspace on wide
+screens and stack on tablet and mobile. **Search looks** filters active saved
+look names locally, ignoring case and surrounding whitespace. It does not search
+appearance or garments, fetch new records, change selection, or discard an open
+draft. Clear the search to reveal a selected look hidden by the filter.
+
+**Browse saved looks**, **Go to editor**, and the narrow-screen **Back to saved
+looks** control move keyboard focus between workspace headings without unmounting
+the form. Unsaved changes keep selection, version switching, creation, and
+archiving blocked until saved or cancelled. These controls preserve the current
+in-view draft; ordinary drafts are not persisted across leaving Looks or a full
+page reload.
+
+The editor separates version history, identity and constant appearance, and the
+ordered outfit. Use the exact version number field for versions outside the
+bounded history menu. Saving a changed look creates a new immutable version.
+**Save look only** and **Cancel edits** sit after the conventional fields. A
+look-only save creates no automation profile; the separate combined-save action
+still requires its explicit profile review. Save errors receive focus and retain
+editable values for correction and retry. Archiving still requires confirmation
+and retains historical versions and session history.
+
+The photo input panel retains its position, extraction, confirmations, cleanup,
+and recovery operations.

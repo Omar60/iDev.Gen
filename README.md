@@ -978,3 +978,9 @@ available in the [Looks view](docs/looks.md) and can be snapshotted explicitly
 into an authoring-v1 resource session. See [known limitations](docs/known-limitations.md)
 for the remaining deliberate gaps.
 
+
+The [Looks editor](docs/looks.md#conventional-editor-layout) uses the dark studio
+workspace with local name search, explicit version navigation, ordered garment
+fields, and separate look-only and reviewed automation saves. Narrow-screen
+workspace controls preserve the open form while moving focus between list and
+editor.

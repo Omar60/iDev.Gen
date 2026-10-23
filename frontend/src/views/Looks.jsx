@@ -10,6 +10,8 @@ import {
   prospectiveSource,
 } from '../looksAutomationReview.js'
 import AutomationProfileEditor from './AutomationProfileEditor.jsx'
+import '../ui/foundations.css'
+import './Looks.css'
 
 const combinedSaveEvent = 'idevgen:combined-look-save'
 let pendingCombinedSave = null
@@ -350,6 +352,10 @@ function photoReviewPayload(decisions) {
 
 export default function Looks() {
   const [looks, setLooks] = useState([])
+  const [search, setSearch] = useState('')
+  const listHeading = useRef(null)
+  const editorHeading = useRef(null)
+  const saveErrorMessage = useRef(null)
   const [wardrobe, setWardrobe] = useState({ garments: [], outfits: [] })
   const [selectedKey, setSelectedKey] = useState('')
   const [selectedVersion, setSelectedVersion] = useState(0)
@@ -420,6 +426,20 @@ export default function Looks() {
   const detailRequest = useRef(0)
   const mountedRef = useRef(false)
   const selectedSummary = looks.find((item) => item.key === selectedKey)
+  const focusWorkspace = (heading) => {
+    heading.current?.focus()
+    heading.current?.scrollIntoView({ block: 'start' })
+  }
+  const query = search.trim().toLocaleLowerCase()
+  const filteredLooks = looks.filter((item) => item.name.toLocaleLowerCase().includes(query))
+
+  useEffect(() => {
+    if (selectedKey || isNew) editorHeading.current?.focus()
+  }, [selectedKey, selectedVersion, isNew])
+
+  useEffect(() => {
+    if (saveError) saveErrorMessage.current?.focus()
+  }, [saveError])
 
   const resetAutomationDraft = (nextForm, suggestedProfile = null) => {
     automationSourceEpoch.current += 1
@@ -623,6 +643,7 @@ export default function Looks() {
       setLooksLoading(false)
       setLooks((current) => current.filter((look) => look.key !== item.key))
       setLooksNotice(`Archived ${item.name}. Its versions and session history are retained.`)
+      focusWorkspace(listHeading)
       if (selectedKey === item.key) {
         detailRequest.current += 1
         setSelectedKey('')
@@ -1546,13 +1567,13 @@ export default function Looks() {
 
   return (
     <section className="looks-page" aria-label="Looks">
-      <div className="row">
+      <div className="studio-ui looks-header ui-page-header">
         <div>
-          <h1>Looks</h1>
-          <p className="muted">Save reusable appearance and optional outfit details.</p>
+          <h1 className="ui-page-title">Looks</h1>
+          <p className="ui-lead">Save reusable appearance and optional outfit details.</p>
         </div>
-        <div className="row" aria-label="Look actions">
-          <button type="button" className="primary" onClick={startNew} disabled={navigationBlocked}>
+        <div className="ui-actions" aria-label="Look actions">
+          <button type="button" className="ui-button ui-button--primary" onClick={startNew} disabled={navigationBlocked}>
             Create look
           </button>
           <input
@@ -1564,10 +1585,10 @@ export default function Looks() {
             disabled={importBusy}
             hidden
           />
-          <button type="button" onClick={() => jsonInput.current?.click()} disabled={importBusy}>
+          <button className="ui-button" type="button" onClick={() => jsonInput.current?.click()} disabled={importBusy}>
             Import JSON
           </button>
-          <button
+          <button className="ui-button"
             type="button"
             onClick={exportSelectedVersion}
             disabled={!selectedKey || !versionText(selectedVersion) || exportBusy}
@@ -1583,7 +1604,7 @@ export default function Looks() {
             disabled={saving || uncertainSave || photoBusy || photoStage?.state === 'staged'}
             hidden
           />
-          <button
+          <button className="ui-button"
             type="button"
             onClick={() => photoInput.current?.click()}
             disabled={saving || uncertainSave || photoBusy || photoStage?.state === 'staged'}
@@ -1756,30 +1777,42 @@ export default function Looks() {
         {photoNotice && <p role="status">{photoNotice}</p>}
       </section>
 
-      <div className="looks-layout">
-        <aside className="panel" aria-label="Saved looks">
+      <nav className="studio-ui looks-workspace-nav" aria-label="Look workspace">
+        <button type="button" className="ui-button" onClick={() => focusWorkspace(listHeading)}>Browse saved looks</button>
+        <button type="button" className="ui-button" onClick={() => focusWorkspace(editorHeading)}>Go to editor{dirty ? ' · unsaved changes' : ''}</button>
+      </nav>
+      <div className="looks-layout looks-studio-layout">
+        <aside className="panel studio-ui looks-library" aria-label="Saved looks">
           <div className="row">
-            <h2>Saved looks</h2>
-            <button type="button" onClick={loadLooks} disabled={looksLoading || navigationBlocked}>Refresh</button>
+            <h2 className="ui-section-title" ref={listHeading} tabIndex={-1}>Saved looks</h2>
+            <button className="ui-button" type="button" onClick={loadLooks} disabled={looksLoading || navigationBlocked}>Refresh</button>
           </div>
-          {looksError && <p className="error" role="alert">{looksError}</p>}
+          <label className="ui-field looks-search">
+            <span className="ui-label">Search looks</span>
+            <input className="ui-control" type="search" name="look-search" value={search} onChange={(event) => setSearch(event.target.value)} aria-describedby="looks-search-help" placeholder="Search by name…" />
+          </label>
+          <p className="ui-help" id="looks-search-help">Search saved look names. Your open draft stays in the editor.</p>
+          <p className="ui-help" role="status">{filteredLooks.length} of {looks.length} saved looks</p>
+          {looksError && <p className="error ui-notice" role="alert">{looksError}</p>}
           {looksNotice && <p role="status">{looksNotice}</p>}
           {looksLoading && <p className="muted">Loading saved looks…</p>}
           {!looksLoading && !looksError && looks.length === 0 && <p className="muted">No saved looks yet.</p>}
+          {!looksLoading && looks.length > 0 && filteredLooks.length === 0 && <p className="ui-notice">No looks match this name. Clear or change your search.</p>}
+          {dirty && <p className="ui-notice" role="status">Unsaved changes. Save or cancel edits before opening another look.</p>}
           <div className="looks-list">
-            {looks.map((item) => (
+            {filteredLooks.map((item) => (
               <div className="looks-list-item" key={item.key}>
-                <button
+                <button className="ui-button"
                   type="button"
                   aria-current={selectedKey === item.key ? 'true' : undefined}
                   disabled={navigationBlocked || !versionText(item.version)}
                   onClick={() => openVersion(item.key, item.version)}
                 >
-                  {item.name} · version {item.version}
+                  <strong>{item.name}</strong><span className="looks-version"> · version {item.version}</span>
                 </button>
                 <button
                   type="button"
-                  className="danger"
+                  className="ui-button looks-danger"
                   aria-label={`Archive ${item.name}`}
                   aria-busy={archivingKey === item.key}
                   disabled={navigationBlocked || !versionText(item.version)}
@@ -1792,7 +1825,13 @@ export default function Looks() {
           </div>
         </aside>
 
-        <section className="panel" aria-label="Look editor">
+        <section className="panel looks-editor" aria-label="Look editor">
+          <div className="studio-ui looks-editor-heading">
+            <button type="button" className="ui-button looks-back" onClick={() => focusWorkspace(listHeading)}>Back to saved looks</button>
+            <h2 className="ui-section-title" ref={editorHeading} tabIndex={-1}>{isNew ? 'New look' : selectedSummary?.name || 'Look editor'}</h2>
+            <p className="ui-help">{dirty ? 'Unsaved changes' : selectedKey ? `Viewing saved version ${selectedVersion}` : 'Select a saved look or create one.'}</p>
+            <p className="ui-help">A normal look stores appearance and outfit. Automation requires its own reviewed profile.</p>
+          </div>
           {uncertainSave && <div className="error" role="alert" aria-label="Combined save recovery">
             {combinedSaveInFlight
               ? <p>A combined save from this browser tab is still awaiting a response. Editing and new writes stay blocked until its exact outcome is known.</p>
@@ -1807,14 +1846,16 @@ export default function Looks() {
           )}
           {form && (
             <form onSubmit={saveLook} aria-label={isNew ? 'Create look form' : 'Edit look form'}>
+              <div className="studio-ui looks-conventional">
               {!isNew && selectedSummary && (
-                <div className="grid-form">
+                <section className="looks-history" aria-label="Saved version history">
+                  <h3>Version history</h3>
                   <p className="muted" role="status">
                     Viewing version {versionText(selectedVersion) || 'unavailable'}{latestVersion ? ` · latest version ${latestVersion}` : ''}.
                   </p>
-                  <label>
+                  <label className="ui-field">
                     Version history
-                    <select
+                    <select className="ui-control"
                       aria-label="Version history"
                       value={versionText(selectedVersion) || ''}
                       onChange={(event) => openVersion(selectedKey, event.target.value)}
@@ -1827,9 +1868,9 @@ export default function Looks() {
                       ))}
                     </select>
                   </label>
-                  <label>
+                  <label className="ui-field">
                     Version number
-                    <input
+                    <input className="ui-control"
                       aria-label="Version number"
                       type="text"
                       inputMode="numeric"
@@ -1840,14 +1881,14 @@ export default function Looks() {
                     />
                   </label>
                   <div className="row">
-                    <button
+                    <button className="ui-button"
                       type="button"
                       onClick={() => openVersion(selectedKey, latestVersion)}
                       disabled={!latestVersion || latestVersion === versionText(selectedVersion) || saving || uncertainSave || dirty}
                     >
                       Open latest version
                     </button>
-                    <button
+                    <button className="ui-button"
                       type="button"
                       onClick={() => openVersion(selectedKey, versionChoice)}
                       disabled={!requestedVersion || saving || uncertainSave || dirty}
@@ -1855,34 +1896,44 @@ export default function Looks() {
                       Open version
                     </button>
                   </div>
-                </div>
+                  <p className="ui-help">Saving creates a new version. Earlier versions remain available. Enter an exact version number to open versions outside the menu.</p>
+                </section>
               )}
-              <label>
+              <section className="looks-form-section" aria-label="Look identity and appearance">
+              <h3>Identity and constant appearance</h3>
+              <label className="ui-field">
                 Look name
-                <input
+                <input className="ui-control"
                   aria-label="Look name"
                   value={form.name}
+                  name="look-name"
+                  autoComplete="off"
                   maxLength={128}
                   onChange={(event) => updateForm({ name: event.target.value })}
                   disabled={saving || uncertainSave}
                   required
                 />
               </label>
-              <label>
+              <label className="ui-field">
                 Constant appearance (optional)
-                <textarea
+                <textarea className="ui-control"
                   aria-label="Constant appearance"
+                  aria-describedby="look-appearance-help"
                   value={form.appearance}
                   onChange={(event) => updateForm({ appearance: event.target.value })}
                   disabled={saving || uncertainSave}
                   placeholder="Hair, makeup, or styling that stays constant"
                 />
               </label>
-              <p className="muted" role="note">
+              <p className="muted" role="note" id="look-appearance-help">
                 Review this description for clothing and move removable items into the outfit. This is a reminder, not automatic detection.
               </p>
               <p className="muted">Use garments for one-piece clothing, layers, and removable accessories. No body-part categories are required.</p>
 
+              </section>
+              <section className="looks-form-section" aria-label="Ordered outfit">
+              <h3>Outfit and removal order</h3>
+              <p className="ui-help">Garments are saved in the order shown. Use Move up and Move down to change removal order.</p>
               {photoMode === 'manual' && (
                 <p className="muted" role="note">This form saves a manual description for the staged photo. The photo is not attached to a generation or session.</p>
               )}
@@ -1890,9 +1941,9 @@ export default function Looks() {
               {photoMode === 'extracted' ? (
                 <p className="muted" role="note">Appearance stays constant. Review the separate garment list and arrange it in removal order.</p>
               ) : (
-                <label>
+                <label className="ui-field">
                   Optional outfit
-                  <select
+                  <select className="ui-control"
                     aria-label="Optional outfit"
                     value={selectedOutfitValue}
                     onChange={(event) => chooseOutfit(event.target.value)}
@@ -1916,7 +1967,7 @@ export default function Looks() {
                       </li>
                     ))}
                   </ol>
-                  <button type="button" onClick={customizeOutfit} disabled={saving || uncertainSave}>Edit garments and order</button>
+                  <button className="ui-button" type="button" onClick={customizeOutfit} disabled={saving || uncertainSave}>Edit garments and order</button>
                 </div>
               )}
 
@@ -1925,9 +1976,9 @@ export default function Looks() {
                   <div className="row">
                     {photoMode !== 'extracted' && (
                       <>
-                        <label>
+                        <label className="ui-field">
                           Add existing garment
-                          <select
+                          <select className="ui-control"
                             aria-label="Add existing garment"
                             value={newGarmentKey}
                             onChange={(event) => setNewGarmentKey(event.target.value)}
@@ -1941,21 +1992,21 @@ export default function Looks() {
                             ))}
                           </select>
                         </label>
-                        <button type="button" onClick={addSelectedGarment} disabled={saving || uncertainSave || !newGarmentKey}>
+                        <button className="ui-button" type="button" onClick={addSelectedGarment} disabled={saving || uncertainSave || !newGarmentKey}>
                           Add existing garment
                         </button>
                       </>
                     )}
-                    <button type="button" onClick={addBlankGarment} disabled={saving || uncertainSave}>Add new garment</button>
+                    <button className="ui-button" type="button" onClick={addBlankGarment} disabled={saving || uncertainSave}>Add new garment</button>
                   </div>
                   {wardrobeError && <p className="error" role="alert">{wardrobeError}</p>}
                   {form.garments.map((row, index) => (
                     <fieldset className="looks-garment" key={row.id} aria-label={`Garment ${index + 1}`}>
                       <legend>Garment {index + 1}</legend>
                       <div className="looks-garment-fields">
-                        <label>
+                        <label className="ui-field">
                           Worn wording
-                          <textarea
+                          <textarea className="ui-control"
                             aria-label={`Garment ${index + 1} worn wording`}
                             value={row.wording}
                             onChange={(event) => updateGarment(index, { wording: event.target.value })}
@@ -1963,9 +2014,9 @@ export default function Looks() {
                             required
                           />
                         </label>
-                        <label>
+                        <label className="ui-field">
                           Moved-aside wording (optional)
-                          <textarea
+                          <textarea className="ui-control"
                             aria-label={`Garment ${index + 1} moved-aside wording`}
                             value={row.aside}
                             onChange={(event) => updateGarment(index, { aside: event.target.value })}
@@ -1974,15 +2025,33 @@ export default function Looks() {
                         </label>
                       </div>
                       <div className="row">
-                        <button type="button" aria-label={`Move garment ${index + 1} up`} onClick={() => moveGarment(index, -1)} disabled={saving || uncertainSave || index === 0}>Move up</button>
-                        <button type="button" aria-label={`Move garment ${index + 1} down`} onClick={() => moveGarment(index, 1)} disabled={saving || uncertainSave || index === form.garments.length - 1}>Move down</button>
-                        <button type="button" className="danger" aria-label={`Remove garment ${index + 1}`} onClick={() => removeGarment(index)} disabled={saving || uncertainSave}>Remove</button>
+                        <button className="ui-button" type="button" aria-label={`Move garment ${index + 1} up`} onClick={() => moveGarment(index, -1)} disabled={saving || uncertainSave || index === 0}>Move up</button>
+                        <button className="ui-button" type="button" aria-label={`Move garment ${index + 1} down`} onClick={() => moveGarment(index, 1)} disabled={saving || uncertainSave || index === form.garments.length - 1}>Move down</button>
+                        <button type="button" className="ui-button looks-danger" aria-label={`Remove garment ${index + 1}`} onClick={() => removeGarment(index)} disabled={saving || uncertainSave}>Remove</button>
                       </div>
                     </fieldset>
                   ))}
                 </div>
               )}
 
+              </section>
+              <div className="looks-normal-actions">
+
+              {saveError && <p className="error ui-notice" role="alert" ref={saveErrorMessage} tabIndex={-1}>{saveError}</p>}
+              {notice && <p role="status">{notice}</p>}
+              <div className="ui-actions">
+                <button className="ui-button" type="button" onClick={() => saveLook(undefined, 'normal')} disabled={saving || uncertainSave}>
+                  Save look only
+                </button>
+                <button className="ui-button" type="button" onClick={cancelEdits} disabled={saving || uncertainSave}>
+                  {photoMode === 'extracted'
+                    ? 'Cancel photo stage and discard draft'
+                    : photoMode ? 'Discard photo description' : 'Cancel edits'}
+                </button>
+              </div>
+              <p className="ui-help">Save look only creates no automation profile. Profile preparation and combined saving remain separate below.</p>
+              </div>
+              </div>
               {photoMode === 'extracted' && photoProposal && (
                 <fieldset className="panel" aria-label="Photo extraction review">
                   <legend>Review photo extraction</legend>
@@ -2103,20 +2172,13 @@ export default function Looks() {
                 </div>}
               </fieldset>
 
-              {saveError && <p className="error" role="alert">{saveError}</p>}
-              {notice && <p role="status">{notice}</p>}
+              <div className="studio-ui looks-save-actions">
               <div className="row">
-                <button type="submit" className="primary" disabled={saving || uncertainSave || combinedBlockers.length > 0}>
+                <button type="submit" className="ui-button ui-button--primary" disabled={saving || uncertainSave || combinedBlockers.length > 0}>
                   {saving ? 'Saving…' : 'Save look + automation profile'}
                 </button>
-                <button type="button" onClick={() => saveLook(undefined, 'normal')} disabled={saving || uncertainSave}>
-                  Save look only
-                </button>
-                <button type="button" onClick={cancelEdits} disabled={saving || uncertainSave}>
-                  {photoMode === 'extracted'
-                    ? 'Cancel photo stage and discard draft'
-                    : photoMode ? 'Discard photo description' : 'Cancel edits'}
-                </button>
+              </div>
+              <p className="ui-help">The combined save requires all automation reviews above.</p>
               </div>
             </form>
           )}

@@ -102,3 +102,13 @@ Advanced settings use section boundaries rather than new workflow stages.
 AutomationProfileSelector and CanvasSize are styled only inside this scope;
 their shared components and behavior are unchanged. Inventory, Import and
 translation surfaces remain outside it.
+
+### Looks conventional workspace
+
+Looks applies `.studio-ui` to its header, list, conventional fields, and save
+actions. `Looks.css` scopes layout and component adjustments to these regions;
+photo and automation profile internals keep their existing styles and handlers.
+At widths below 1100px the two-column workspace stacks, with focusable heading
+navigation and a return-to-list control. Controls retain 44px touch targets,
+visible focus, wrapped long names, and explicit save/archive semantics. The
+history menu remains bounded, with an exact decimal version field available.
