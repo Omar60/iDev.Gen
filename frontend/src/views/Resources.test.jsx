@@ -3760,10 +3760,8 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     })
 
     await renderComponent()
-    const panelA = Array.from(container.querySelectorAll('h3'))
-      .find((heading) => heading.textContent === libraryA.display_name).closest('.panel')
-    const panelB = Array.from(container.querySelectorAll('h3'))
-      .find((heading) => heading.textContent === libraryB.display_name).closest('.panel')
+    const panelA = container.querySelector(`[aria-label="Translations for ${libraryA.display_name}"]`)
+    const panelB = container.querySelector(`[aria-label="Translations for ${libraryB.display_name}"]`)
 
     const loadA = Array.from(panelA.querySelectorAll('button')).find((button) => button.textContent === 'Load editable rows')
     const loadB = Array.from(panelB.querySelectorAll('button')).find((button) => button.textContent === 'Load editable rows')

@@ -5,6 +5,7 @@ import CanvasSize from './CanvasSize.jsx'
 import AutomationProfileSelector from '../components/AutomationProfileSelector.jsx'
 import ResourceInventory from './ResourceInventory.jsx'
 import './ResourceImport.css'
+import './ResourceTranslations.css'
 import { savedLookWardrobeStages } from '../wardrobe.js'
 import {
   extractCategories,
@@ -25,6 +26,31 @@ import {
   isRowEligibleForProposal,
   applyProposalsToRows,
 } from '../resources.js'
+
+function TranslationFeedback({ error, notice }) {
+  const errorRef = useRef(null)
+  useEffect(() => { if (error) errorRef.current?.focus() }, [error])
+  return <>
+    {error && <div className="ui-notice" data-tone="error" role="alert" tabIndex={-1} ref={errorRef}>
+      <p>{error}</p><p>Your draft is kept. Review the issue and retry; changed rows or maps require a fresh Preview.</p>
+    </div>}
+    {notice && <p className="ui-notice" role="status">{notice}</p>}
+  </>
+}
+
+function TranslationPreviewSummary({ preview }) {
+  return <div className="translation-preview" role="status">
+    <h4 className="ui-section-title">Preview Summary</h4>
+    <dl className="translation-counts">
+      <div><dt>Matched revisions</dt><dd>{preview.matchedRevisions} of {preview.totalRevisions}</dd></div>
+      <div><dt>Would update</dt><dd>{preview.wouldUpdate}</dd></div>
+      <div><dt>Would be ready</dt><dd>{preview.wouldBeReady}</dd></div>
+      <div><dt>Would remain pending</dt><dd>{preview.wouldRemainPending}</dd></div>
+      {preview.unmatchedEntries > 0 && <div><dt>Unmatched entries</dt><dd>{preview.unmatchedEntries}</dd></div>}
+    </dl>
+    <p className="ui-help">Projected result only. Readiness changes only after Confirm &amp; Apply succeeds and the library is refreshed.</p>
+  </div>
+}
 
 const GUIDED_DIMENSIONS = [
   ['camera', 'Camera'],
@@ -635,9 +661,7 @@ export default function Resources({ requestedModelId = '' }) {
   const handleTranslateRevision = (libraryKey) => {
     handleLoadTranslationRows(libraryKey)
     const el = document.getElementById(`translation-mapping-${libraryKey}`)
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth' })
-    }
+    el?.focus()
   }
 
   const reloadModels = () => {
@@ -2077,21 +2101,38 @@ export default function Resources({ requestedModelId = '' }) {
             onTranslate={handleTranslateRevision} onStructuredScene={chooseStructuredScene}
           />
           {translationLibraries.map((lib) => (
-              <div key={lib.library_key} className="panel" style={{ marginBottom: 16 }}>
-                <h3>{lib.display_name || lib.library_key}</h3>
+              <section key={lib.library_key} className="studio-ui ui-page resource-translations" aria-label={`Translations for ${lib.display_name || lib.library_key}`}><div className="ui-surface">
+                <h2 className="ui-section-title">{lib.display_name || lib.library_key}</h2>
+                <p className="ui-help">Library <code>{lib.library_key}</code>. Review source-backed fields, preview changes and explicitly apply translations. Editing or requesting suggestions does not approve resources.</p>
                 {/* Translation Mapping section */}
-                <div id={`translation-mapping-${lib.library_key}`} style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                <div id={`translation-mapping-${lib.library_key}`} className="translation-workspace" tabIndex={-1} role="region" aria-labelledby={`translation-heading-${lib.library_key}`}>
                   <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                    <h4 style={{ margin: 0 }}>Translation Mapping</h4>
+                    <h3 className="ui-section-title" id={`translation-heading-${lib.library_key}`}>Translation Mapping</h3>
                     <div className="row">
-                      <span className="badge ready" style={{ marginRight: 6 }}>
+                      <span className="ui-state" data-tone="success" style={{ marginRight: 6 }}>
                         {(lib.revisions || []).filter((r) => r.readiness?.status === 'ready').length} Ready
                       </span>
-                      <span className="badge pending">
+                      <span className="ui-state" data-tone="warning">
                         {(lib.revisions || []).filter((r) => r.readiness?.status !== 'ready').length} Pending
                       </span>
                     </div>
                   </div>
+
+                  <details className="translation-readiness">
+                    <summary>Readiness by revision</summary>
+                    <ul className="translation-revisions">
+                      {(lib.revisions || []).map(revision => {
+                        const readiness = checkReadiness(revision, { kind: lib.kind })
+                        return <li key={JSON.stringify([revision.source_id, revision.content_digest])}>
+                          <div className="ui-actions"><strong>{revision.source_id}</strong><span className="ui-state" data-tone={readiness.isReady ? 'success' : readiness.readiness === 'needs_source_correction' ? 'error' : 'warning'}>{readiness.label}</span></div>
+                          <p className="ui-help">Revision {revision.revision_id ?? 'Not recorded'} · <code>{revision.content_digest}</code></p>
+                          {!!readiness.blockedFields.length && <p className="ui-help">Affected fields: {readiness.blockedFields.join(', ')}</p>}
+                          {!!readiness.reasons.length && <ul>{readiness.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
+                          <p className="ui-help">{readiness.readiness === 'needs_source_correction' ? 'Correct the source and re-import it. A translation cannot repair malformed source fields.' : readiness.isReady ? 'No translation blocker reported for this revision.' : 'Review missing translations below. Inspect the revision for field diagnostics if needed.'}</p>
+                        </li>
+                      })}
+                    </ul>
+                  </details>
 
                   {(() => {
                     const tState = translationState[lib.library_key] || {}
@@ -2106,15 +2147,15 @@ export default function Resources({ requestedModelId = '' }) {
                     )
                     return (
                       <>
-                        <div className="panel" style={{ marginBottom: 10, background: 'var(--card-bg)' }}>
+                        <section className="translation-manual" aria-label="Manual translations" aria-busy={Boolean(tState.manualBusy || tState.proposalBusy)}>
                           <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
                             <div>
-                              <b>Manual source-backed translations</b>
+                              <h3 className="ui-section-title">Manual source-backed translations</h3>
                               <div className="muted" style={{ fontSize: 12 }}>
-                                Edit safe source rows, then use canonical bulk preview and attested apply.
+                                Keep the original text in view while editing. Select Use for the entries to include, preview them, then confirm application.
                               </div>
                             </div>
-                            <button
+                            <button className="ui-button"
                               onClick={() => handleLoadTranslationRows(lib.library_key)}
                               disabled={tState.manualBusy}
                             >
@@ -2123,21 +2164,22 @@ export default function Resources({ requestedModelId = '' }) {
                           </div>
 
                           {(tState.manualDiagnostics || []).map((diagnostic, index) => (
-                            <div className="error" key={`${diagnostic.code}-${index}`} style={{ fontSize: 12, marginBottom: 6 }}>
+                            <div className="ui-notice" data-tone="error" key={`${diagnostic.code}-${index}`} style={{ fontSize: 12, marginBottom: 6 }}>
                               {diagnostic.code}: {diagnostic.field || 'payload'} — {diagnostic.message}
                             </div>
                           ))}
                           {manualBuild.errors.map((item, index) => (
-                            <div className="error" key={`${item.code}-${item.source}-${index}`} style={{ fontSize: 12, marginBottom: 6 }}>
+                            <div className="ui-notice" data-tone="error" role="alert" key={`${item.code}-${item.source}-${index}`} style={{ fontSize: 12, marginBottom: 6 }}>
                               {item.code}: source {JSON.stringify(item.source)}
                             </div>
                           ))}
-                          {tState.manualError && <div className="error" style={{ fontSize: 12, marginBottom: 8 }}>{tState.manualError}</div>}
-                          {tState.manualNotice && <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>{tState.manualNotice}</div>}
+                          <TranslationFeedback error={tState.manualError} notice={tState.manualNotice} />
+                          {tState.manualBusy && <p className="ui-help" role="status">Loading or checking translations… Existing draft values remain visible.</p>}
+                          {tState.manualRows?.length === 0 && <p className="ui-notice">No editable source-backed rows returned. Review diagnostics above or inspect the revision before correcting its source.</p>}
 
                           {(tState.manualRows || []).length > 0 && (
                             <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 8 }}>
-                              <button
+                              <button className="ui-button"
                                 onClick={() => handleSuggestTranslations(lib.library_key)}
                                 disabled={
                                   tState.manualBusy
@@ -2156,7 +2198,7 @@ export default function Resources({ requestedModelId = '' }) {
                                 </span>
                               )}
                               {tState.preProposalRows && (
-                                <button
+                                <button className="ui-button"
                                   onClick={() => handleDiscardSuggestions(lib.library_key)}
                                   disabled={tState.manualBusy || tState.proposalBusy}
                                 >
@@ -2167,50 +2209,52 @@ export default function Resources({ requestedModelId = '' }) {
                           )}
 
                           {(tState.manualRows || []).length > 0 && (
-                            <table style={{ marginBottom: 8 }}>
+                            <table className="translation-rows" role="table" aria-label={`Editable translations for ${lib.library_key}`} style={{ marginBottom: 8 }}>
                               <thead>
-                                <tr>
-                                  <th>Use</th>
-                                  <th>Suggest</th>
-                                  <th>Source</th>
-                                  <th>Field / Revision</th>
-                                  <th>Translation</th>
+                                <tr role="row">
+                                  <th scope="col">Use</th>
+                                  <th scope="col">Suggest</th>
+                                  <th scope="col">Source</th>
+                                  <th scope="col">Field / Revision</th>
+                                  <th scope="col">Translation</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {tState.manualRows.map((row, index) => (
-                                  <tr key={`${row.revision.source_id}-${row.revision.content_digest}-${row.field}-${row.list_index ?? 'scalar'}`}>
-                                    <td>
-                                      <input
+                                  <tr role="row" key={`${row.revision.source_id}-${row.revision.content_digest}-${row.field}-${row.list_index ?? 'scalar'}`}>
+                                    <td role="cell"><span className="translation-cell-label" aria-hidden="true">Use</span><div className="translation-cell-value">
+                                      <label className="translation-check"><input
                                         type="checkbox"
                                         aria-label={`Use translation for ${row.source_value}`}
                                         checked={Boolean(row.emit)}
                                         onChange={(e) => updateManualRow(lib.library_key, index, { emit: e.target.checked })}
-                                      />
-                                    </td>
-                                    <td>
+                                      /></label>
+                                    </div></td>
+                                    <td role="cell"><span className="translation-cell-label" aria-hidden="true">Suggest</span><div className="translation-cell-value">
                                       {isRowEligibleForProposal(row) ? (
-                                        <input
+                                        <label className="translation-check"><input
                                           type="checkbox"
                                           aria-label={`Suggest translation for ${row.source_value}`}
                                           checked={Boolean(row.suggest_selected)}
                                           onChange={(e) => updateManualRow(lib.library_key, index, { suggest_selected: e.target.checked })}
-                                        />
+                                        /></label>
                                       ) : (
                                         <span className="muted" style={{ fontSize: 11 }}>—</span>
                                       )}
-                                    </td>
-                                    <td>
-                                      <code>{row.source_value}</code>
+                                    </div></td>
+                                    <td role="cell"><span className="translation-cell-label" aria-hidden="true">Original source</span><div className="translation-cell-value">
+                                      <code id={`translation-source-${lib.library_key}-${index}`}>{row.source_value}</code>
                                       {row.required && <span className="muted"> · required</span>}
                                       {row.source_shape === 'list' && <span className="muted"> · item {row.list_index + 1}</span>}
-                                    </td>
-                                    <td style={{ fontSize: 12 }}>
+                                    </div></td>
+                                    <td role="cell"><span className="translation-cell-label" aria-hidden="true">Field / Revision</span><div className="translation-cell-value">
                                       <code>{row.field}</code>
-                                      <div className="muted">{row.revision.source_id} · {row.revision.content_digest.slice(0, 12)}…</div>
-                                    </td>
-                                    <td>
-                                      <input
+                                      <div id={`translation-context-${lib.library_key}-${index}`} className="ui-help">Revision {row.revision.source_id} · Source field: {row.source_field || row.field} · {row.role} · {row.source_shape}</div>
+                                      <div className="muted">{row.revision.source_id} · {row.revision.content_digest}</div>
+                                    </div></td>
+                                    <td role="cell"><span className="translation-cell-label" aria-hidden="true">Translation</span><div className="translation-cell-value">
+                                      <input className="ui-control" name="translation" autoComplete="off"
+                                        aria-describedby={`translation-source-${lib.library_key}-${index} translation-context-${lib.library_key}-${index}`}
                                         aria-label={`Translation for ${row.source_value}`}
                                         value={row.translation}
                                         onChange={(e) => updateManualRow(lib.library_key, index, {
@@ -2219,9 +2263,9 @@ export default function Resources({ requestedModelId = '' }) {
                                         })}
                                       />
                                       {row.current_translation != null && (
-                                        <div className="muted" style={{ fontSize: 11 }}>Existing translation</div>
+                                        <div className="translation-existing"><span className="ui-help">Existing translation</span><p>{row.current_translation}</p></div>
                                       )}
-                                    </td>
+                                    </div></td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -2230,14 +2274,13 @@ export default function Resources({ requestedModelId = '' }) {
 
                           {(tState.manualRows || []).length > 0 && (
                             <div className="row" style={{ justifyContent: 'flex-end' }}>
-                              <button
+                              <button className="ui-button"
                                 onClick={() => handlePreviewManualTranslations(lib.library_key)}
                                 disabled={!manualCanPreview}
                               >
                                 Preview manual translations
                               </button>
-                              <button
-                                className="primary"
+                              <button className="ui-button ui-button--primary"
                                 onClick={() => handleApplyManualTranslations(lib.library_key)}
                                 disabled={
                                   tState.manualBusy
@@ -2252,22 +2295,23 @@ export default function Resources({ requestedModelId = '' }) {
                           )}
 
                           {tState.manualPreview && (
-                            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-                              Preview: {tState.manualPreview.matchedRevisions} of {tState.manualPreview.totalRevisions} revisions matched; {tState.manualPreview.wouldUpdate} would update.
-                            </div>
+                            <TranslationPreviewSummary preview={tState.manualPreview} />
                           )}
-                        </div>
+                        </section>
 
+                        <section className="translation-map" aria-label="Translation map file">
+                        <h3 className="ui-section-title">Use a translation map file</h3>
+                        <p className="ui-help" id={`translation-map-help-${lib.library_key}`}>An alternative to manual rows. Preview reads the map; Confirm &amp; Apply writes its reviewed translations.</p>
                         <div className="row" style={{ alignItems: 'flex-end', gap: 8, marginBottom: 8 }}>
                           <div style={{ flex: 1 }}>
-                            <label style={{ fontSize: 12 }}>Translation Map Path (beside source material or absolute JSON path)</label>
-                            <input
+                            <label className="ui-label" htmlFor={`translation-map-${lib.library_key}`}>Translation Map Path (beside source material or absolute JSON path)</label>
+                            <input className="ui-control" id={`translation-map-${lib.library_key}`} name="translation_map_path" autoComplete="off" spellCheck={false} aria-describedby={`translation-map-help-${lib.library_key}`}
                               value={tState.mapPath || ''}
                               onChange={(e) => handleMapPathChange(lib.library_key, e.target.value)}
                               placeholder="e.g. /path/to/translations.json or relative/path.json"
                             />
                           </div>
-                          <button
+                          <button className="ui-button"
                             onClick={() => handlePreviewTranslations(lib.library_key)}
                             disabled={Boolean(tState.mapOperation) || !(tState.mapPath || '').trim()}
                             title="Preview matching without writing database state"
@@ -2276,26 +2320,14 @@ export default function Resources({ requestedModelId = '' }) {
                           </button>
                         </div>
 
-                        {tState.error && <div className="error" style={{ fontSize: 12, marginBottom: 8 }}>{tState.error}</div>}
-                        {tState.notice && <div className="panel" style={{ fontSize: 12, marginBottom: 8, borderColor: 'var(--accent)' }}>{tState.notice}</div>}
+                        <TranslationFeedback error={tState.error} notice={tState.notice} />
+                        {tState.mapOperation && <p className="ui-help" role="status">{tState.mapOperation === 'apply' ? 'Applying reviewed map…' : 'Checking map…'}</p>}
 
                         {tState.preview && (
-                          <div className="panel" style={{ background: 'var(--card-bg)', marginTop: 8, marginBottom: 8 }}>
-                            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                              <div style={{ fontSize: 13 }}>
-                                <b>Preview Summary:</b> {tState.preview.matchedRevisions} of {tState.preview.totalRevisions} revisions matched
-                                {' · '}
-                                <span style={{ color: 'var(--accent)' }}>{tState.preview.wouldUpdate} would update</span>
-                                {' · '}
-                                <span style={{ color: 'var(--success, #4caf50)' }}>{tState.preview.wouldBeReady} would be ready</span>
-                                {' · '}
-                                <span style={{ color: 'var(--warning, #ff9800)' }}>{tState.preview.wouldRemainPending} would remain pending</span>
-                                {tState.preview.unmatchedEntries > 0 && (
-                                  <span className="muted"> · {tState.preview.unmatchedEntries} unmatched entries</span>
-                                )}
-                              </div>
-                              <button
-                                className="primary"
+                          <div className="translation-map-review">
+                            <TranslationPreviewSummary preview={tState.preview} />
+                            <div className="ui-actions">
+                              <button className="ui-button ui-button--primary"
                                 onClick={() => handleApplyTranslations(lib.library_key)}
                                 disabled={Boolean(tState.mapOperation)}
                                 title="Atomically apply translations to library sidecars"
@@ -2305,11 +2337,12 @@ export default function Resources({ requestedModelId = '' }) {
                             </div>
                           </div>
                         )}
+                        </section>
                       </>
                     )
                   })()}
                 </div>
-              </div>
+              </div></section>
               ))}
         </>
       )}

@@ -374,6 +374,9 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
   displayed next action: translate missing required fields or correct malformed
   source data. (Single-revision translation updates are available via the HTTP
   API, not in the Resources UI.)
+  Source-backed translation review keeps original and saved values alongside drafts,
+  exact revision identities and correction diagnostics. Preview projections remain
+  separate from live readiness; application always requires explicit confirmation.
 - **Start Session**: A ready room's **Create session** opens a guided form to
   create a `resource-v1` draft using the selected character and exact revision.
   Fused scenes retain **Use advanced editor** and **Choose a structured scene**;

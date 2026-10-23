@@ -1621,6 +1621,30 @@ live readiness; late inspection responses cannot replace a newer selection.
 Auxiliary resources remain separately inspectable. Translation controls, Import
 and guided creation retain their existing workflows and authorization semantics.
 
+### Translation review and readiness
+
+The translation workspace keeps library readiness separate from editable drafts.
+**Readiness by revision** shows exact source IDs/digests, affected fields and
+correction reasons using the existing readiness classifier. Malformed source
+fields require source correction and re-import; translating them cannot grant
+readiness.
+
+**Load editable rows** retrieves source-backed fields. Original values, existing
+translations, field roles and revision identities remain visible beside the
+editable values. **Use** selects map entries; **Suggest** selects optional
+assistant proposals (at most twenty). Suggestions do not write sidecars or
+approve resources. Reloading editable rows retains its existing server-reload
+semantics and can replace local edits; it is not a draft-save action.
+
+**Preview manual translations** and **Preview Translations** for a map path
+show projected matched/updated/ready/pending counts. Only explicit **Confirm &
+Apply** with the existing attestation persists reviewed content; live readiness
+is refreshed afterwards. Edits invalidate Preview, and stale responses cannot
+approve a newer draft. Errors retain drafts for correction/retry; an applied
+operation whose readiness refresh fails remains reported as applied with a
+refresh error. Mobile rows stack with accessible headers, and keyboard focus
+moves from Translate to the translation region and to action errors.
+
 ### Resource import and Preview
 
 Import separates local file selection/upload, Preview review and explicit

@@ -82,3 +82,13 @@ All auxiliary buttons are `type="button"`; implicit form submission does not
 save configuration. Keyboard activation of the Save button still saves it.
 Key masking only changes the input type, preserving raw edits, intentional
 clearing, discovery requests and the existing `config.json` storage.
+
+## Resource translation review
+
+`.studio-ui.resource-translations` scopes translation-only styling in
+`ResourceTranslations.css`. It reuses surfaces, notices, states and controls.
+Source, revision context, existing values and drafts stay distinct; mobile
+stacked cells preserve native table headers and hide duplicate labels from
+assistive technology. Reused feedback and projected-preview summaries do not
+change operation eligibility or readiness. Inventory and Import styles remain
+outside this scope.
