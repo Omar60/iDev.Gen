@@ -4832,7 +4832,10 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     })
 
     await renderComponent({ requestedModelId: '4' })
-    const roomRow = Array.from(container.querySelectorAll('tr')).find((row) => row.textContent.includes('room-3'))
+    const roomChoice = Array.from(container.querySelectorAll('.resource-choice')).find((row) => row.textContent.includes('room-3'))
+    expect(roomChoice).toBeTruthy()
+    await act(async () => roomChoice.click())
+    const roomRow = container.querySelector('[aria-label="Selected resource"]')
     await act(async () => { Array.from(roomRow.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click() })
     const form = container.querySelector('[aria-label="Guided session setup"]')
     const advanced = form.querySelector('details')
@@ -4907,7 +4910,10 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     })
 
     await renderComponent({ requestedModelId: '4' })
-    const roomRow = Array.from(container.querySelectorAll('tr')).find((row) => row.textContent.includes('room-alpha'))
+    const roomChoice = Array.from(container.querySelectorAll('.resource-choice')).find((row) => row.textContent.includes('room-alpha'))
+    expect(roomChoice).toBeTruthy()
+    await act(async () => roomChoice.click())
+    const roomRow = container.querySelector('[aria-label="Selected resource"]')
     await act(async () => { Array.from(roomRow.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click() })
 
     const form = container.querySelector('[aria-label="Guided session setup"]')
@@ -5028,7 +5034,10 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
     })
 
-    const fusedRow = Array.from(container.querySelectorAll('tr')).find((row) => row.textContent.includes('fused-scene'))
+    const fusedChoice = Array.from(container.querySelectorAll('.resource-choice')).find((row) => row.textContent.includes('fused-scene'))
+    expect(fusedChoice).toBeTruthy()
+    await act(async () => fusedChoice.click())
+    const fusedRow = container.querySelector('[aria-label="Selected resource"]')
     const expertButton = Array.from(fusedRow.querySelectorAll('button')).find((button) => button.textContent === 'Use advanced editor')
     expect(expertButton.disabled).toBe(true)
   })
@@ -5177,6 +5186,9 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       (button) => button.textContent === 'Choose a structured scene'
     )
     expect(structuredButton).toBeTruthy()
+
+    const fusedChoice = Array.from(container.querySelectorAll('.resource-choice')).find((choice) => choice.textContent.includes('fused-scene'))
+    await act(async () => fusedChoice.click())
 
     await act(async () => { structuredButton.click() })
 
@@ -6011,8 +6023,8 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       viewReadinessBtn.click()
     })
 
-    // Look at table rows in Inventory
-    const rows = Array.from(container.querySelectorAll('table tbody tr'))
+    // Inspect individual revision choices in Inventory.
+    const rows = Array.from(container.querySelectorAll('.resource-choice'))
     const newRow = rows.find((r) => r.textContent.includes('room-new'))
     const histRow = rows.find((r) => r.textContent.includes('room-historical'))
 

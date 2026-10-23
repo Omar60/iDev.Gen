@@ -1597,6 +1597,30 @@ cleaner when it is one or the other.
 
 ## Resource-based session drafts (resource-v1)
 
+### Resource inventory
+
+Inventory uses a revision list and a selected detail, side by side on desktop
+and stacked below 1,000 px. Search and kind filters use the same safe list
+projection; no payload fetch is needed to search. All matching revisions remain
+available in a scrollable list, without pagination or virtualization.
+
+Selecting a revision moves keyboard focus to its detail heading. **Back to
+inventory** returns focus to that revision, or the list when filters exclude it.
+An explicit selection survives filter changes and refreshes by its exact
+`library_key`, `source_id`, and `content_digest`. If that identity disappears,
+the detail asks for another selection instead of substituting a revision.
+Refresh errors keep the previous inventory and selection with a retry action.
+
+The detail prioritizes readiness and its existing next action. **Imported**
+continues to describe the import outcome separately from readiness. Ready rooms
+open guided creation; fused scenes keep their advanced-editor path. Translation
+and source-correction actions remain distinct. Library key, source ID, revision,
+full digest and creation date stay visible. **Inspect** loads the exact revision
+and exposes field coverage, diagnostics, original payload, stored coverage and
+live readiness; late inspection responses cannot replace a newer selection.
+Auxiliary resources remain separately inspectable. Translation controls, Import
+and guided creation retain their existing workflows and authorization semantics.
+
 **+ New session** from a model opens the **Resources** browser with that model
 selected. For a ready room, **Create session** opens a write-free guided form
 with the character and exact room revision selected. It accepts a photo count

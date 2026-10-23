@@ -3,9 +3,9 @@ import { api, versionText } from '../api'
 import { go } from '../App.jsx'
 import CanvasSize from './CanvasSize.jsx'
 import AutomationProfileSelector from '../components/AutomationProfileSelector.jsx'
+import ResourceInventory from './ResourceInventory.jsx'
 import { savedLookWardrobeStages } from '../wardrobe.js'
 import {
-  normalizeFieldRole,
   extractCategories,
   filterLibraries,
   checkReadiness,
@@ -196,9 +196,9 @@ export default function Resources({ requestedModelId = '' }) {
   const [category, setCategory] = useState('all')
   const [importedIdentities, setImportedIdentities] = useState(() => new Set())
 
-  // Detailed revision inspection state: key = `${library_key}:${source_id}:${content_digest}`
-  const [expandedDetails, setExpandedDetails] = useState({})
-  const [detailLoading, setDetailLoading] = useState({})
+  const [inventorySelection, setInventorySelection] = useState('')
+  const [inventoryLoading, setInventoryLoading] = useState(true)
+  const [inventoryError, setInventoryError] = useState('')
 
   // Server-owned SelectionView state (sole authoritative source of truth for browser import)
   const [selectionView, setSelectionView] = useState(null)
@@ -569,6 +569,8 @@ export default function Resources({ requestedModelId = '' }) {
 
   const reloadLibraries = ({ reportError = true } = {}) => {
     const currentEpoch = ++libraryEpochRef.current
+    setInventoryLoading(true)
+    setInventoryError('')
     for (const key of Object.keys(manualGenerationRef.current)) {
       nextManualGeneration(key)
     }
@@ -593,9 +595,12 @@ export default function Resources({ requestedModelId = '' }) {
       .catch((e) => {
         if (libraryEpochRef.current !== currentEpoch) return { status: 'superseded' }
         if (reportError && libraryEpochRef.current === currentEpoch) {
-          setError(e.message)
+          setInventoryError(e.message)
         }
         throw e
+      })
+      .finally(() => {
+        if (libraryEpochRef.current === currentEpoch) setInventoryLoading(false)
       })
     libraryRefreshPromiseRef.current = refreshPromise
     return refreshPromise
@@ -620,7 +625,7 @@ export default function Resources({ requestedModelId = '' }) {
   }
 
   useEffect(() => {
-    reloadLibraries()
+    reloadLibraries().catch(() => {})
     reloadModels()
   }, [requestedModelId])
 
@@ -672,29 +677,6 @@ export default function Resources({ requestedModelId = '' }) {
       setGuidedMode(assistantConfigured ? 'automatic' : 'manual')
     }
   }, [guidedSceneKey, guidedMode, assistantConfigured])
-
-  // Inspection drawer fetch
-  const toggleDetail = async (libraryKey, revision) => {
-    const key = `${libraryKey}:${revision.source_id}:${revision.content_digest}`
-    if (expandedDetails[key]) {
-      const next = { ...expandedDetails }
-      delete next[key]
-      setExpandedDetails(next)
-      return
-    }
-
-    setDetailLoading((prev) => ({ ...prev, [key]: true }))
-    try {
-      const detail = await api.get(
-        `/api/resources/revisions/${encodeURIComponent(libraryKey)}/${encodeURIComponent(revision.source_id)}/${encodeURIComponent(revision.content_digest)}`
-      )
-      setExpandedDetails((prev) => ({ ...prev, [key]: detail }))
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setDetailLoading((prev) => ({ ...prev, [key]: false }))
-    }
-  }
 
   // Start session handler
   const startSessionWithRevision = async (libraryKey, revision) => {
@@ -1054,6 +1036,7 @@ export default function Resources({ requestedModelId = '' }) {
 
   const chooseStructuredScene = () => {
     setTab('inventory')
+    setInventorySelection('')
     setCategory('rooms')
     setQuery('')
     setNotice('Showing structured room resources. Choose a revision marked Ready.')
@@ -1490,6 +1473,8 @@ export default function Resources({ requestedModelId = '' }) {
 
   const categories = extractCategories(libraries)
   const filteredLibraries = filterLibraries(libraries, { query, category })
+  const translationLibraries = [...filteredLibraries, ...libraries.filter((library) => !filteredLibraries.some(item => item.library_key === library.library_key)
+    && (library.revisions || []).some(revision => JSON.stringify([library.library_key, revision.source_id, revision.content_digest]) === inventorySelection))]
   const readyRoomChoices = libraries.flatMap((library) => library.kind === 'rooms'
     ? (library.revisions || []).filter((revision) => checkReadiness(revision, { kind: library.kind }).isReady).map((revision) => {
       const anchor = exactRevisionTriple(library.library_key, revision)
@@ -2035,12 +2020,14 @@ export default function Resources({ requestedModelId = '' }) {
         <div className="row">
           <button
             className={`chip ${tab === 'inventory' ? 'on' : ''}`}
+            aria-pressed={tab === 'inventory'}
             onClick={() => setTab('inventory')}
           >
             Inventory ({libraries.reduce((acc, l) => acc + (l.revision_count || 0), 0)} revisions)
           </button>
           <button
             className={`chip ${tab === 'import' ? 'on' : ''}`}
+            aria-pressed={tab === 'import'}
             onClick={() => setTab('import')}
           >
             Import Preview
@@ -2050,389 +2037,21 @@ export default function Resources({ requestedModelId = '' }) {
 
       {tab === 'inventory' && (
         <>
-          <div className="panel" style={{ marginBottom: 14 }}>
-            <div className="row" style={{ alignItems: 'flex-end' }}>
-              <div style={{ flex: 2, minWidth: 200 }}>
-                <label>Search resources</label>
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search resources..."
-                />
-              </div>
-              <div style={{ flex: 1, minWidth: 150 }}>
-                <label>Category (Kind)</label>
-                <select value={category} onChange={(e) => setCategory(e.target.value)}>
-                  <option value="all">All categories</option>
-                  {categories.map((cat) => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ flex: 1, minWidth: 180 }}>
-                <label>Active Character Model</label>
-                <select
-                  value={selectedModelId}
-                  onChange={(e) => setSelectedModelId(e.target.value)}
-                  title="Session drafts bind strictly to this model. Resource identity suggestions cannot override it."
-                >
-                  {models.map((m) => (
-                    <option key={m.id} value={m.id}>{m.name}</option>
-                  ))}
-                  {models.length === 0 && <option value="">No models available</option>}
-                </select>
-              </div>
-              <div>
-                <button onClick={reloadLibraries} title="Refresh local inventory">
-                  Refresh
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {filteredLibraries.length === 0 ? (
-            <div className="panel" style={{ textAlign: 'center', padding: '32px 16px' }}>
-              <p className="muted" style={{ margin: 0 }}>
-                {libraries.length === 0
-                  ? 'No resource libraries imported yet. Switch to the Import Preview tab to import resources.'
-                  : 'No resources match your filter.'}
-              </p>
-            </div>
-          ) : (
-            filteredLibraries.map((lib) => (
+          <ResourceInventory
+            libraries={libraries} filteredLibraries={filteredLibraries} categories={categories}
+            query={query} onQueryChange={setQuery} category={category} onCategoryChange={setCategory}
+            models={models} selectedModelId={selectedModelId} onModelChange={setSelectedModelId}
+            selection={inventorySelection} onSelectionChange={setInventorySelection}
+            loading={inventoryLoading} error={inventoryError} importedIdentities={importedIdentities}
+            onRefresh={() => reloadLibraries().catch(() => {})} onImport={() => setTab('import')}
+            creationLocked={busy || Boolean(guidedSceneKey) || guidedOutcomeUnknown}
+            onCreate={(lib, rev) => lib.kind === 'rooms'
+              ? openGuidedCreation(lib.library_key, rev) : startSessionWithRevision(lib.library_key, rev)}
+            onTranslate={handleTranslateRevision} onStructuredScene={chooseStructuredScene}
+          />
+          {translationLibraries.map((lib) => (
               <div key={lib.library_key} className="panel" style={{ marginBottom: 16 }}>
-                <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
-                  <div>
-                    <h3 style={{ margin: 0, display: 'inline-block' }}>
-                      {lib.display_name || lib.library_key}
-                    </h3>
-                    <span className="muted" style={{ marginLeft: 10 }}>
-                      key: <code>{lib.library_key}</code> · kind: <b>{lib.kind}</b>
-                    </span>
-                  </div>
-                  <span className="muted">
-                    {lib.revisions?.length ?? 0} revision(s) · {lib.auxiliary?.length ?? 0} auxiliary
-                  </span>
-                </div>
-
-                {/* Revisions table */}
-                {(lib.revisions || []).length > 0 && (
-                  <table style={{ marginBottom: 12 }}>
-                    <thead>
-                      <tr>
-                        <th>Source ID</th>
-                        <th>Content Digest</th>
-                        <th>Readiness</th>
-                        <th>Created</th>
-                        <th style={{ textAlign: 'right' }}>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lib.revisions.map((rev) => {
-                        const readiness = checkReadiness(rev, {
-                          kind: lib.kind,
-                          hasModelSelected: Boolean(selectedModelId),
-                          libraryKey: lib.library_key,
-                          importedIdentities,
-                        })
-                        const detailKey = `${lib.library_key}:${rev.source_id}:${rev.content_digest}`
-                        const isExpanded = !!expandedDetails[detailKey]
-                        const detail = expandedDetails[detailKey]
-
-                        return (
-                          <React.Fragment key={rev.content_digest}>
-                            <tr>
-                              <td>
-                                <b>{rev.source_id}</b>
-                                {rev.translation && Object.values(rev.translation).some((v) => typeof v === 'string' && v.trim()) && (
-                                  <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                                    {Object.values(rev.translation).filter((v) => typeof v === 'string' && v.trim()).join(' · ')}
-                                  </div>
-                                )}
-                              </td>
-                              <td style={{ fontFamily: 'monospace', fontSize: 12 }} title={rev.content_digest}>
-                                {rev.content_digest.slice(0, 12)}…
-                              </td>
-                              <td>
-                                <div className="row" style={{ alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                  {readiness.isImported && (
-                                    <span className="badge chip" style={{ fontWeight: 600 }}>Imported</span>
-                                  )}
-                                  <span className={`badge ${readiness.readiness === 'ready' ? 'ready' : readiness.readiness === 'needs_source_correction' ? 'bad' : 'pending'}`}>
-                                    {readiness.label}
-                                  </span>
-                                </div>
-                                {!readiness.isReady && (
-                                  <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                                    {readiness.reasons[0]}
-                                  </div>
-                                )}
-                                {readiness.primaryAction?.id === 'use_advanced_editor' && (
-                                  <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-                                    Fused descriptions can combine location, camera, pose, and wardrobe, so simple automatic scene choices use ready structured rooms. The advanced editor keeps this full description intact.
-                                  </div>
-                                )}
-                              </td>
-                              <td className="muted" style={{ fontSize: 12 }}>
-                                {rev.created_at ? rev.created_at.slice(0, 16).replace('T', ' ') : '—'}
-                              </td>
-                              <td style={{ textAlign: 'right' }}>
-                                <div className="row" style={{ justifyContent: 'flex-end', gap: 6 }}>
-                                  {readiness.readiness === 'ready' && (
-                                    <>
-                                      <button
-                                        className="icon"
-                                        onClick={() => toggleDetail(lib.library_key, rev)}
-                                        title="Inspect field roles and coverage"
-                                      >
-                                        {detailLoading[detailKey] ? '…' : isExpanded ? 'Hide' : 'Inspect'}
-                                      </button>
-                                      {readiness.primaryAction?.id === 'use_advanced_editor' ? (
-                                        <>
-                                          <button
-                                            className="primary"
-                                            disabled={busy || !selectedModelId || Boolean(guidedSceneKey) || guidedOutcomeUnknown}
-                                            title={
-                                              !selectedModelId
-                                                ? 'Select a model to open the advanced editor'
-                                                : 'Open an expert resource-v1 draft with this exact fused revision'
-                                            }
-                                            onClick={() => startSessionWithRevision(lib.library_key, rev)}
-                                          >
-                                            {readiness.primaryAction.label}
-                                          </button>
-                                          <button
-                                            className="icon"
-                                            onClick={chooseStructuredScene}
-                                            title="Show structured room resources and clear the current search"
-                                          >
-                                            {readiness.secondaryAction.label}
-                                          </button>
-                                        </>
-                                      ) : (
-                                        <button
-                                          className="primary"
-                                          disabled={busy || !selectedModelId || Boolean(guidedSceneKey) || guidedOutcomeUnknown}
-                                          title={
-                                            !selectedModelId
-                                              ? 'Select a model to create a session'
-                                              : 'Create a resource-v1 session draft with this exact revision'
-                                          }
-                                          onClick={() => lib.kind === 'rooms'
-                                            ? openGuidedCreation(lib.library_key, rev)
-                                            : startSessionWithRevision(lib.library_key, rev)}
-                                        >
-                                          {readiness.primaryAction?.label || 'Create session'}
-                                        </button>
-                                      )}
-                                    </>
-                                  )}
-
-                                  {readiness.readiness === 'needs_translation' && (
-                                    <>
-                                      <button
-                                        className="icon"
-                                        onClick={() => toggleDetail(lib.library_key, rev)}
-                                        title="Inspect field roles and coverage"
-                                      >
-                                        {detailLoading[detailKey] ? '…' : isExpanded ? 'Hide' : 'Inspect'}
-                                      </button>
-                                      <button
-                                        className="primary"
-                                        onClick={() => handleTranslateRevision(lib.library_key)}
-                                        title="Load and edit translations for this library"
-                                      >
-                                        Translate
-                                      </button>
-                                    </>
-                                  )}
-
-                                  {readiness.readiness === 'needs_source_correction' && (
-                                    <>
-                                      <button
-                                        className="icon"
-                                        onClick={() => setTab('import')}
-                                        title="Switch to Import to provide corrected source files"
-                                      >
-                                        Re-import
-                                      </button>
-                                      <button
-                                        className="primary"
-                                        onClick={() => toggleDetail(lib.library_key, rev)}
-                                        title="Inspect source errors and diagnostic fields"
-                                      >
-                                        {detailLoading[detailKey] ? '…' : isExpanded ? 'Hide' : 'Inspect source'}
-                                      </button>
-                                    </>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-
-                            {/* Expanded Inspection Drawer */}
-                            {isExpanded && detail && (
-                              <tr>
-                                <td colSpan={5} style={{ background: 'var(--panel-2)', padding: 12 }}>
-                                  <h4 style={{ margin: '0 0 8px' }}>Field Roles & Readiness Coverage</h4>
-                                  <p className="muted" style={{ margin: '0 0 10px' }}>
-                                    Identity: <code>{detail.library_key}</code> · <code>{detail.source_id}</code> · <code>{detail.content_digest}</code>
-                                  </p>
-
-                                  {detail.readiness?.coverage?.sidecar_error && (
-                                    <div
-                                      className="alert error"
-                                      style={{
-                                        margin: '0 0 12px',
-                                        padding: '8px 12px',
-                                        background: 'rgba(239, 68, 68, 0.12)',
-                                        border: '1px solid var(--bad)',
-                                        borderRadius: 4,
-                                        color: 'var(--bad)',
-                                        fontSize: 12,
-                                      }}
-                                    >
-                                      <b>Translation Sidecar Error:</b> {detail.readiness.coverage.sidecar_error}
-                                    </div>
-                                  )}
-
-                                  {detail.readiness?.diagnostics && detail.readiness.diagnostics.length > 0 && (
-                                    <div
-                                      className="alert error"
-                                      style={{
-                                        margin: '0 0 12px',
-                                        padding: '8px 12px',
-                                        background: 'rgba(239, 68, 68, 0.12)',
-                                        border: '1px solid var(--bad)',
-                                        borderRadius: 4,
-                                        color: 'var(--bad)',
-                                        fontSize: 12,
-                                      }}
-                                    >
-                                      <b>Source Diagnostics:</b>
-                                      <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
-                                        {detail.readiness.diagnostics.map((d, i) => (
-                                          <li key={i}>
-                                            {d.field ? <code>{d.field}</code> : null} {d.code}: {d.message}
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )}
-
-                                  {detail.readiness?.coverage?.unmapped_fields && detail.readiness.coverage.unmapped_fields.length > 0 && (
-                                    <div
-                                      className="alert error"
-                                      style={{
-                                        margin: '0 0 12px',
-                                        padding: '8px 12px',
-                                        background: 'rgba(239, 68, 68, 0.12)',
-                                        border: '1px solid var(--bad)',
-                                        borderRadius: 4,
-                                        color: 'var(--bad)',
-                                        fontSize: 12,
-                                      }}
-                                    >
-                                      <b>Unmapped Source Fields:</b> {detail.readiness.coverage.unmapped_fields.join(', ')}
-                                    </div>
-                                  )}
-
-                                  <table style={{ marginBottom: 12, background: 'var(--panel)' }}>
-                                    <thead>
-                                      <tr>
-                                        <th>Field</th>
-                                        <th>Role</th>
-                                        <th>Translated</th>
-                                        <th>Reason / Note</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {(detail.readiness?.field_readiness || []).map((f) => (
-                                        <tr key={f.name}>
-                                          <td><code>{f.name}</code></td>
-                                          <td>
-                                            <span className="chip" style={{ fontSize: 11 }}>
-                                              {normalizeFieldRole(f.role)}
-                                            </span>
-                                          </td>
-                                          <td>
-                                            {f.translated ? (
-                                              <span style={{ color: 'var(--good)' }}>Yes</span>
-                                            ) : (
-                                              <span style={{ color: 'var(--bad)' }}>No</span>
-                                            )}
-                                          </td>
-                                          <td className="muted">{f.reason || '—'}</td>
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-
-                                  {/* Optional raw payload and translation inspection */}
-                                  <div className="row" style={{ gap: 16 }}>
-                                    <div style={{ flex: 1 }}>
-                                      <h5 style={{ margin: '4px 0', color: 'var(--muted)' }}>Original Payload</h5>
-                                      <pre style={{ margin: 0, padding: 8, background: 'var(--bg)', borderRadius: 4, maxHeight: 150, overflow: 'auto', fontSize: 11 }}>
-                                        {JSON.stringify(detail.payload || {}, null, 2)}
-                                      </pre>
-                                    </div>
-                                    <div style={{ flex: 1 }}>
-                                      <h5 style={{ margin: '4px 0', color: 'var(--muted)' }}>Translation & Stored Coverage vs Live Readiness</h5>
-                                      <pre style={{ margin: 0, padding: 8, background: 'var(--bg)', borderRadius: 4, maxHeight: 150, overflow: 'auto', fontSize: 11 }}>
-                                        {JSON.stringify({
-                                          translation: detail.translation,
-                                          stored_coverage: detail.coverage,
-                                          live_readiness: detail.readiness,
-                                        }, null, 2)}
-                                      </pre>
-                                    </div>
-                                  </div>
-                                </td>
-                              </tr>
-                            )}
-                          </React.Fragment>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                )}
-
-                {/* Auxiliary resources if any */}
-                {(lib.auxiliary || []).length > 0 && (
-                  <div style={{ marginTop: 8 }}>
-                    <h4 style={{ margin: '4px 0 6px', color: 'var(--muted)', fontSize: 12 }}>
-                      Auxiliary Resources ({lib.auxiliary.length})
-                    </h4>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Kind</th>
-                          <th>Digest</th>
-                          <th>Role</th>
-                          <th>Created</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {lib.auxiliary.map((aux) => (
-                          <tr key={aux.auxiliary_id}>
-                            <td><code>{aux.kind}</code></td>
-                            <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                              {aux.content_digest}
-                            </td>
-                            <td>
-                              <span className="chip" style={{ fontSize: 11 }}>
-                                auxiliary data
-                              </span>
-                            </td>
-                            <td className="muted" style={{ fontSize: 12 }}>
-                              {aux.created_at ? aux.created_at.slice(0, 16).replace('T', ' ') : '—'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
+                <h3>{lib.display_name || lib.library_key}</h3>
                 {/* Translation Mapping section */}
                 <div id={`translation-mapping-${lib.library_key}`} style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
                   <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -2664,8 +2283,7 @@ export default function Resources({ requestedModelId = '' }) {
                   })()}
                 </div>
               </div>
-            ))
-          )}
+              ))}
         </>
       )}
 

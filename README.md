@@ -354,6 +354,10 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
   (`library_key` + `source_id` + `content_digest`), and classified field roles
   (`descriptive input`, `selection metadata`, `writer guidance`, `auxiliary data`,
   `unused data`).
+  The Studio inventory pairs a revision list with a selected detail. Selection
+  stays bound to its exact identity across filters and refreshes; technical
+  digests, field diagnostics and payload inspection remain available. See
+  [resource inventory](docs/sessions.md#resource-inventory).
 - **Import Preview & Commit**: Input source file selections, run a preview to
   verify all outcomes (`new`, `unchanged`, `updated`, `unresolved`, auxiliary,
   duplicates, missing), and commit verified sets into SQLite. The separate

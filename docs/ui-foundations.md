@@ -29,6 +29,12 @@ other views remain unchanged.
 
 ## Semantic tokens
 
+Resource Inventory opts in with `.studio-ui.resource-inventory`. Its local list
+and detail styles live in `ResourceInventory.css`; Import, translation controls
+and guided creation stay outside that scope. The split view stacks below
+1,000 px. Exact identifiers and diagnostic text wrap without truncation, and
+keyboard selection moves focus between the revision list and detail heading.
+
 | Role | Tokens |
 |---|---|
 | Surfaces | `--ui-color-canvas`, `--ui-color-surface`, `--ui-color-field`, `--ui-color-info-surface` |
