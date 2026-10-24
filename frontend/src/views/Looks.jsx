@@ -12,6 +12,7 @@ import {
 import AutomationProfileEditor from './AutomationProfileEditor.jsx'
 import '../ui/foundations.css'
 import './Looks.css'
+import './LookPhoto.css'
 
 const combinedSaveEvent = 'idevgen:combined-look-save'
 let pendingCombinedSave = null
@@ -390,6 +391,10 @@ export default function Looks() {
   const [photoNotice, setPhotoNotice] = useState('')
   const [photoMode, setPhotoMode] = useState('')
   const [photoProposal, setPhotoProposal] = useState(null)
+  const [pendingPhotoProposal, setPendingPhotoProposal] = useState(null)
+  const photoHeading = useRef(null)
+  const photoReviewHeading = useRef(null)
+  const photoErrorMessage = useRef(null)
   const [photoDecisions, setPhotoDecisions] = useState([])
   const [photoReviewConfirmed, setPhotoReviewConfirmed] = useState(false)
   const [photoOrderConfirmed, setPhotoOrderConfirmed] = useState(false)
@@ -425,6 +430,9 @@ export default function Looks() {
   const wardrobeRequest = useRef(0)
   const detailRequest = useRef(0)
   const mountedRef = useRef(false)
+  const photoEditorSnapshot = useRef(null)
+  photoEditorSnapshot.current = { form, photoMode, photoProposal, photoDecisions, automationDraft, profileSuggestion, automationInventoryConfirmed,
+    automationBaselineConfirmed, automationReviewConfirmed, lookOrderConfirmed, photoReviewConfirmed, photoOrderConfirmed }
   const selectedSummary = looks.find((item) => item.key === selectedKey)
   const focusWorkspace = (heading) => {
     heading.current?.focus()
@@ -440,6 +448,19 @@ export default function Looks() {
   useEffect(() => {
     if (saveError) saveErrorMessage.current?.focus()
   }, [saveError])
+
+  useEffect(() => {
+    setPendingPhotoProposal(null)
+    if (photoStage?.state === 'staged') photoHeading.current?.focus()
+  }, [photoStage?.photo_id, photoStage?.state])
+
+  useEffect(() => {
+    if (photoError) photoErrorMessage.current?.focus()
+  }, [photoError])
+
+  useEffect(() => {
+    if (photoMode === 'extracted' && photoProposal) focusWorkspace(photoReviewHeading)
+  }, [photoProposal, photoMode])
 
   const resetAutomationDraft = (nextForm, suggestedProfile = null) => {
     automationSourceEpoch.current += 1
@@ -1050,6 +1071,8 @@ export default function Looks() {
     const stage = photoStageRef.current
     if (stage?.state !== 'staged' || visionAvailability !== 'available' || photoBusyRef.current) return
     if (dirty && !window.confirm('Replace the unsaved editor content with the extracted photo proposal?')) return
+    const editorAtRequest = detailRequest.current
+    const snapshotAtRequest = photoEditorSnapshot.current
     const request = ++photoRequest.current
     photoBusyRef.current = true
     setPhotoBusy(true)
@@ -1061,7 +1084,9 @@ export default function Looks() {
         : {})
       if (request !== photoRequest.current || photoStageRef.current?.photo_id !== stage.photo_id) return
       if (typeof proposal?.proposal_id !== 'string' || !Array.isArray(proposal.garments)
-        || !Array.isArray(proposal.unresolved) || typeof proposal.appearance !== 'string') {
+        || !Array.isArray(proposal.unresolved) || typeof proposal.appearance !== 'string'
+        || proposal.garments.some((wording) => typeof wording !== 'string')
+        || proposal.unresolved.some((item) => !item || typeof item.id !== 'string' || typeof item.detail !== 'string')) {
         throw new Error('The server returned an invalid photo proposal.')
       }
       if (includePhotoAutomation && proposal.automation?.status === 'ready') {
@@ -1082,6 +1107,13 @@ export default function Looks() {
           proposal.automation = { status: 'unavailable' }
         }
       }
+      if (editorAtRequest !== detailRequest.current
+        || Object.keys(snapshotAtRequest).some((key) => snapshotAtRequest[key] !== photoEditorSnapshot.current[key])) {
+        setPendingPhotoProposal(proposal)
+        setPhotoNotice('The editor changed while extraction was running. Your draft is unchanged. The extracted proposal is retained separately; apply it explicitly when ready.')
+        return
+      }
+      setPendingPhotoProposal(null)
       if (startPhotoDescription('extracted', proposal, true)) {
         setPhotoNotice('Review the appearance, resolve every uncertain detail, and confirm the garment removal order before saving.')
       }
@@ -1565,6 +1597,12 @@ export default function Looks() {
     } : null,
   ) : []
 
+  const photoDraftEdited = Boolean(photoProposal && form && (
+    form.appearance !== photoProposal.appearance
+    || form.garments.length !== photoProposal.garments.length
+    || form.garments.some((row, index) => row.wording !== photoProposal.garments[index]?.trim() || Boolean(row.aside))
+  ))
+
   return (
     <section className="looks-page" aria-label="Looks">
       <div className="studio-ui looks-header ui-page-header">
@@ -1708,74 +1746,100 @@ export default function Looks() {
         </section>
       )}
 
-      <section className="panel" aria-label="Look photo input">
-        <h2>From photo</h2>
-        <p className="muted">Stage one JPEG, PNG, or WebP photo for an editable look description. The photo is not a generation reference.</p>
-        {visionAvailability === 'checking' && <p className="muted" role="status">Checking whether a vision model is configured…</p>}
-        {visionAvailability === 'available' && <p className="muted" role="status">Photo extraction is available with the explicitly configured vision model.</p>}
+      <div className="studio-ui look-photo">
+      <section className="ui-surface" aria-label="Look photo input">
+        <div className="ui-section-heading">
+          <h2 className="ui-section-title" ref={photoHeading} tabIndex={-1}>From photo</h2>
+          <span className="ui-state">{photoBusy ? 'Working…' : photoStage?.state || 'No photo selected'}</span>
+        </div>
+        <p className="ui-section-description">Stage one JPEG, PNG, or WebP photo for an editable look description. The photo is not a generation reference.</p>
+        <p className="ui-help" id="look-photo-limits">One photo, up to 10 MiB and 25 megapixels. Selecting a photo stages it; extraction and saving are separate actions.</p>
+        <div className="ui-actions look-photo-selection">
+          <button type="button" className="ui-button" onClick={() => photoInput.current?.click()} disabled={saving || uncertainSave || photoBusy || photoStage?.state === 'staged'} aria-describedby="look-photo-limits">Choose photo</button>
+        </div>
+        {photoBusy && <div className="look-photo-progress" role="status"><progress aria-label="Photo operation in progress" />Processing photo operation… No save or approval is implied.</div>}
+        {visionAvailability === 'checking' && <p className="ui-help" role="status">Checking whether a vision model is configured…</p>}
+        {visionAvailability === 'available' && <p className="ui-help" role="status">Photo extraction is available with the explicitly configured vision model.</p>}
         {visionAvailability === 'unavailable' && (
-          <p className="muted" role="status">
+          <p className="ui-notice" role="status">
             Photo extraction is unavailable without a configured text assistant and explicit vision model. <a href="#/setup">Configure vision</a> or describe the photo manually.
           </p>
         )}
         {visionAvailability === 'unknown' && (
-          <p className="muted" role="status">
-            {visionError || 'Vision availability could not be checked.'} <a href="#/setup">Open Setup</a>
-            {' '}<button type="button" onClick={loadVisionAvailability}>Check again</button>
-          </p>
+          <div className="ui-notice" role="status">
+            <p>{visionError || 'Vision availability could not be checked.'} <a href="#/setup">Open Setup</a></p>
+            <button type="button" className="ui-button" onClick={loadVisionAvailability}>Check again</button>
+          </div>
         )}
         {photoStage?.state === 'staged' && (
-          <div>
-            <img
-              src={`/api/looks/photo-stages/${encodeURIComponent(photoStage.photo_id)}/preview`}
-              alt="Temporary photo preview for look description"
-              style={{ maxWidth: '100%', maxHeight: '28rem' }}
-            />
-            <p className="muted" role="status">
-              {photoStage.format?.toUpperCase()} · {photoStage.width} × {photoStage.height} · {photoStage.byte_count} bytes
-            </p>
-            <label>
-              <input
-                type="checkbox"
-                checked={includePhotoAutomation}
-                onChange={(event) => setIncludePhotoAutomation(event.target.checked)}
-                disabled={photoBusy}
+          <div className="look-photo-stage">
+            <figure>
+              <img className="look-photo-preview"
+                src={`/api/looks/photo-stages/${encodeURIComponent(photoStage.photo_id)}/preview`}
+                alt="Temporary photo preview for look description"
+                width={photoStage.width} height={photoStage.height}
               />
-              Include optional automation profile suggestions with photo extraction
-            </label>
-            <div className="row">
-              <button type="button" onClick={extractPhoto} disabled={photoBusy || saving || uncertainSave || visionAvailability !== 'available'}>
-                {photoBusy ? 'Working…' : includePhotoAutomation ? 'Extract look + profile suggestions' : 'Extract look'}
-              </button>
-              <button type="button" onClick={() => startPhotoDescription('manual')} disabled={photoBusy || saving || uncertainSave || Boolean(photoProposal)}>
-                Describe this photo manually
-              </button>
-              <button type="button" className="danger" onClick={cancelPhotoStage} disabled={photoBusy || saving || uncertainSave}>
-                Cancel photo stage
-              </button>
+              <figcaption className="ui-help">Source photo · description only, never attached to generation.</figcaption>
+            </figure>
+            <div className="ui-stack">
+              <div>
+                <h3 className="ui-section-title">Extract a draft</h3>
+                <p className="ui-help">The assistant proposes appearance and ordered garments. Review and edit the result before confirming or saving.</p>
+              </div>
+              <dl className="ui-definition-list">
+                <div><dt>Image</dt><dd>{photoStage.format?.toUpperCase()} · {photoStage.width} × {photoStage.height} · {photoStage.byte_count} bytes</dd></div>
+                {photoStage.expires_at && <div><dt>Stage expiry</dt><dd><time dateTime={photoStage.expires_at}>{new Date(photoStage.expires_at).toLocaleString()}</time></dd></div>}
+              </dl>
+              <label className="look-photo-check">
+                <input type="checkbox" checked={includePhotoAutomation} onChange={(event) => setIncludePhotoAutomation(event.target.checked)} disabled={photoBusy} />
+                Include optional automation profile suggestions with photo extraction
+              </label>
+              <div className="ui-actions">
+                <button type="button" className="ui-button ui-button--primary" onClick={extractPhoto} disabled={photoBusy || saving || uncertainSave || visionAvailability !== 'available'}>
+                  {photoBusy ? 'Working…' : includePhotoAutomation ? 'Extract look + profile suggestions' : 'Extract look'}
+                </button>
+                <button type="button" className="ui-button" onClick={() => startPhotoDescription('manual')} disabled={photoBusy || saving || uncertainSave || Boolean(photoProposal)}>Describe this photo manually</button>
+                <button type="button" className="ui-button look-photo-danger" onClick={cancelPhotoStage} disabled={photoBusy || saving || uncertainSave}>Cancel photo stage</button>
+              </div>
+              {photoProposal && <button type="button" className="ui-button" onClick={() => focusWorkspace(photoReviewHeading)}>Review photo result</button>}
+              {photoProposal && <p className="ui-help" role="note">This photo already has a reviewable extraction proposal. Edit it, or cancel the stage and select the photo again to start with a manual description.</p>}
             </div>
-            {photoProposal && <p className="muted" role="note">This photo already has a reviewable extraction proposal. Edit it, or cancel the stage and select the photo again to start with a manual description.</p>}
           </div>
+        )}
+        {pendingPhotoProposal && photoStage?.state === 'staged' && (
+          <section className="look-photo-pending ui-notice" aria-label="Retained photo proposal">
+            <h3>Extracted proposal retained</h3>
+            <p>Your current draft has not been replaced. Applying this proposal replaces editor content after any required discard confirmation; it does not approve or save it.</p>
+            <p className="look-photo-original">{pendingPhotoProposal.appearance || 'No constant appearance proposed.'}</p>
+            <ol>{pendingPhotoProposal.garments.map((wording, index) => <li key={index}>{wording}</li>)}</ol>
+            <button type="button" className="ui-button" disabled={photoBusy || saving || uncertainSave} onClick={() => {
+              if (!dirty && !window.confirm('Replace the current editor content and optional profile review with this retained photo proposal?')) return
+              if (startPhotoDescription('extracted', pendingPhotoProposal)) {
+                setPendingPhotoProposal(null)
+                setPhotoNotice('Review the appearance, resolve every uncertain detail, and confirm the garment removal order before saving.')
+              }
+            }}>Apply extracted proposal to editor</button>
+          </section>
         )}
         {photoStage?.state && photoStage.state !== 'staged' && (
-          <p className="muted" role="status">
-            {photoStage.state === 'saved'
-              ? `Photo stage saved with look version ${photoStage.saved_look?.version}.`
-              : `Photo stage ${photoStage.state}. Choose another photo when ready.`}
+          <p className="ui-notice" role="status">
+            {photoStage.state === 'saved' ? `Photo stage saved with look version ${photoStage.saved_look?.version}.` : `Photo stage ${photoStage.state}. Choose another photo when ready.`}
           </p>
         )}
-        {photoStage?.photo_id && (
-          <button type="button" onClick={refreshPhotoStatus} disabled={photoBusy || saving || uncertainSave}>Refresh photo status</button>
-        )}
+        {photoStage?.photo_id && <div className="ui-actions look-photo-selection"><button type="button" className="ui-button" onClick={refreshPhotoStatus} disabled={photoBusy || saving || uncertainSave}>Refresh photo status</button></div>}
         {(cleanupStage?.cleanup_warning || photoStage?.cleanup_warning) && (
-          <div>
-            <p className="error" role="alert">{(cleanupStage || photoStage).cleanup_warning}</p>
-            <button type="button" onClick={retryPhotoCleanup} disabled={photoBusy || saving || uncertainSave}>Retry cleanup</button>
+          <div className="ui-notice" data-tone="error">
+            <p role="alert">{(cleanupStage || photoStage).cleanup_warning}</p>
+            <button type="button" className="ui-button" onClick={retryPhotoCleanup} disabled={photoBusy || saving || uncertainSave}>Retry cleanup</button>
           </div>
         )}
-        {photoError && <p className="error" role="alert">{photoError}</p>}
-        {photoNotice && <p role="status">{photoNotice}</p>}
+        {photoError && <div className="ui-notice" data-tone="error" role="alert" ref={photoErrorMessage} tabIndex={-1}>
+          <p>{photoError}</p>
+          <p>For an uncertain outcome, refresh photo status before retrying. Your editor content is retained. If no photo was staged, choose a valid photo again.</p>
+        </div>}
+        {photoNotice && <p className="ui-notice" role="status">{photoNotice}</p>}
       </section>
+      </div>
 
       <nav className="studio-ui looks-workspace-nav" aria-label="Look workspace">
         <button type="button" className="ui-button" onClick={() => focusWorkspace(listHeading)}>Browse saved looks</button>
@@ -2053,14 +2117,31 @@ export default function Looks() {
               </div>
               </div>
               {photoMode === 'extracted' && photoProposal && (
-                <fieldset className="panel" aria-label="Photo extraction review">
+                <fieldset className="panel studio-ui look-photo-review" aria-label="Photo extraction review">
                   <legend>Review photo extraction</legend>
+                  <h3 className="ui-section-title" ref={photoReviewHeading} tabIndex={-1}>Review before saving</h3>
+                  <div className="ui-section-heading">
+                    <span className="ui-state" data-tone={photoReviewConfirmed && photoOrderConfirmed ? 'success' : 'warning'}>{photoReviewConfirmed && photoOrderConfirmed ? 'Review confirmed · not saved' : 'Review required'}</span>
+                    <span className="ui-state">{photoDraftEdited ? 'Edited draft' : 'Extracted draft'}</span>
+                  </div>
+                  <p className="ui-help">The original proposal stays below for comparison. Edit appearance and garments in the editor above; those edits clear the corresponding confirmations. Nothing is approved or saved here.</p>
+                  <button type="button" className="ui-button" onClick={() => focusWorkspace(editorHeading)}>Edit photo draft</button>
+                  <details className="look-photo-original" open>
+                    <summary>Original extraction · before your edits</summary>
+                    <h4>Constant appearance</h4>
+                    <p>{photoProposal.appearance || 'No constant appearance proposed.'}</p>
+                    <h4>Proposed garment order</h4>
+                    {photoProposal.garments.length ? <ol>{photoProposal.garments.map((wording, index) => <li key={index}>{wording}</li>)}</ol> : <p>No garments proposed.</p>}
+                  </details>
+                  <h4>Resolve uncertain details</h4>
+                  {photoDecisions.length === 0 && <p className="ui-help">No uncertain details were returned. Review appearance and garment order before confirming.</p>}
                   {photoDecisions.map((item, index) => (
-                    <div key={item.id}>
-                      <p><strong>Uncertain detail {index + 1}:</strong> {item.detail}</p>
-                      <label>
+                    <div className="look-photo-resolution" key={item.id}>
+                      <p id={`photo-resolution-${index}`}><strong>Uncertain detail {index + 1}:</strong> {item.detail}</p>
+                      <label className="ui-field">
                         Resolution
-                        <select
+                        <select className="ui-control"
+                          aria-describedby={`photo-resolution-${index}`}
                           aria-label={`Resolution for uncertain detail ${index + 1}`}
                           value={item.action}
                           onChange={(event) => updatePhotoDecision(item.id, { action: event.target.value, correction: '' })}
@@ -2072,9 +2153,10 @@ export default function Looks() {
                         </select>
                       </label>
                       {item.action === 'correct' && (
-                        <label>
+                        <label className="ui-field">
                           Correction
-                          <input
+                          <input className="ui-control"
+                            aria-describedby={`photo-resolution-${index}`}
                             aria-label={`Correction for uncertain detail ${index + 1}`}
                             value={item.correction}
                             maxLength={1000}
@@ -2086,11 +2168,11 @@ export default function Looks() {
                       {item.action === 'correct' && item.correction.trim()
                         && ![form.appearance, ...form.garments.flatMap((row) => [row.wording, row.aside])]
                           .some((text) => text.includes(item.correction.trim())) && (
-                            <p className="muted">Include the correction in the appearance or a garment description below.</p>
+                            <p className="ui-help">Include the correction in the appearance or a garment description in the editor above.</p>
                           )}
                     </div>
                   ))}
-                  <label>
+                  <label className="look-photo-check">
                     <input
                       type="checkbox"
                       checked={photoReviewConfirmed}
@@ -2099,7 +2181,7 @@ export default function Looks() {
                     />
                     I reviewed the appearance and corrected or omitted every uncertain detail.
                   </label>
-                  <label>
+                  <label className="look-photo-check">
                     <input
                       type="checkbox"
                       checked={photoOrderConfirmed}

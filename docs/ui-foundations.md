@@ -112,3 +112,14 @@ At widths below 1100px the two-column workspace stacks, with focusable heading
 navigation and a return-to-list control. Controls retain 44px touch targets,
 visible focus, wrapped long names, and explicit save/archive semantics. The
 history menu remains bounded, with an exact decimal version field available.
+
+### From Photo
+
+`LookPhoto.css` scopes studio surfaces to the photo input and extraction review.
+The preview uses `object-fit: contain` and intrinsic dimensions. Selection and
+extraction sit beside the preview on wide screens, stacking below 900px. Source
+extraction, editable content status, uncertainties and confirmations remain
+visually distinct; confirmations do not imply saving. Photo errors receive
+focus, async operations use indeterminate progress, and a delayed proposal is
+kept separate when the editor changes during extraction. Existing conventional
+editor and automation profile styles stay outside the photo scope.

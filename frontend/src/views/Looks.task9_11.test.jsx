@@ -108,6 +108,198 @@ describe('Looks Task 9.11 browser actions', () => {
     else delete URL.revokeObjectURL
   })
 
+  it('retains a late extraction separately when the user edits the current draft while waiting', async () => {
+    mockBaseReads({ llm_ok: true, llm_vision_model: 'fixture-vision' })
+    vi.spyOn(api, 'postVersioned').mockRejectedValue(new Error('Unexpected save'))
+    let resolveExtraction
+    const extraction = new Promise((resolve) => { resolveExtraction = resolve })
+    vi.spyOn(api, 'post').mockImplementation((path) => {
+      if (path.endsWith('/extract')) return extraction
+      throw new Error(`Unexpected POST ${path}`)
+    })
+    await render()
+    await click(button('Create look'))
+    await chooseFile('Choose one photo', syntheticPhoto())
+    await click(button('Extract look'))
+    await setValue(field('Look name'), 'Draft written while waiting')
+    await setValue(field('Constant appearance'), 'User-authored appearance')
+    await act(async () => {
+      resolveExtraction({ proposal_id: 'c'.repeat(32), appearance: 'Extracted appearance', garments: ['a blue coat'], unresolved: [] })
+      await extraction
+      await flush()
+    })
+    expect(field('Look name').value).toBe('Draft written while waiting')
+    expect(field('Constant appearance').value).toBe('User-authored appearance')
+    expect(button('Apply extracted proposal to editor')).toBeTruthy()
+    expect(api.postVersioned).not.toHaveBeenCalled()
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    await click(button('Apply extracted proposal to editor'))
+    expect(field('Constant appearance').value).toBe('User-authored appearance')
+    expect(button('Apply extracted proposal to editor')).toBeTruthy()
+    window.confirm.mockReturnValue(true)
+    await click(button('Apply extracted proposal to editor'))
+    expect(field('Constant appearance').value).toBe('Extracted appearance')
+    expect(field('Garment 1 worn wording').value).toBe('a blue coat')
+    expect(api.postVersioned).not.toHaveBeenCalled()
+  })
+
+  it('protects profile-only edits during extraction and confirms replacement even when the look form is clean', async () => {
+    mockBaseReads({ llm_ok: true, llm_vision_model: 'fixture-vision' }, [saved()])
+    let resolveExtraction
+    const extraction = new Promise((resolve) => { resolveExtraction = resolve })
+    vi.spyOn(api, 'post').mockReturnValue(extraction)
+    const save = vi.spyOn(api, 'postVersioned').mockRejectedValue(new Error('Unexpected save'))
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    await render()
+    await click(button('Studio study · version 1'))
+    await chooseFile('Choose one photo', syntheticPhoto())
+    await click(button('Extract look'))
+    await click(button('All appearance is permanent'))
+    await click(button('Confirm this user assertion'))
+    await act(async () => {
+      resolveExtraction({ proposal_id: 'c'.repeat(32), appearance: 'Extracted appearance', garments: [], unresolved: [] })
+      await extraction
+      await flush()
+    })
+    expect(field('Look name').value).toBe('Studio study')
+    expect(field('Constant appearance').value).toBe('short dark hair')
+    expect(container.querySelector('[aria-label="Permanent appearance projection preview"]').textContent).toContain('short dark hair')
+    await click(button('Apply extracted proposal to editor'))
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('optional profile review'))
+    expect(field('Look name').value).toBe('Studio study')
+    expect(button('Apply extracted proposal to editor')).toBeTruthy()
+    window.confirm.mockReturnValue(true)
+    await click(button('Apply extracted proposal to editor'))
+    expect(field('Constant appearance').value).toBe('Extracted appearance')
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('retains uncertainty corrections made while a repeated extraction is waiting', async () => {
+    mockBaseReads({ llm_ok: true, llm_vision_model: 'fixture-vision' })
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    let resolveExtraction
+    const extraction = new Promise((resolve) => { resolveExtraction = resolve })
+    const proposal = { proposal_id: 'c'.repeat(32), appearance: 'Original appearance', garments: [], unresolved: [{ id: 'u1', detail: 'Uncertain fabric' }] }
+    vi.spyOn(api, 'post').mockResolvedValueOnce(proposal).mockReturnValueOnce(extraction)
+    await render()
+    await chooseFile('Choose one photo', syntheticPhoto())
+    await click(button('Extract look'))
+    await click(button('Extract look'))
+    await setValue(field('Resolution for uncertain detail 1'), 'correct')
+    await setValue(field('Correction for uncertain detail 1'), 'cotton fabric')
+    await act(async () => {
+      resolveExtraction({ ...proposal, proposal_id: 'd'.repeat(32), appearance: 'Replacement appearance' })
+      await extraction
+      await flush()
+    })
+    expect(field('Constant appearance').value).toBe('Original appearance')
+    expect(field('Correction for uncertain detail 1').value).toBe('cotton fabric')
+    expect(button('Apply extracted proposal to editor')).toBeTruthy()
+  })
+
+  it.each([
+    ['garment wording', { garments: [{ invalid: true }] }],
+    ['uncertain detail', { unresolved: [{ id: 'u1', detail: { invalid: true } }] }],
+  ])('rejects malformed %s before retaining a delayed proposal', async (_label, invalid) => {
+    mockBaseReads({ llm_ok: true, llm_vision_model: 'fixture-vision' })
+    let resolveExtraction
+    const extraction = new Promise((resolve) => { resolveExtraction = resolve })
+    vi.spyOn(api, 'post').mockReturnValue(extraction)
+    await render()
+    await click(button('Create look'))
+    await chooseFile('Choose one photo', syntheticPhoto())
+    await click(button('Extract look'))
+    await setValue(field('Look name'), 'Retained draft')
+    await act(async () => {
+      resolveExtraction({ proposal_id: 'c'.repeat(32), appearance: 'Proposed appearance', garments: [], unresolved: [], ...invalid })
+      await extraction
+      await flush()
+    })
+    expect(field('Look name').value).toBe('Retained draft')
+    expect(container.textContent).toContain('invalid photo proposal')
+    expect(button('Apply extracted proposal to editor')).toBeUndefined()
+    expect(container.querySelector('img')).toBeTruthy()
+  })
+
+  it('preserves original extraction and requires fresh confirmations after edits', async () => {
+    mockBaseReads({ llm_ok: true, llm_vision_model: 'fixture-vision' })
+    vi.spyOn(api, 'post').mockResolvedValue({ proposal_id: 'c'.repeat(32), appearance: 'Original appearance', garments: ['a blue coat'], unresolved: [] })
+    const save = vi.spyOn(api, 'postVersioned').mockRejectedValue(new Error('Unexpected save'))
+    await render()
+    await chooseFile('Choose one photo', syntheticPhoto())
+    expect(api.post).not.toHaveBeenCalled()
+    expect(container.querySelector('img').getAttribute('width')).toBe('1')
+    await click(button('Extract look'))
+    expect(document.activeElement.textContent).toBe('Review before saving')
+    const original = container.querySelector('.look-photo-review .look-photo-original')
+    expect(original.textContent).toContain('Original appearance')
+    expect(container.textContent).toContain('Extracted draft')
+    const checks = [...container.querySelectorAll('fieldset[aria-label="Photo extraction review"] input[type="checkbox"]')]
+    await click(checks[0])
+    await click(checks[1])
+    expect(container.textContent).toContain('Review confirmed · not saved')
+    await setValue(field('Constant appearance'), 'Edited appearance')
+    expect(original.textContent).toContain('Original appearance')
+    expect(original.textContent).not.toContain('Edited appearance')
+    expect(container.textContent).toContain('Edited draft')
+    expect(checks.every((check) => !check.checked)).toBe(true)
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('retains the stage, draft and previous result on invalid extraction and supports explicit retry', async () => {
+    mockBaseReads({ llm_ok: true, llm_vision_model: 'fixture-vision' })
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const proposal = { proposal_id: 'c'.repeat(32), appearance: 'Original appearance', garments: ['a blue coat'], unresolved: [] }
+    const post = vi.spyOn(api, 'post').mockResolvedValueOnce(proposal).mockResolvedValueOnce({ proposal_id: 'invalid' }).mockResolvedValueOnce(proposal)
+    const save = vi.spyOn(api, 'postVersioned').mockRejectedValue(new Error('Unexpected save'))
+    await render()
+    await chooseFile('Choose one photo', syntheticPhoto())
+    await click(button('Extract look'))
+    await setValue(field('Look name'), 'Recoverable photo draft')
+    await setValue(field('Constant appearance'), 'Edited appearance')
+    await click(button('Extract look'))
+    expect(document.activeElement.getAttribute('role')).toBe('alert')
+    expect(container.textContent).toContain('invalid photo proposal')
+    expect(field('Look name').value).toBe('Recoverable photo draft')
+    expect(field('Constant appearance').value).toBe('Edited appearance')
+    expect(container.querySelector('.look-photo-review .look-photo-original').textContent).toContain('Original appearance')
+    expect(container.querySelector('img').getAttribute('src')).toContain(stage.photo_id)
+    await click(button('Extract look'))
+    expect(field('Constant appearance').value).toBe('Original appearance')
+    expect(post).toHaveBeenCalledTimes(3)
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('cancels only a stale upload returned after unmount and does not attach it to the next editor', async () => {
+    let resolveUpload
+    const upload = new Promise((resolve) => { resolveUpload = resolve })
+    vi.spyOn(api, 'uploadMultipart').mockReturnValueOnce(upload)
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ ...stage, state: 'cancelled' })
+    await render()
+    await chooseFile('Choose one photo', syntheticPhoto())
+    await act(async () => { root.render(null); await flush() })
+    await render()
+    await act(async () => { resolveUpload(stage); await upload; await flush() })
+    expect(post).toHaveBeenCalledExactlyOnceWith(`/api/looks/photo-stages/${stage.photo_id}/cancel`)
+    expect(container.querySelector('img')).toBeNull()
+    expect(button('Create look').disabled).toBe(false)
+  })
+
+  it('keeps an editor draft after an upload refusal and permits selecting a valid photo again', async () => {
+    vi.spyOn(api, 'uploadMultipart').mockRejectedValueOnce(new Error('Invalid PNG content.')).mockResolvedValueOnce(stage)
+    await render()
+    await click(button('Create look'))
+    await setValue(field('Look name'), 'Unchanged conventional draft')
+    await chooseFile('Choose one photo', syntheticPhoto())
+    expect(document.activeElement.getAttribute('role')).toBe('alert')
+    expect(container.textContent).toContain('Invalid PNG content.')
+    expect(field('Look name').value).toBe('Unchanged conventional draft')
+    await chooseFile('Choose one photo', syntheticPhoto())
+    expect(container.querySelector('img')).toBeTruthy()
+    expect(field('Look name').value).toBe('Unchanged conventional draft')
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
   it('exports the selected immutable version as a portable JSON download', async () => {
     const get = api.get
     vi.spyOn(api, 'get').mockImplementation(async (path) => {

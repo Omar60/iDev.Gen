@@ -762,3 +762,40 @@ and retains historical versions and session history.
 
 The photo input panel retains its position, extraction, confirmations, cleanup,
 and recovery operations.
+
+## From Photo workspace
+
+**From photo** separates selection and preview, explicit extraction, and review.
+Choose one supported photo (JPEG, PNG or WebP, up to 10 MiB and 25 megapixels).
+Selection stages the file without an assistant call or a saved look. The preview
+shows the complete image without cropping or stretching; it describes a look and
+never becomes a generation reference. The panel shows image dimensions, byte
+count, and stage expiry when available.
+
+**Extract look** sends the staged photo to the explicitly configured vision model.
+The indeterminate progress indicator reports an operation in progress without
+inventing a percentage. Failed or invalid extraction retains the stage, editor
+values and any previous proposal for correction or explicit retry. For uncertain
+outcomes, use **Refresh photo status** before retrying; cleanup warnings remain
+visible with **Retry cleanup**. No error authorizes a save or automatic approval.
+
+The photo review shows the original extraction separately from the editable
+appearance and garment fields. **Extracted draft** or **Edited draft** describes
+content changes, including garment reordering; uncertainty decisions have their
+own controls. Correct or omit each uncertain detail, include corrections in the
+editor, and explicitly confirm review and removal order. **Review confirmed ·
+not saved** is a local review state, not persistence. Editing source content clears
+the corresponding confirmations. **Edit photo draft** and **Review photo result**
+move focus between editing and review without replacing values.
+
+If extraction completes after the editor or optional profile review changes, its proposal is retained
+separately and does not overwrite the current draft. **Apply extracted proposal
+to editor** is an explicit replacement action and keeps the existing discard
+confirmation for unsaved content and confirms replacement of a retained profile
+review even when the conventional form is clean. Applying a proposal does not confirm or save
+it. Responses for another stage or an unmounted editor remain fenced out.
+
+The conventional editor, immutable version handling, archival, profile review,
+and distinct look-only/combined saves keep their existing contracts. Ordinary
+photo drafts remain in-view state; leaving Looks or reloading does not persist
+them. Resolve an uncertain combined save before reloading as described above.

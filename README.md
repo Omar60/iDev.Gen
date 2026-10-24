@@ -984,3 +984,9 @@ workspace with local name search, explicit version navigation, ordered garment
 fields, and separate look-only and reviewed automation saves. Narrow-screen
 workspace controls preserve the open form while moving focus between list and
 editor.
+
+[From Photo](docs/looks.md#from-photo-workspace) separates staged-image preview,
+explicit extraction, editable results and review confirmations. Original
+extraction remains visible for comparison; a late result is retained separately
+if the editor changes while waiting. Staged photos are never used automatically
+as generation references.
