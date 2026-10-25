@@ -1,5 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useId, useRef, useState } from 'react'
 import { assignScalarSpanOwner, scalarSpanFromUtf16Selection } from '../appearanceOwnership.js'
+import '../ui/foundations.css'
+import './AutomationProfile.css'
 
 export const REGIONS = ['chest', 'hips', 'legs', 'feet']
 export const COVERAGE = ['unknown', 'full', 'partial', 'none']
@@ -48,6 +50,17 @@ export default function AutomationProfileReview({
   const [noneCoverageTargets, setNoneCoverageTargets] = useState([])
   const [error, setError] = useState('')
   const appearanceRef = useRef(null)
+  const ownershipHeading = useRef(null)
+  const coverageHeading = useRef(null)
+  const inventoryRef = useRef(null)
+  const errorRef = useRef(null)
+  const shortcutTrigger = useRef(null)
+  const helpId = useId()
+  const focusSection = (target) => {
+    target.current?.focus()
+    target.current?.scrollIntoView({ block: 'start' })
+  }
+  useEffect(() => { if (error) errorRef.current?.focus() }, [error])
   const inputIdentity = JSON.stringify([
     appearance, garments.map(({ id, wording, aside }) => [id, wording, aside]),
   ])
@@ -160,6 +173,7 @@ export default function AutomationProfileReview({
       setNoneCoverageTargets([])
     }
     setPendingShortcut('')
+    shortcutTrigger.current?.focus()
   }
 
   const setNoneCoverageTarget = (target, checked) => {
@@ -170,14 +184,28 @@ export default function AutomationProfileReview({
   }
 
   return (
-    <>
-      <fieldset>
-        <legend>Appearance ownership</legend>
-        <p className="muted">Select a phrase in the appearance, choose its owner, and assign it. Every Unicode character must have exactly one owner.</p>
-        <label>
+    <div className="studio-ui automation-ui">
+      <div className="automation-review-summary" aria-label="Profile review status">
+        <span className="ui-state" data-tone={partitionValid ? undefined : 'warning'}>{partitionValid ? 'Ownership assigned' : 'Ownership pending'}</span>
+        <span className="ui-state" data-tone={baselineConfirmed ? undefined : 'warning'}>{baselineConfirmed ? 'Baseline reviewed' : 'Baseline review pending'}</span>
+        <span className="ui-state" data-tone={draft.inventory_complete?.value === true && inventoryConfirmed ? undefined : 'warning'}>Inventory: {draft.inventory_complete?.value === true ? 'complete' : draft.inventory_complete?.value === false ? 'incomplete' : 'unknown'}</span>
+        <span className="ui-state" data-tone={reviewConfirmed ? 'success' : 'warning'}>{reviewConfirmed ? 'Draft review confirmed' : 'Draft review pending'}</span>
+      </div>
+      <p className="ui-help">These are draft facts and review states. Unknown is not none. Server readiness and Full Auto authorization are separate checks.</p>
+      {disabled && <p className="ui-notice" role="status">Profile editing is currently blocked by the active parent operation or unsaved look changes.</p>}
+      <nav className="ui-actions automation-section-nav" aria-label="Profile review sections">
+        <button type="button" className="ui-button" onClick={() => focusSection(ownershipHeading)}>Review ownership</button>
+        <button type="button" className="ui-button" onClick={() => focusSection(coverageHeading)}>Review coverage</button>
+        <button type="button" className="ui-button" onClick={() => focusSection(inventoryRef)}>Review inventory</button>
+      </nav>
+      <fieldset className="automation-section">
+        <legend ref={ownershipHeading} tabIndex={-1}>Appearance ownership</legend>
+        <p className="ui-help" id={`${helpId}-ownership`}>Select a phrase in the appearance, choose its owner, and assign it. Every Unicode character must have exactly one owner. Use Shift + Arrow keys to select text with the keyboard.</p>
+        <label className="ui-field">
           {appearanceLabel}
-          <textarea
+          <textarea className="ui-control"
             ref={appearanceRef}
+            aria-describedby={`${helpId}-ownership`}
             aria-label={appearanceInputLabel}
             value={appearance}
             readOnly
@@ -189,23 +217,24 @@ export default function AutomationProfileReview({
         </label>
         {selection && <p className="muted" role="status">Selected phrase: “{selection.text}”</p>}
         <div className="row" style={{ flexWrap: 'wrap' }}>
-          <label>
+          <label className="ui-field">
             Selected phrase owner
-            <select aria-label="Selected phrase owner" value={ownerChoice} onChange={(event) => setOwnerChoice(event.target.value)} disabled={disabled}>
+            <select className="ui-control" aria-label="Selected phrase owner" value={ownerChoice} onChange={(event) => setOwnerChoice(event.target.value)} disabled={disabled}>
               <option value="">Choose an owner…</option>
               {owners.map((owner) => <option key={owner.value} value={owner.value}>{owner.label}</option>)}
             </select>
           </label>
-          <button type="button" onClick={assignSelectedOwner} disabled={disabled || !selection || !ownerChoice}>Assign or correct selected phrase</button>
-          <button type="button" onClick={() => setPendingShortcut('permanent')} disabled={disabled}>All appearance is permanent</button>
+          <button className="ui-button" type="button" onClick={assignSelectedOwner} disabled={disabled || !selection || !ownerChoice}>Assign or correct selected phrase</button>
+          <button className="ui-button" type="button" onClick={(event) => { shortcutTrigger.current = event.currentTarget; setPendingShortcut('permanent') }} disabled={disabled}>All appearance is permanent</button>
         </div>
         {!partitionValid && <p className="error" role="status">Ownership is incomplete or refers to a garment that is no longer listed. Assign every part of the appearance before accepting this review.</p>}
-        {error && <p className="error" role="alert">{error}</p>}
+        {error && <p className="error ui-notice" data-tone="error" role="alert" ref={errorRef} tabIndex={-1}>{error}</p>}
         {draft.appearance_segments.length > 0 && (
           <ul aria-label="Appearance ownership preview">
             {draft.appearance_segments.map((segment) => (
               <li key={segment.segment_id}>
                 “{segment.text}” — {owners.find((owner) => owner.value === segment.owner)?.label || 'Unassigned'}
+                <FactProvenance value={segment.provenance} />
               </li>
             ))}
           </ul>
@@ -215,27 +244,27 @@ export default function AutomationProfileReview({
         </p>
         {pendingShortcut === 'permanent' && <ShortcutPreview
           text={`Preview: mark every exact source clause as permanent for this look: “${appearance}”`}
-          onConfirm={confirmShortcut} onCancel={() => setPendingShortcut('')}
+          onConfirm={confirmShortcut} onCancel={() => { setPendingShortcut(''); shortcutTrigger.current?.focus() }}
           disabled={disabled}
         />}
       </fieldset>
 
-      <fieldset>
-        <legend>Supported-region coverage</legend>
+      <fieldset className="automation-section">
+        <legend ref={coverageHeading} tabIndex={-1}>Supported-region coverage</legend>
         <p className="muted">For each state, record chest, hips, legs and feet as full, partial, none or unknown. Unknown is never treated as none.</p>
           <CoverageEditor title="Baseline · every listed garment absent" fact={draft.baseline_coverage} disabled={disabled} onChange={(region, value) => updateCoverage('baseline', '', region, value)} />
         {garments.map((garment) => (
-          <div key={garment.id} style={{ borderTop: '1px solid var(--line)', paddingTop: 8, marginTop: 8 }}>
+          <div key={garment.id} className="automation-garment-coverage" role="group" aria-label={`Coverage for ${garment.wording}`}>
             <b>{garment.wording}</b>
             <CoverageEditor title={garment.wornLabel || `${garment.wording} · worn`} fact={draft.garment_coverage?.[garment.id]?.worn} disabled={disabled} onChange={(region, value) => updateCoverage(garment.id, 'worn', region, value)} />
             {garment.aside && <CoverageEditor title={garment.asideLabel || `Moved aside · ${garment.aside}`} fact={draft.garment_coverage?.[garment.id]?.aside} disabled={disabled} onChange={(region, value) => updateCoverage(garment.id, 'aside', region, value)} />}
           </div>
         ))}
-        <button type="button" onClick={() => { setNoneCoverageTargets([]); setPendingShortcut('none') }} disabled={disabled}>No coverage in supported regions</button>
+        <button className="ui-button" type="button" onClick={(event) => { shortcutTrigger.current = event.currentTarget; setNoneCoverageTargets([]); setPendingShortcut('none') }} disabled={disabled}>No coverage in supported regions</button>
         {pendingShortcut === 'none' && <div aria-label="No-coverage target selection">
           <p className="muted">Choose the exact states for this assertion. Unselected states and inventory confirmation stay unchanged.</p>
           {noneTargetOptions.map((target) => (
-            <label key={target.id} style={{ display: 'block' }}>
+            <label key={target.id} className="automation-check">
               <input
                 type="checkbox"
                 aria-label={`Assert no coverage for ${target.label}`}
@@ -250,15 +279,17 @@ export default function AutomationProfileReview({
             ? <p className="muted" role="status">Choose one or more states to preview this assertion.</p>
             : <ShortcutPreview
               text={`Preview: assert none for chest, hips, legs and feet only in ${noneCoverageTargets.map((target) => target.label).join('; ')}. Inventory completeness stays unchanged.`}
-              onConfirm={confirmShortcut} onCancel={() => { setPendingShortcut(''); setNoneCoverageTargets([]) }}
+              onConfirm={confirmShortcut} onCancel={() => { setPendingShortcut(''); setNoneCoverageTargets([]); shortcutTrigger.current?.focus() }}
               disabled={disabled}
             />}
         </div>}
-        <div style={{ marginTop: 8 }}>
-          <label>
+        <div className="automation-inventory">
+          <label className="ui-field">
             Inventory confirmation
-            <select
+            <select className="ui-control"
               aria-label="Inventory confirmation"
+              ref={inventoryRef}
+              aria-describedby={`${helpId}-inventory`}
               value={draft.inventory_complete?.value === null || draft.inventory_complete?.value === undefined ? '' : String(draft.inventory_complete.value)}
               disabled={disabled}
               onChange={(event) => {
@@ -274,44 +305,55 @@ export default function AutomationProfileReview({
               <option value="false">The listed garment inventory is incomplete</option>
             </select>
           </label>
+          <p className="ui-help" id={`${helpId}-inventory`}>Confirm completeness explicitly. Marking an inventory incomplete keeps that distinction; it does not authorize Full Auto.</p>
+          <FactProvenance value={draft.inventory_complete?.provenance} />
           {!inventoryConfirmed && <p className="error" role="status">Explicit inventory confirmation is required before accepting this review.</p>}
         </div>
         {!baselineConfirmed && <p className="error" role="status">Review the inventory-absent baseline before accepting this review.</p>}
-        {showReviewConfirmation && <label>
+        {showReviewConfirmation && <label className="automation-check">
           <input type="checkbox" checked={reviewConfirmed} onChange={(event) => onReviewConfirmed(event.target.checked)} disabled={disabled || !partitionValid || !baselineConfirmed || !inventoryConfirmed} />
           {reviewLabel}
         </label>}
       </fieldset>
-    </>
+    </div>
   )
 }
 
 function CoverageEditor({ title, fact, disabled = false, onChange }) {
   return (
-    <fieldset style={{ marginTop: 6 }} aria-label={`${title} coverage`}>
+    <fieldset className="automation-coverage" aria-label={`${title} coverage`}>
       <legend>{title}</legend>
-      <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+      <p className="ui-help">{REGIONS.filter((region) => !fact?.regions?.[region] || fact.regions[region] === 'unknown').length} unknown region(s) · review each value explicitly.</p>
+      <div className="automation-coverage-grid">
         {REGIONS.map((region) => (
           <label key={region}>
             {region[0].toUpperCase() + region.slice(1)}
-            <select aria-label={`${title} ${region}`} value={fact?.regions?.[region] || 'unknown'} onChange={(event) => onChange(region, event.target.value)} disabled={disabled}>
+            <select className="ui-control" aria-label={`${title} ${region}`} value={fact?.regions?.[region] || 'unknown'} onChange={(event) => onChange(region, event.target.value)} disabled={disabled}>
               {COVERAGE.map((coverage) => <option key={coverage} value={coverage}>{coverage}</option>)}
             </select>
           </label>
         ))}
       </div>
+      <FactProvenance value={fact?.provenance} />
     </fieldset>
   )
 }
 
 function ShortcutPreview({ text, onConfirm, onCancel, disabled = false }) {
   return (
-    <div className="panel" aria-label="Profile shortcut preview">
+    <div className="panel automation-shortcut" aria-label="Profile shortcut preview">
       <p>{text}</p>
       <div className="row">
-        <button type="button" onClick={onConfirm} disabled={disabled}>Confirm this user assertion</button>
-        <button type="button" onClick={onCancel} disabled={disabled}>Cancel preview</button>
+        <button className="ui-button" type="button" onClick={onConfirm} disabled={disabled}>Confirm this user assertion</button>
+        <button className="ui-button" type="button" onClick={onCancel} disabled={disabled}>Cancel preview</button>
       </div>
     </div>
   )
+}
+
+function FactProvenance({ value }) {
+  return value ? <details className="automation-provenance">
+    <summary>Recorded provenance</summary>
+    <pre>{JSON.stringify(value, null, 2)}</pre>
+  </details> : <p className="ui-help">No recorded provenance for this draft fact.</p>
 }

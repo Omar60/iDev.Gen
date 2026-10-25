@@ -799,3 +799,43 @@ The conventional editor, immutable version handling, archival, profile review,
 and distinct look-only/combined saves keep their existing contracts. Ordinary
 photo drafts remain in-view state; leaving Looks or reloading does not persist
 them. Resolve an uncertain combined save before reloading as described above.
+
+## Studio profile review and publication
+
+Automation review has its own studio-scoped workspace, separate from appearance
+and garment editing and From Photo extraction. Use **Review ownership**, **Review
+coverage**, and **Review inventory** to move keyboard focus without unmounting
+fields. Coverage uses four columns on wide screens and two on narrow screens.
+Recorded provenance remains inspectable beside appearance, coverage and inventory
+facts, including exact recorded identity/digest and accepted revision when present.
+
+Draft states are deliberately distinct: ownership assigned, baseline reviewed,
+inventory unknown/complete/incomplete, and final review pending/confirmed.
+**Unknown** never means **none**. A reviewed incomplete standalone profile may be
+published under the existing rules, but stored unknown or contradictory facts can
+still block Full Auto. Only the saved revision's server readiness diagnostics
+report its eligibility; publication or a review checkbox does not authorize a
+session or generation. The combined save keeps its existing stricter fact checks
+and the conventional **Save look only** action stays separate.
+
+The saved-profile editor shows the exact look version/content digest and the
+selected immutable profile. **Selected saved profile facts** provides read-only
+inspection of its appearance, coverage, inventory and complete provenance without
+replacing the editable draft. **Load selected revision as editing basis** remains
+an explicit replacement action. Copying reviewed facts still requires an exact
+source, explicit state mappings, Preview and acceptance before applying to draft.
+Appearance spans are not copied, and skipped or changed facts remain unknown.
+
+After a standalone publication error, draft facts remain available and final
+review confirmation is cleared. If the result is uncertain, **Refresh saved
+revisions**, select the relevant revision and inspect its saved facts before
+another publication. Refresh does not publish or load a revision into the draft.
+Confirm the complete review again only after this inspection. The standalone
+publication API still uses CAS and has no request-ID replay; refreshing is not an
+automatic recovery or proof that the previous request failed.
+
+Combined-save recovery remains different: the browser retains the exact body and
+request ID for **Retry the identical combined save**, blocking new writes while
+the outcome is unknown. The recovery notice receives focus and explains that a
+full reload clears the local in-memory snapshot. It does not authorize a new
+operation, accept unknown facts or start Full Auto.

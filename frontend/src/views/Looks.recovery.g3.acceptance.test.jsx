@@ -123,6 +123,21 @@ describe('Looks combined-save acceptance fences', () => {
     vi.restoreAllMocks()
   })
 
+  it('keeps recovery focus after a pending combined save loses its response', async () => {
+    const pending = makeDeferred()
+    const post = api.postVersioned
+    post.mockReturnValueOnce(pending.promise).mockImplementationOnce(async (_path, body) => combinedResult(body))
+    await reviewTarget()
+    await click(button('Save look + automation profile'))
+    await act(async () => { pending.reject(new TypeError('connection lost')); await flush() })
+    expect(document.activeElement.getAttribute('aria-label')).toBe('Combined save recovery')
+    expect(field('Look name').disabled).toBe(true)
+    const originalBody = post.mock.calls[0][1]
+    await click(button('Retry the identical combined save'))
+    expect(post.mock.calls[1][1]).toBe(originalBody)
+    expect(container.querySelector('[aria-label="Combined save recovery"]')).toBeNull()
+  })
+
   it.each([
     ['different look key', (result) => {
       const wrongKey = { ...result, key: 'look-another-target' }
@@ -151,6 +166,7 @@ describe('Looks combined-save acceptance fences', () => {
     expect(integerFields).toEqual(['expected_version'])
     expect(body.expected_version).toBe('2')
     expect(container.querySelector('[aria-label="Combined save recovery"]')).toBeTruthy()
+    expect(document.activeElement.getAttribute('aria-label')).toBe('Combined save recovery')
     expect(field('Look name').value).toBe('Target look')
     expect(container.textContent).not.toContain('automation profile revision 1')
 

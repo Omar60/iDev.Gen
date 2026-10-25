@@ -408,6 +408,8 @@ export default function Looks() {
   const [profileSuggestion, setProfileSuggestion] = useState(null)
   const [includePhotoAutomation, setIncludePhotoAutomation] = useState(false)
   const [uncertainSave, setUncertainSave] = useState(false)
+  const combinedRecoveryRef = useRef(null)
+  const profileProposalErrorRef = useRef(null)
   const [combinedSaveInFlight, setCombinedSaveInFlight] = useState(false)
   const [cleanupStage, setCleanupStage] = useState(null)
   const [visionAvailability, setVisionAvailability] = useState('checking')
@@ -461,6 +463,9 @@ export default function Looks() {
   useEffect(() => {
     if (photoMode === 'extracted' && photoProposal) focusWorkspace(photoReviewHeading)
   }, [photoProposal, photoMode])
+
+  useEffect(() => { if (uncertainSave) combinedRecoveryRef.current?.focus() }, [uncertainSave, combinedSaveInFlight])
+  useEffect(() => { if (automationProposalError) profileProposalErrorRef.current?.focus() }, [automationProposalError])
 
   const resetAutomationDraft = (nextForm, suggestedProfile = null) => {
     automationSourceEpoch.current += 1
@@ -1896,11 +1901,13 @@ export default function Looks() {
             <p className="ui-help">{dirty ? 'Unsaved changes' : selectedKey ? `Viewing saved version ${selectedVersion}` : 'Select a saved look or create one.'}</p>
             <p className="ui-help">A normal look stores appearance and outfit. Automation requires its own reviewed profile.</p>
           </div>
-          {uncertainSave && <div className="error" role="alert" aria-label="Combined save recovery">
+          {uncertainSave && <div className="studio-ui automation-recovery ui-notice" data-tone="error" role="alert" aria-label="Combined save recovery" ref={combinedRecoveryRef} tabIndex={-1}>
+            <h3>Resolve the combined save outcome</h3>
             {combinedSaveInFlight
               ? <p>A combined save from this browser tab is still awaiting a response. Editing and new writes stay blocked until its exact outcome is known.</p>
               : <p>The combined save outcome is unknown. Its exact request body and request ID are retained for recovery.</p>}
-            {!combinedSaveInFlight && <button type="button" onClick={retryCombinedSave} disabled={saving}>Retry the identical combined save</button>}
+            {!combinedSaveInFlight && <button type="button" className="ui-button" onClick={retryCombinedSave} disabled={saving}>Retry the identical combined save</button>}
+            <p>Keep this tab open until the outcome is resolved. The exact request is retained in this tab; a full reload clears its local recovery snapshot. No new save or approval is authorized by retrying.</p>
           </div>}
           {!form && !lookLoading && !lookError && <p className="muted">Select a saved look or create one.</p>}
           {lookLoading && <p className="muted" role="status">Loading look version…</p>}
@@ -2193,11 +2200,13 @@ export default function Looks() {
                 </fieldset>
               )}
 
-              <fieldset aria-label="Automation profile review">
+              <fieldset className="studio-ui automation-combined" aria-label="Automation profile review">
                 <legend>Automation profile review</legend>
+                <div className="ui-section-heading"><span className="ui-state" data-tone={combinedBlockers.length ? 'warning' : undefined}>{combinedBlockers.length ? 'Combined save blocked' : 'Required review facts complete'}</span></div>
+                <p className="ui-help">This optional profile is separate from the conventional look. Complete the review to use the combined save. Review status does not grant Full Auto authorization.</p>
                 <p className="muted">Review this profile with the look before saving. Suggestions are optional, editable and never accepted automatically.</p>
                 {photoMode !== 'extracted' && (
-                  <button
+                  <button className="ui-button"
                     type="button"
                     onClick={requestAutomationProposal}
                     disabled={automationProposalBusy || saving || uncertainSave
@@ -2207,15 +2216,15 @@ export default function Looks() {
                   </button>
                 )}
                 {profileSuggestion && <p className="muted" role="status">An optional suggestion is linked to its original draft identity; current look edits and profile corrections remain separate.</p>}
-                {profileSuggestion && <button type="button" onClick={() => setProfileSuggestion(null)} disabled={saving || uncertainSave}>Save without optional suggestion evidence</button>}
-                {automationProposalError && <p className="error" role="alert">{automationProposalError}</p>}
+                {profileSuggestion && <button className="ui-button" type="button" onClick={() => setProfileSuggestion(null)} disabled={saving || uncertainSave}>Save without optional suggestion evidence</button>}
+                {automationProposalError && <p className="error ui-notice" data-tone="error" role="alert" ref={profileProposalErrorRef} tabIndex={-1}>{automationProposalError}</p>}
                 {automationProposalNotice && <p className="muted" role="status">{automationProposalNotice}</p>}
                 <ol aria-label="Reviewed garment removal order">
                   {currentReviewRows.map((row, index) => (
                     <li key={row.id}>{index + 1}. {row.wording}{row.aside ? ` · moved aside: ${row.aside}` : ''}</li>
                   ))}
                 </ol>
-                {photoMode !== 'extracted' && <label>
+                {photoMode !== 'extracted' && <label className="automation-check">
                   <input
                     type="checkbox"
                     checked={lookOrderConfirmed}
@@ -2247,7 +2256,7 @@ export default function Looks() {
                   showReviewConfirmation
                   disabled={saving || uncertainSave}
                 />
-                {combinedBlockers.length > 0 && <div className="error" role="status" aria-label="Combined save blockers">
+                {combinedBlockers.length > 0 && <div className="ui-notice automation-blockers" role="status" aria-label="Combined save blockers">
                   <strong>Combined save needs these facts:</strong>
                   <ul>{combinedBlockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
                   <p>Use “Save look only” to create the look without a profile.</p>

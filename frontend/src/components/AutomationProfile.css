@@ -1,0 +1,47 @@
+.automation-ui, .automation-editor, .automation-combined { min-width: 0; }
+.automation-ui { display: grid; gap: 16px; }
+.automation-ui .muted, .automation-editor .muted, .automation-combined .muted { color: var(--ui-color-muted); font-size: var(--ui-text-label); }
+.automation-review-summary { display: flex; flex-wrap: wrap; gap: 8px; }
+.automation-section, .automation-editor fieldset, .automation-combined { min-width: 0; margin: 16px 0; padding: 20px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-surface); }
+.automation-section legend, .automation-editor legend { color: var(--ui-color-text); font-size: var(--ui-text-heading); font-weight: 600; }
+.automation-ui .ui-field { margin-bottom: 12px; }
+.automation-ui .row { align-items: end; }
+.automation-ui .row > .ui-field { flex: 1 1 200px; margin: 0; }
+.automation-ui .ui-control { min-height: 44px; }
+.automation-ui textarea.ui-control { min-height: 100px; }
+.automation-coverage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.automation-section .automation-coverage { min-width: 0; margin: 16px 0; padding: 16px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-control); }
+.automation-coverage legend { font-size: var(--ui-text-label); }
+.automation-garment-coverage { padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--ui-color-border); overflow-wrap: anywhere; }
+.automation-provenance { margin: 12px 0; font-size: var(--ui-text-help); color: var(--ui-color-muted); }
+.automation-provenance summary { cursor: pointer; min-height: 44px; }
+.automation-provenance pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; }
+.automation-check { display: flex; align-items: start; gap: 12px; min-height: 44px; padding: 12px; margin: 12px 0; border: 1px solid var(--ui-color-control-border); border-radius: var(--ui-radius-control); color: var(--ui-color-text); font-size: var(--ui-text-label); }
+.automation-check input[type="checkbox"] { flex: 0 0 20px; width: 20px; height: 20px; margin: 0; accent-color: var(--ui-color-accent); }
+.automation-shortcut { margin: 16px 0; border-color: var(--ui-color-accent); }
+.automation-inventory { margin-top: 24px; }
+:is(.automation-ui, .automation-editor, .automation-combined, .automation-recovery) :is(button, input, select, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+:is(.automation-ui, .automation-editor) :is([tabindex], select) { scroll-margin-top: 100px; }
+@media (max-width: 899px) { .automation-coverage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 699px) { .automation-section, .automation-editor fieldset, .automation-combined { padding: 16px; } }
+
+.automation-editor { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--ui-color-border); }
+.automation-editor-toggle { min-height: 44px; cursor: pointer; font-weight: 600; }
+.automation-editor-body { padding-top: 20px; }
+.automation-identity, .automation-publication { padding: 16px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-control); }
+.automation-editor :is(p, li, dd), .automation-combined :is(p, li) { overflow-wrap: anywhere; }
+.automation-editor select { width: 100%; min-width: 0; min-height: 44px; padding: var(--ui-padding-control); border-color: var(--ui-color-control-border); }
+.automation-editor .row > .ui-field { flex: 1 1 200px; }
+.automation-editor .ui-stack > .ui-button { justify-self: start; }
+.automation-editor .automation-publication > :is(p, label, ul) { margin: 16px 0; }
+.automation-combined > .ui-actions { margin-bottom: 16px; }
+.automation-combined .automation-blockers { margin-top: 20px; }
+.automation-recovery { margin: 16px 0; }
+.automation-recovery .ui-button { margin-top: 12px; }
+
+.automation-combined > legend { color: var(--ui-color-text); font-size: var(--ui-text-heading); font-weight: 600; }
+.automation-combined .automation-blockers { border-color: #806d40; }
+.automation-editor .ui-control { min-height: 44px; padding: var(--ui-padding-control); border-color: var(--ui-color-control-border); }
+
+.automation-saved-profile { padding: 16px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-control); background: var(--ui-color-field); }
+.automation-editor [aria-label="Server profile readiness diagnostics"] { padding: 12px 16px; border: 1px solid #806d40; border-radius: var(--ui-radius-control); }

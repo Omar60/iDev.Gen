@@ -80,6 +80,36 @@ afterEach(async () => {
 })
 
 describe('shared automation profile review controls', () => {
+  it('navigates review sections without changing unknown facts or remounting controls', async () => {
+    render()
+    const output = container.querySelector('output').textContent
+    const coverage = container.querySelector('[aria-label="Baseline · every listed garment absent chest"]')
+    const button = (name) => [...container.querySelectorAll('button')].find((item) => item.textContent === name)
+    await act(async () => { button('Review coverage').click() })
+    expect(document.activeElement.textContent).toBe('Supported-region coverage')
+    expect(container.querySelector('[aria-label="Baseline · every listed garment absent chest"]')).toBe(coverage)
+    expect(container.querySelector('output').textContent).toBe(output)
+    expect(container.querySelector('[aria-label="Profile review status"]').textContent).toContain('Inventory: unknown')
+    await act(async () => { button('Review inventory').click() })
+    expect(document.activeElement.getAttribute('aria-label')).toBe('Inventory confirmation')
+    await selectValue(document.activeElement, 'false')
+    expect(container.querySelector('[aria-label="Profile review status"]').textContent).toContain('Inventory: incomplete')
+    expect(JSON.parse(container.querySelector('output').textContent).baseline_coverage).toBeNull()
+  })
+
+  it('keeps provenance inspectable and returns focus when an assertion preview is cancelled', async () => {
+    render()
+    const provenanceView = container.querySelector('.automation-provenance pre')
+    expect(JSON.parse(provenanceView.textContent)).toEqual(provenance)
+    const trigger = [...container.querySelectorAll('button')].find((item) => item.textContent === 'All appearance is permanent')
+    const before = container.querySelector('output').textContent
+    await act(async () => { trigger.click() })
+    await act(async () => { [...container.querySelectorAll('button')].find((item) => item.textContent === 'Cancel preview').click() })
+    expect(document.activeElement).toBe(trigger)
+    expect(container.querySelector('output').textContent).toBe(before)
+    expect(container.querySelector('[aria-label="Profile shortcut preview"]')).toBeNull()
+  })
+
   it('keeps initial facts unknown and maps selected Unicode spans to stable garment row identities', async () => {
     render()
     const coverage = container.querySelector('[aria-label="a brass bracelet · worn coverage"]')

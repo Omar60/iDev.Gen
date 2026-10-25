@@ -990,3 +990,10 @@ explicit extraction, editable results and review confirmations. Original
 extraction remains visible for comparison; a late result is retained separately
 if the editor changes while waiting. Staged photos are never used automatically
 as generation references.
+
+[Automation profile review](docs/looks.md#studio-profile-review-and-publication)
+uses a scoped studio workspace with ownership, coverage and inventory navigation,
+inspectable provenance, and distinct draft/server-readiness states. Saved profile
+facts can be inspected without replacing a draft. Standalone publication errors
+retain draft facts for revision inspection and renewed review; combined saves
+retain their separate identical-request recovery.

@@ -123,3 +123,16 @@ visually distinct; confirmations do not imply saving. Photo errors receive
 focus, async operations use indeterminate progress, and a delayed proposal is
 kept separate when the editor changes during extraction. Existing conventional
 editor and automation profile styles stay outside the photo scope.
+
+### Automation profiles
+
+`AutomationProfile.css` scopes layout to the shared profile review, saved-profile
+editor and combined-save recovery. Conventional Looks fields, From Photo input
+and extraction review, and shared profile selectors in other screens keep their
+existing styles. The profile workspace uses studio tokens and existing native
+controls, with focus navigation, 44px controls and wrapped identity/provenance.
+Coverage becomes a four-column grid, then two below 900px. Draft review states
+are labelled separately from authoritative saved readiness. Saved facts can be
+inspected without overwriting the draft; final confirmation is renewed after a
+publication error. No styling or navigation action changes acceptance or Full
+Auto authorization.

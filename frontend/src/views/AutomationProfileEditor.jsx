@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api, versionText } from '../api.js'
 import AutomationProfileReview, { REGIONS, readyPartition, unknownRegions } from '../components/AutomationProfileReview.jsx'
 import AutomationProfileSelector from '../components/AutomationProfileSelector.jsx'
@@ -86,6 +86,12 @@ const profileIntegerFields = (profile) => {
 export default function AutomationProfileEditor({ look, disabled = false }) {
   const [open, setOpen] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [basisRefreshKey, setBasisRefreshKey] = useState(0)
+  const factsHeading = useRef(null)
+  const copyHeading = useRef(null)
+  const publishHeading = useRef(null)
+  const errorRef = useRef(null)
+  const sourceErrorRef = useRef(null)
   const [draft, setDraft] = useState(() => initialDraft(look))
   const [latestRevision, setLatestRevision] = useState('0')
   const [baseLoaded, setBaseLoaded] = useState(false)
@@ -120,6 +126,13 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
   const nextRevision = BigInt(nonnegativeRevisionText(latestRevision) || '0') + 1n
   const canPublish = !disabled && !busy && reviewConfirmed && partitionValid
     && baselineConfirmed && inventoryConfirmed && nextRevision <= SQLITE_MAX
+
+  useEffect(() => { if (error) errorRef.current?.focus() }, [error])
+  useEffect(() => { if (sourceLoadError) sourceErrorRef.current?.focus() }, [sourceLoadError])
+  const focusSection = (target) => {
+    target.current?.focus()
+    target.current?.scrollIntoView({ block: 'start' })
+  }
 
   const invalidateCopyPreview = () => {
     copyPreviewRequestRef.current += 1
@@ -418,6 +431,7 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
       setRefreshKey((key) => key + 1)
     } catch (cause) {
       setError(errorText(cause))
+      setReviewConfirmed(false)
     } finally {
       setBusy(false)
     }
@@ -425,18 +439,32 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
 
   return (
     <details
-      style={{ borderTop: '1px solid var(--line)', marginTop: 12, paddingTop: 10 }}
+      className="studio-ui automation-editor"
       onToggle={(event) => setOpen(event.currentTarget.open)}
       aria-label="Automation profile editor"
     >
-      <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Reusable automation profile (Portable look-v1 does not include profiles)</summary>
-      <div style={{ display: 'grid', gap: 10, paddingTop: 10 }}>
+      <summary className="automation-editor-toggle">Reusable automation profile (Portable look-v1 does not include profiles)</summary>
+      <div className="ui-stack automation-editor-body">
         <p className="muted" style={{ margin: 0 }}>
           Profiles are separate immutable revisions for this exact saved-look version. Portable look-v1 export/import does not transfer automation profiles or readiness.
           Save any appearance or garment wording change as a new look version before assigning spans.
         </p>
+        <section aria-label="Saved profile identity" className="automation-identity">
+          <h3 className="ui-section-title">Saved look identity</h3>
+          <dl className="ui-definition-list">
+            <div><dt>Look</dt><dd>{look.name}</dd></div>
+            <div><dt>Version</dt><dd>{versionText(look.version)}</dd></div>
+            <div><dt>Content digest</dt><dd>{look.content_digest}</dd></div>
+          </dl>
+          <p className="ui-help">The selected saved revision and the draft below are separate. Publication creates a new immutable profile; it does not authorize a generation.</p>
+        </section>
+        <nav className="ui-actions" aria-label="Saved profile sections">
+          <button type="button" className="ui-button" onClick={() => focusSection(factsHeading)}>Review draft facts</button>
+          <button type="button" className="ui-button" onClick={() => focusSection(copyHeading)}>Review copy source</button>
+          <button type="button" className="ui-button" onClick={() => focusSection(publishHeading)}>Go to publication</button>
+        </nav>
         <AutomationProfileSelector
-          key={`${savedLookIdentity}:${refreshKey}`}
+          key={`${savedLookIdentity}:${refreshKey}:${basisRefreshKey}`}
           look={look}
           active={open}
           disabled={disabled || busy}
@@ -444,14 +472,30 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
           onProfileChange={setTargetProfile}
           onDiscovery={(result) => setLatestRevision(nonnegativeRevisionText(result.latest_profile_revision) || '0')}
         />
-        <div className="row" style={{ flexWrap: 'wrap' }}>
-          <button type="button" onClick={loadBaseProfile} disabled={disabled || busy || !targetProfile}>
+        {targetProfile && <section className="automation-saved-profile" aria-label="Selected saved profile facts">
+          <h3 className="ui-section-title">Selected saved revision {versionText(targetProfile.profile_revision)}</h3>
+          <p className="ui-help">Read-only inspection. Selecting or inspecting this revision does not replace the draft below.</p>
+          <dl className="ui-definition-list">
+            <div><dt>Permanent appearance</dt><dd>{targetProfile.permanent_appearance || 'Empty projection'}</dd></div>
+            <div><dt>Inventory</dt><dd>{targetProfile.profile.inventory_complete?.value === true ? 'Complete' : targetProfile.profile.inventory_complete?.value === false ? 'Incomplete' : 'Unknown'}</dd></div>
+            <div><dt>Baseline</dt><dd>{REGIONS.map((region) => `${region}: ${targetProfile.profile.baseline_coverage?.regions?.[region] || 'unknown'}`).join(' · ')}</dd></div>
+          </dl>
+          <ul>{Object.entries(targetProfile.profile.garment_coverage || {}).flatMap(([key, states]) => Object.entries(states).map(([state, fact]) => <li key={`${key}:${state}`}>
+            <strong>{garments.find((garment) => garment.key === key)?.wording || key} · {state}</strong>: {REGIONS.map((region) => `${region}: ${fact.regions?.[region] || 'unknown'}`).join(', ')}
+          </li>))}</ul>
+          <details className="automation-provenance"><summary>Exact saved profile and provenance</summary><pre>{JSON.stringify(targetProfile.profile, null, 2)}</pre></details>
+        </section>}
+        <div className="row" >
+          <button className="ui-button" type="button" onClick={loadBaseProfile} disabled={disabled || busy || !targetProfile}>
             Load selected revision as editing basis
           </button>
-          <button type="button" onClick={resetDraft} disabled={disabled || busy}>Start a blank profile draft</button>
+          <button className="ui-button" type="button" onClick={resetDraft} disabled={disabled || busy}>Start a blank profile draft</button>
         </div>
+        <button type="button" className="ui-button" disabled={disabled || busy} onClick={() => setBasisRefreshKey((key) => key + 1)}>Refresh saved revisions</button>
         {baseLoaded && <p className="muted" role="status">Editing from an immutable revision; Save creates the next revision.</p>}
 
+        <section aria-label="Saved profile draft facts">
+        <h3 className="ui-section-title" ref={factsHeading} tabIndex={-1}>Draft facts and review</h3>
         <AutomationProfileReview
           key={reviewResetKey}
           appearance={look.appearance}
@@ -483,13 +527,14 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
           disabled={disabled || busy}
         />
 
+        </section>
         <fieldset>
-          <legend>Copy reviewed state facts</legend>
+          <legend ref={copyHeading} tabIndex={-1}>Copy reviewed state facts</legend>
           <p className="muted">Choose an exact source revision and explicitly map each accepted source state to an equivalent target state. Across look versions, the server copies only matching garment keys and canonical/state wording; changed states stay unknown. Appearance spans are never copied.</p>
-          <div className="row" style={{ flexWrap: 'wrap' }}>
-            <label>
+          <div className="row" >
+            <label className="ui-field">
               Source look version
-              <input aria-label="Source look version" inputMode="numeric" value={sourceVersion} onChange={(event) => {
+              <input className="ui-control" aria-label="Source look version" inputMode="numeric" value={sourceVersion} onChange={(event) => {
                 setSourceVersion(event.target.value)
                 setSourceLook(null)
                 setSourceProfile(null)
@@ -497,9 +542,9 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
                 invalidateCopyPreview()
               }} disabled={disabled || busy} />
             </label>
-            <button type="button" onClick={() => void loadSourceVersion()} disabled={disabled || busy || !versionText(sourceVersion)}>Load source version</button>
+            <button className="ui-button" type="button" onClick={() => void loadSourceVersion()} disabled={disabled || busy || !versionText(sourceVersion)}>Load source version</button>
           </div>
-          {sourceLoadError && <p className="error" role="alert">{sourceLoadError}</p>}
+          {sourceLoadError && <p className="error ui-notice" data-tone="error" role="alert" ref={sourceErrorRef} tabIndex={-1}>{sourceLoadError}</p>}
           {sourceLook && <p className="muted">Source: version {versionText(sourceLook.version)} · {sourceLook.content_digest}</p>}
           {sourceLook && <AutomationProfileSelector
             key={`source:${sourceLook.key}:${versionText(sourceLook.version)}:${sourceLook.content_digest}:${refreshKey}`}
@@ -521,7 +566,7 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
                   item.garment_key === key && item.source_state === sourceState
                 ))
                 return <div key={`${key}:${sourceState}`} style={{ display: 'grid', gap: 4, marginBottom: 6 }}>
-                  <label>
+                  <label className="automation-check">
                     <input
                       type="checkbox"
                       checked={Boolean(selectionValue)}
@@ -530,9 +575,9 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
                     />
                     Copy reviewed {sourceState} coverage for {sourceGarment?.wording || 'the selected garment'}: {REGIONS.map((region) => `${region} ${fact.regions[region]}`).join(', ')}
                   </label>
-                  {selectionValue && <label>
+                  {selectionValue && <label className="ui-field">
                     Equivalent target state for this source fact
-                    <select
+                    <select className="ui-control"
                       aria-label={`Target state for ${sourceGarment?.wording || key} ${sourceState} coverage`}
                       value={selectionValue.state}
                       onChange={(event) => setCopyTargetState(key, sourceState, event.target.value)}
@@ -548,27 +593,41 @@ export default function AutomationProfileEditor({ look, disabled = false }) {
               })}
             </div>
           })}
-          {sourceProfile && <button type="button" onClick={() => void previewCopy()} disabled={disabled || busy || copySelections.length === 0 || copySelections.some((item) => !item.state)}>Preview selected reviewed copy</button>}
+          {sourceProfile && <button className="ui-button" type="button" onClick={() => void previewCopy()} disabled={disabled || busy || copySelections.length === 0 || copySelections.some((item) => !item.state)}>Preview selected reviewed copy</button>}
           {copyPreview && <div className="panel" aria-label="Reviewed coverage copy preview">
             <p>Exact source profile: revision {versionText(copyPreview.source.profile_revision)} · {copyPreview.source.profile_digest}</p>
             <p>Selected mappings: {copyPreview.selections.map((item) => `${item.garment_key} · ${item.source_state} → ${item.state}`).join('; ')}</p>
             <p>Copied target states: {Object.entries(copyPreview.garment_coverage).flatMap(([key, states]) => Object.keys(states).map((state) => `${key} · ${state}`)).join('; ') || 'none'}</p>
             <p>Skipped facts: {copyPreview.skipped.map((item) => `${item.garment_key || 'baseline'} · ${item.source_state || item.state} → ${item.state}: ${item.code}`).join('; ') || 'none'}</p>
-            <label><input type="checkbox" checked={copyConfirmed} disabled={disabled || busy} onChange={(event) => setCopyConfirmed(event.target.checked)} /> I reviewed this exact copy preview and accept the unchanged facts and selected equivalences.</label>
-            <button type="button" onClick={applyCopyPreview} disabled={!copyConfirmed || disabled || busy}>Apply reviewed copy to draft</button>
+            <label className="automation-check"><input type="checkbox" checked={copyConfirmed} disabled={disabled || busy} onChange={(event) => setCopyConfirmed(event.target.checked)} /> I reviewed this exact copy preview and accept the unchanged facts and selected equivalences.</label>
+            <button className="ui-button" type="button" onClick={applyCopyPreview} disabled={!copyConfirmed || disabled || busy}>Apply reviewed copy to draft</button>
           </div>}
         </fieldset>
 
-        <label>
+        <section className="automation-publication" aria-label="Profile publication">
+        <h3 className="ui-section-title" ref={publishHeading} tabIndex={-1}>Review and publish</h3>
+        <p className="ui-help">Publishing stores the reviewed facts as a new revision. Unknown or incomplete facts can still block Full Auto; use the server diagnostics on the saved revision.</p>
+        {!canPublish && <ul className="automation-missing" aria-label="Profile publication requirements">
+          {!partitionValid && <li>Assign every appearance span to its exact owner.</li>}
+          {!baselineConfirmed && <li>Review the inventory-absent baseline.</li>}
+          {!inventoryConfirmed && <li>Explicitly review inventory completeness.</li>}
+          {!reviewConfirmed && <li>Confirm the complete draft review below.</li>}
+          {(disabled || busy) && <li>Wait for the active operation or resolve unsaved look changes.</li>}
+          {nextRevision > SQLITE_MAX && <li>The supported profile revision limit has been reached.</li>}
+        </ul>}
+        <label className="automation-check">
           <input type="checkbox" checked={reviewConfirmed} onChange={(event) => setReviewConfirmed(event.target.checked)} disabled={disabled || busy || !partitionValid || !baselineConfirmed || !inventoryConfirmed} />
           I reviewed ownership, every coverage state, the baseline and inventory for this exact saved-look version.
         </label>
-        {error && <p className="error" role="alert">{error}</p>}
+        {error && <div className="ui-notice" data-tone="error" role="alert" ref={errorRef} tabIndex={-1}>
+          <p>{error}</p><p>Draft facts are retained. If the outcome is uncertain, refresh saved revisions and inspect the saved facts. Refreshing does not publish or replace the draft. Confirm the complete draft review again before publishing.</p>
+        </div>}
         {notice && <p role="status">{notice}</p>}
-        <button type="button" className="primary" onClick={() => void publish()} disabled={!canPublish}>
-          {busy ? 'Saving profile…' : `Publish immutable profile revision ${nextRevision <= SQLITE_MAX ? nextRevision.toString() : 'unavailable'}`}
+        <button type="button" className="ui-button ui-button--primary" onClick={() => void publish()} disabled={!canPublish}>
+          {busy ? 'Working…' : `Publish immutable profile revision ${nextRevision <= SQLITE_MAX ? nextRevision.toString() : 'unavailable'}`}
         </button>
         {latestRevision !== '0' && <p className="muted">Current latest revision for CAS: {latestRevision}. Editing an older revision still publishes after the latest.</p>}
+        </section>
       </div>
     </details>
   )

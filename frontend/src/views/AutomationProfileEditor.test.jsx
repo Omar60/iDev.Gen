@@ -97,6 +97,46 @@ afterEach(async () => {
 })
 
 describe('reusable automation profile editor', () => {
+  it('retains draft facts through publication errors, revision refresh and section navigation', async () => {
+    let latest = 1
+    const get = vi.spyOn(api, 'getVersioned').mockImplementation(async (path) => (
+      path.includes('look_key=') ? sourceProfile : { ...discovery, latest_profile_revision: latest }
+    ))
+    const post = vi.spyOn(api, 'postVersioned').mockRejectedValue(new TypeError('Publication response lost'))
+    mount()
+    const button = (name) => [...container.querySelectorAll('button')].find((item) => item.textContent.trim() === name)
+    await click(container.querySelector('summary'))
+    await selectValue(container.querySelector('[aria-label="Profile revision to use as an editing basis"]'), '1')
+    await click(button('Load selected revision as editing basis'))
+    const baseline = container.querySelector('[aria-label="Baseline · every listed garment absent feet"]')
+    await selectValue(baseline, 'full')
+    await setChecked([...container.querySelectorAll('label')].find((item) => item.textContent.includes('I reviewed ownership, every coverage state')).querySelector('input'))
+    await click(button('Publish immutable profile revision 2'))
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(document.activeElement.getAttribute('role')).toBe('alert')
+    expect(document.activeElement.textContent).toContain('Publication response lost')
+    expect(baseline.value).toBe('full')
+    expect([...container.querySelectorAll('label')].find((item) => item.textContent.includes('I reviewed ownership, every coverage state')).querySelector('input').checked).toBe(false)
+    const reads = get.mock.calls.length
+    latest = 2
+    await click(button('Refresh saved revisions'))
+    expect(get.mock.calls.length).toBe(reads + 1)
+    expect(baseline.value).toBe('full')
+    expect(post).toHaveBeenCalledTimes(1)
+    await click(button('Review draft facts'))
+    expect(document.activeElement.textContent).toBe('Draft facts and review')
+    expect(container.querySelector('[aria-label="Baseline · every listed garment absent feet"]')).toBe(baseline)
+    await click(button('Go to publication'))
+    expect(document.activeElement.textContent).toBe('Review and publish')
+    expect(button('Publish immutable profile revision 3').disabled).toBe(true)
+    await selectValue(container.querySelector('[aria-label="Profile revision to use as an editing basis"]'), '1')
+    expect(container.querySelector('[aria-label="Selected saved profile facts"]').textContent).toContain('feet: none')
+    expect(baseline.value).toBe('full')
+    expect(post).toHaveBeenCalledTimes(1)
+    await setChecked([...container.querySelectorAll('label')].find((item) => item.textContent.includes('I reviewed ownership, every coverage state')).querySelector('input'))
+    expect(button('Publish immutable profile revision 3').disabled).toBe(false)
+  })
+
   it('previews and confirms permanent/no-coverage shortcuts, then publishes explicit structured facts', async () => {
     vi.spyOn(api, 'getVersioned').mockResolvedValue({
       ...discovery, latest_profile_revision: 0, profiles: [],
