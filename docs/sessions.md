@@ -2897,3 +2897,34 @@ authorization allowances, blockers and scope comparisons. Targets and partial
 results remain available in the native disclosure. Unknown-outcome risk consent,
 exact-request replay and cancellation reconciliation retain their existing
 explicit operations; this presentation does not add automatic recovery or consent.
+
+## Studio session gallery and photo viewer
+
+The gallery keeps the session's shooting order and existing All, Without rejects
+and Picks only filters. Picks still means rating 4 or higher without rejection;
+export and contact-sheet thresholds are unchanged. Previews fit complete images
+inside 3:4 frames, with letterboxing when needed. Image loading and missing files
+have distinct presentation; missing images do not remove shot records.
+
+Ratings use labelled buttons. Selecting the current rating clears it to zero.
+Photo actions groups reference selection, continuation, variation, same-seed
+tweaks, rejection/restoration, reshoot and deletion. Rejection keeps the record;
+deletion removes it. Their existing confirmation and backend guards remain in
+place, including the warning that deleting a judged photo does not erase its
+counted answer. An action in flight disables competing mutations on that photo.
+Errors retain the photo and use the existing session error message. Inspect the
+current state before an explicit retry; the UI does not replay uncertain actions
+automatically.
+
+The viewer navigates only finished photos in the current filtered order. It
+retains full prompt, seed and filename details. Previous/Next buttons and arrow
+keys navigate; range keys control only the comparison split. Escape, Close or a
+backdrop click dismiss the native modal and restore focus to its opener (or the
+gallery heading if that opener disappeared). The background stays inert and its
+scroll is locked while the viewer is open; long metadata scrolls inside it.
+
+Clone comparisons keep their existing take identity matching and seed-difference
+warning. Otherwise, edits compare against their recorded reference photo rather
+than the session's current reference. The split is an intentional comparison
+reveal; each source image still fits in full. Changing photos, opening/closing the
+viewer and retrying an image download do not queue generation or modify records.

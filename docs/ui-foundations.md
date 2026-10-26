@@ -169,3 +169,15 @@ identities to wrap without changing their values. Progress counts remain separat
 from authorization and allowances; they do not imply a percentage of the entire
 Full Auto journey. Navigation, the first three editors, Legacy and gallery styles
 are outside this scope.
+
+### Session photographs and viewer
+
+`SessionGallery.css` scopes the photo grid, labelled ratings, native action
+disclosures and viewer to SessionView. Complete images use `object-fit: contain`
+in reserved 3:4 thumbnail frames. The viewer bounds its width by the available
+viewport including padding, uses its own vertical scroll and keeps image aspect
+ratios intact. Native modal semantics provide background isolation; explicit Tab
+wrapping, Escape and focus restoration support keyboard operation. Gallery
+selection and mutation handlers remain in SessionView; the viewer only selects
+photos and comparison positions. Navigation, stage editors, execution panels and
+other galleries do not inherit these styles.

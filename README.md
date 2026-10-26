@@ -798,6 +798,12 @@ The studio Review table supports keyboard horizontal scrolling on mobile;
 Full Auto shows progress separately from authorization allowances and explicit
 recovery controls. Prepare, Approve Review, Submit and Run remain distinct actions.
 
+Session photographs use complete-image previews in 3:4 frames. Open a photo to
+inspect it in a keyboard-accessible viewer with Previous/Next, Escape and explicit
+Close controls. Photo actions retain separate rating, reference, variation,
+rejection, reshoot and deletion operations; reshoot and deletion still confirm
+their consequences before sending a request.
+
 Plan-level resource field markers identify descriptive inputs used during
 preparation; they are informational and do not establish a semantic conflict.
 They remain visible after approval. When markers are present, **Proceed to

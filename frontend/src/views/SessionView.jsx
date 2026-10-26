@@ -6,6 +6,8 @@ import '../ui/foundations.css'
 import './SessionNavigation.css'
 import './SessionEditors.css'
 import './SessionExecution.css'
+import './SessionGallery.css'
+import SessionPhotoViewer, { SessionPhoto } from './SessionPhotoViewer.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
@@ -452,6 +454,20 @@ export default function SessionView({
   const fullAutoDuplicateReviewRef = useRef(null)
   const [filter, setFilter] = useState('all')
   const [zoom, setZoom] = useState(null)
+  const galleryTitleRef = useRef(null)
+  const photoPendingRef = useRef(new Set())
+  const [photoPending, setPhotoPending] = useState([])
+  useEffect(() => { setZoom(null) }, [id])
+  const photoAction = async (shot, action) => {
+    const key = `${id}:${shot.id}`
+    if (photoPendingRef.current.has(key)) return
+    photoPendingRef.current.add(key)
+    setPhotoPending([...photoPendingRef.current])
+    try { await action() } finally {
+      photoPendingRef.current.delete(key)
+      setPhotoPending([...photoPendingRef.current])
+    }
+  }
   const [split, setSplit] = useState(50)
   const [adding, setAdding] = useState(null)
   // The wardrobe the add-shots panel is working from. Its own state because it is
@@ -2743,7 +2759,7 @@ export default function SessionView({
     }
     // The new session starts with no look and no takes: the look belongs to the
     // shoot that produced the photo, and an edit take carries none anyway.
-    call(async () => {
+    return call(async () => {
       const { id: sid } = await api.post('/api/sessions', {
         model_id: s.model_id, name: `${s.name} — ${KINDS[k].label}`,
         workflow_id: s.workflow_id, reference_workflow_id: refWfFor(k) || null,
@@ -5243,7 +5259,7 @@ export default function SessionView({
       )}
 
       {(!isResource || (canPreparePlan({ plan, planRevision }) && activeStep === 'generation')) && (
-        <div className="row" style={{ margin: '10px 0' }}>
+        <div className="row studio-ui session-gallery-toolbar" aria-label="Gallery filters and exports" style={{ margin: '10px 0' }}>
           <div className="progress"><div style={{ width: `${(done / Math.max(1, s.shots.length)) * 100}%` }} /></div>
           <span className="muted">{done}/{s.shots.length} done{failed ? ` · ${failed} failed` : ''}</span>
           <span className="spacer" style={{ flex: 1 }} />
@@ -5252,7 +5268,7 @@ export default function SessionView({
               that. Picking one turns every photo that has a twin into a
               before/after wipe in the lightbox. */}
           {family.length > 0 && (
-            <select style={{ width: 'auto' }} value={twinId}
+            <select aria-label="Compare session copy" style={{ width: 'auto' }} value={twinId}
                     title="Compare with a copy of this session — same takes, same seeds, other base model"
                     onChange={(e) => setTwinId(Number(e.target.value))}>
               <option value={0}>Compare with…</option>
@@ -5261,7 +5277,7 @@ export default function SessionView({
               ))}
             </select>
           )}
-          <select style={{ width: 'auto' }} value={filter} onChange={(e) => setFilter(e.target.value)}>
+          <select aria-label="Photo filter" style={{ width: 'auto' }} value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="all">All</option>
             <option value="keep">Without rejects</option>
             <option value="picks">Picks only (4★+)</option>
@@ -5749,22 +5765,28 @@ export default function SessionView({
 
       {(!isResource || (canPreparePlan({ plan, planRevision }) && activeStep === 'generation')) && (
         <>
+          <section className="studio-ui session-gallery" aria-labelledby="session-gallery-title">
+          <div className="photo-gallery-heading"><h2 ref={galleryTitleRef} id="session-gallery-title" tabIndex={-1} className="ui-section-title">Session photographs</h2>
+            <span className="ui-help">{shots.length} shown · {s.shots.length} total</span></div>
           {shots.length > 0 ? (
             <div className="shots">
               {shots.map((shot) => (
                 <div className={'shot' + (shot.rejected ? ' rejected' : '')
-                                + (anchors.includes(shot.id) ? ' is-anchor' : '')} key={shot.id}>
+                                + (anchors.includes(shot.id) ? ' is-anchor' : '')} key={shot.id} aria-busy={photoPending.includes(`${id}:${shot.id}`)}>
                   {shot.status === 'done'
-                    ? <img src={shotImage(shot.id)} alt={shot.shot_label} loading="lazy" onClick={() => setZoom(shot)} />
+                    ? <button type="button" className="photo-open" aria-label={`Open photo: ${shot.shot_label || `Shot #${shot.id}`}`} onClick={() => setZoom(shot)}>
+                        <SessionPhoto key={shot.id} shotId={shot.id} alt={shot.shot_label || `Shot #${shot.id}`} lazy />
+                      </button>
                     : <div className="ph">
-                        {shot.status === 'running' ? '⏳ generating…'
-                          : shot.status === 'pending' ? '· queued'
-                            : `⚠ ${shot.error || shot.status}`}
+                        <strong>{shot.status === 'running' ? 'Generating…'
+                          : shot.status === 'pending' ? 'Queued'
+                            : shot.status === 'cancelled' ? 'Cancelled' : 'Photo unavailable'}</strong>
+                        {shot.error && <span>{shot.error}</span>}
                         {shot.status === 'pending' && !!shot.use_reference && (
-                          <select className="guide" disabled={sessionSettingsLocked}
+                          <select className="guide" aria-label={`Reference for shot ${shot.id}`} disabled={sessionSettingsLocked || photoPending.includes(`${id}:${shot.id}`)}
                                   value={(shot.reference_shot_ids || [])[0] || ''}
                                   title="The photograph that guides this take. Follows the session's 📎 pick unless you name one here."
-                                  onChange={(e) => guideWith(shot, e.target.value)}>
+                                  onChange={(e) => photoAction(shot, () => guideWith(shot, e.target.value))}>
                             <option value="">📎 session's pick</option>
                             {s.shots.filter((x) => x.status === 'done').map((x) => (
                               <option key={x.id} value={x.id}>{x.shot_label || `shot ${x.id}`}</option>
@@ -5773,27 +5795,30 @@ export default function SessionView({
                         )}
                       </div>}
                   <div className="bar">
-                    <div className="stars">
+                    <div className="stars" role="group" aria-label={`Rate shot ${shot.id}`}>
                       {[1, 2, 3, 4, 5].map((n) => (
-                        <span key={n} className={'star' + (shot.rating >= n ? ' on' : '')} onClick={() => rate(shot, n)}>★</span>
+                        <button type="button" key={n} className={'star' + (shot.rating >= n ? ' on' : '')}
+                          aria-label={`Rate shot ${shot.id} ${n} of 5; click current rating to clear`} aria-pressed={shot.rating === n}
+                          disabled={fullAutoMutationLocked || photoPending.includes(`${id}:${shot.id}`)}
+                          onClick={() => photoAction(shot, () => rate(shot, n))}>★</button>
                       ))}
                     </div>
-                    <span className="spacer" style={{ flex: 1 }} />
+                    <details className="photo-actions"><summary>Photo actions</summary><div className="photo-action-list">
                     {shot.status === 'done' && (
                       <>
-                        <button className="icon" onClick={() => toggleAnchor(shot)}
+                        <button className="icon" aria-label={`Reference photo ${shot.id}`} aria-pressed={anchors.includes(shot.id)} disabled={fullAutoMutationLocked || photoPending.includes(`${id}:${shot.id}`)} onClick={() => photoAction(shot, () => toggleAnchor(shot))}
                                 title={anchors.includes(shot.id)
                                   ? 'Stop using this photo as the reference'
                                   : 'Use as the reference — takes marked ref will edit this photo'}>
-                          {anchors.includes(shot.id) ? '📌' : '📎'}
+                          {anchors.includes(shot.id) ? 'Unpin reference' : 'Pin reference'}
                         </button>
                         {/* A native menu on purpose: a popover would need its own
                             dismiss, focus and z-index for six items the browser
                             already knows how to show. */}
-                        <select className="continue" value="" disabled={sessionSettingsLocked}
+                        <select className="continue" aria-label={`Continue with photo ${shot.id}`} value="" disabled={sessionSettingsLocked || photoPending.includes(`${id}:${shot.id}`)}
                                 title="Continue with this photo — as the reference of this session, or of a new one"
-                                onChange={(e) => continueWith(shot, e.target.value)}>
-                          <option value="">→</option>
+                                onChange={(e) => photoAction(shot, () => continueWith(shot, e.target.value))}>
+                          <option value="">Continue…</option>
                           <optgroup label="Continue here">
                             {continuations.map(([k, spec]) => (
                               <option key={k} value={`here:${k}`}>{spec.label}</option>
@@ -5807,25 +5832,25 @@ export default function SessionView({
                         </select>
                       </>
                     )}
-                    <button className="icon" title="More like this — same prompt, new seeds"
-                            onClick={() => moreLikeThis(shot)}>⟳</button>
-                    <button className="icon"
+                    <button className="icon" aria-label={`More like photo ${shot.id}`} title="More like this — same prompt, new seeds"
+                            onClick={() => moreLikeThis(shot)}>More like this</button>
+                    <button className="icon" aria-label={`Tweak photo ${shot.id} on the same seed`}
                             title={shot.use_reference
                               ? 'Strength sweep — this prompt and seed at 1.0 / 1.5 / 2.0 / 3.0, so the only difference you see is the dial'
                               : 'Tweak on this same seed — edit the prompt, compare the change'}
-                            onClick={() => reshootSameSeed(shot)}>⚖</button>
+                            onClick={() => reshootSameSeed(shot)}>{shot.use_reference ? 'Strength sweep' : 'Tweak same seed'}</button>
                     {shot.status === 'done' && (
-                      <button className="icon"
+                      <button className="icon photo-destructive" aria-label={`Reshoot photo ${shot.id}`} disabled={fullAutoManualDispatchLocked || photoPending.includes(`${id}:${shot.id}`)}
                               title="Reshoot — this photo is deleted and the take goes back in the queue with a new seed"
                               onClick={() => {
                                 if (confirm(`Delete this photo and shoot "${shot.shot_label}" again?`)) {
-                                  manualDispatch(() => api.post(`/api/shots/${shot.id}/reshoot`))
+                                  photoAction(shot, () => manualDispatch(() => api.post(`/api/shots/${shot.id}/reshoot`)))
                                 }
-                              }}>↺</button>
+                              }}>Reshoot</button>
                     )}
-                    <button className="icon" title={shot.rejected ? 'Restore' : 'Reject'}
-                            onClick={() => call(() => api.patch(`/api/shots/${shot.id}`, { rejected: !shot.rejected }))}>
-                      {shot.rejected ? '↩' : '✕'}
+                    <button className="icon" aria-label={`${shot.rejected ? 'Restore' : 'Reject'} photo ${shot.id}`} disabled={fullAutoMutationLocked || photoPending.includes(`${id}:${shot.id}`)} title={shot.rejected ? 'Restore' : 'Reject'}
+                            onClick={() => photoAction(shot, () => call(() => api.patch(`/api/shots/${shot.id}`, { rejected: !shot.rejected })))}>
+                      {shot.rejected ? 'Restore' : 'Reject'}
                     </button>
                     {/* Delete, as opposed to Reject: the row and the file go, and
                         nothing takes their place. The cell counts are NOT touched -
@@ -5833,18 +5858,23 @@ export default function SessionView({
                         the confirm says so rather than the button quietly corrupting
                         a measurement. Reject is the one that takes a photograph out
                         of a judging pass and leaves the evidence where it is. */}
-                    <button className="icon" title="Delete this photo"
+                    <button className="icon photo-destructive" aria-label={`Delete photo ${shot.id}`} disabled={fullAutoMutationLocked || photoPending.includes(`${id}:${shot.id}`)} title="Delete this photo"
                             onClick={() => {
                               const judged = !!shot.verdicts
                               if (confirm(judged
                                 ? 'This photo has already been judged and its answer stays counted in the cell. Delete it anyway?'
                                 : 'Delete this photo?')) {
-                                call(() => api.del(`/api/shots/${shot.id}`))
+                                photoAction(shot, () => call(() => api.del(`/api/shots/${shot.id}`)))
                               }
-                            }}>🗑</button>
+                            }}>Delete photo</button>
+                    </div></details>
                   </div>
-                  <div className="muted" style={{ padding: '0 6px 6px', fontSize: 11 }} title={shot.prompt}>
-                    {shot.shot_label} · seed {shot.seed}
+                  <div className="muted photo-metadata" title={shot.prompt}>
+                    <strong className="photo-label">{shot.shot_label || `Shot #${shot.id}`}</strong>
+                    <span>Shot #{shot.id} · {shot.status} · seed {shot.seed ?? 'not assigned'}</span>
+                    {shot.rejected && <span className="ui-state" data-tone="warning">Rejected</span>}
+                    {anchors.includes(shot.id) && <span className="ui-state">Reference</span>}
+                    {photoPending.includes(`${id}:${shot.id}`) && <span role="status">Saving photo action…</span>}
                     {/* Which photos the picked copy actually has a twin for: one that
                         has not been shot there yet, or was reshot on a new seed, is
                         not comparable and says so instead of opening a plain photo. */}
@@ -5858,72 +5888,34 @@ export default function SessionView({
           ) : (
             <div className={isResource ? 'panel' : ''} style={isResource ? { textAlign: 'center', padding: '32px 16px', margin: '14px 0' } : undefined}>
               <p className="muted" style={{ margin: isResource ? '0 0 6px' : undefined }}>
-                {isResource && s.shots.length === 0
+                {s.shots.length === 0
                   ? 'No photos have been generated for this session yet.'
                   : 'Nothing to show with this filter.'}
               </p>
-              {isResource && s.shots.length === 0 && (
+              {s.shots.length === 0 && (
                 <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-                  {pending > 0
-                    ? 'Click Run in the top bar to start shooting.'
+                  {!isResource ? 'Add takes or import a photo using the session actions above.'
+                    : pending > 0 ? 'Click Run in the top bar to start shooting.'
                     : 'Complete preparation and review. Takes must be materialized as pending shots before running.'}
                 </p>
               )}
             </div>
           )}
+          </section>
         </>
       )}
 
-      {zoom && (
-        <div className="lightbox" onClick={() => setZoom(null)}>
-          <div>
-            {/* The same wipe the reference comparison uses, on the same frame,
-                for the same reason: two models rarely differ by more than a face
-                and a fabric, and that difference is invisible when the eye has
-                to travel between two pictures. A picked twin wins over the
-                reference view — it is the comparison that was asked for. */}
-            {twin && twinOf(zoom)
-              ? <div onClick={(e) => e.stopPropagation()}>
-                  <div className="compare" style={{ '--split': `${split}%` }}>
-                    <img src={shotImage(zoom.id)} alt="" />
-                    <img className="before" src={shotImage(twinOf(zoom).id)} alt="" />
-                    <span className="handle" />
-                  </div>
-                  <input type="range" min="0" max="100" value={split}
-                         onChange={(e) => setSplit(Number(e.target.value))} />
-                  <div className="meta">
-                    ← {shotWith(twin)} · {shotWith(s)} →
-                    {/* One of the two was reshot, so the noise differs as well
-                        as the model. Still worth comparing — same take, same
-                        prompt — but it is no longer the model alone, and a wipe
-                        that does not say so reads as if it were. */}
-                    {twinOf(zoom).seed !== zoom.seed && (
-                      <><br />seed {twinOf(zoom).seed} vs {zoom.seed} — one side was reshot,
-                        so the noise differs too, not only the model</>
-                    )}
-                  </div>
-                </div>
-              : before(zoom)
-              // Before/after on one image rather than two side by side: an edit
-              // that only moves a collar is invisible when the eye has to travel
-              // between two frames.
-              ? <div onClick={(e) => e.stopPropagation()}>
-                  <div className="compare" style={{ '--split': `${split}%` }}>
-                    <img src={shotImage(zoom.id)} alt="" />
-                    <img className="before" src={shotImage(before(zoom))} alt="" />
-                    <span className="handle" />
-                  </div>
-                  <input type="range" min="0" max="100" value={split}
-                         onChange={(e) => setSplit(Number(e.target.value))} />
-                  <div className="meta">
-                    ← reference (shot {before(zoom)}) · this edit →
-                  </div>
-                </div>
-              : <img src={shotImage(zoom.id)} alt="" />}
-            <div className="meta">{zoom.prompt}<br />seed {zoom.seed} · {zoom.filename}</div>
-          </div>
-        </div>
-      )}
+      {zoom && <SessionPhotoViewer key={id} selectedId={zoom.id}
+        photos={shots.filter((shot) => shot.status === 'done')} onSelect={setZoom} onClose={() => setZoom(null)}
+        split={split} onSplit={setSplit} fallbackFocus={galleryTitleRef}
+        comparisonFor={(photo) => {
+          const copy = twin && twinOf(photo)
+          if (copy) return { id: copy.id, label: `← ${shotWith(twin)} · ${shotWith(s)} →`,
+            warning: copy.seed !== photo.seed ? `Seed ${copy.seed} vs ${photo.seed} — one side was reshot, so the noise differs too, not only the model.` : '' }
+          const reference = before(photo)
+          return reference ? { id: reference, label: `← reference (shot ${reference}) · this edit →` } : null
+        }} />}
+
     </>
   )
 }
