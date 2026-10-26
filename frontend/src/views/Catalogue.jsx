@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { api } from '../api.js'
 import { setCatalogue, ALL_MANNERS } from '../kinds.js'
 import { setWardrobe } from '../wardrobe.js'
+import '../ui/foundations.css'
+import './Catalogue.css'
 
 export default function Catalogue() {
   const [components, setComponents] = useState([])
@@ -12,6 +14,36 @@ export default function Catalogue() {
   const [slotFilter, setSlotFilter] = useState('camera')
   const [mannerFilter, setMannerFilter] = useState('directed')
   const [showRetired, setShowRetired] = useState(false)
+  const [query, setQuery] = useState('')
+  const active = useRef(true)
+  const componentRequest = useRef(0)
+  const readingRequest = useRef(0)
+  const wardrobeRequest = useRef(0)
+  const readingScope = useRef({ slot: slotFilter, manner: mannerFilter })
+  readingScope.current = { slot: slotFilter, manner: mannerFilter }
+  const [readingLoading, setReadingLoading] = useState(true)
+  const [loadedReadingScope, setLoadedReadingScope] = useState('')
+  const [wardrobeLoading, setWardrobeLoading] = useState(true)
+  const [wardrobeLoaded, setWardrobeLoaded] = useState(false)
+  const pendingRef = useRef(new Set())
+  const [pending, setPending] = useState([])
+  const dialogRef = useRef(null)
+  const addButtonRef = useRef(null)
+  const formErrorRef = useRef(null)
+  const runAction = async (key, action) => {
+    if (pendingRef.current.has(key)) return
+    pendingRef.current.add(key)
+    setPending([...pendingRef.current])
+    try { await action() } finally {
+      pendingRef.current.delete(key)
+      if (active.current) setPending([...pendingRef.current])
+    }
+  }
+  const jumpTo = (section) => {
+    const heading = document.getElementById(`catalogue-${section}-title`)
+    heading?.focus({ preventScroll: true })
+    heading?.scrollIntoView({ block: 'start' })
+  }
 
   // Add / Edit form modal state
   const [editing, setEditing] = useState(null) // null or component dict or {} for new
@@ -39,41 +71,57 @@ export default function Catalogue() {
   const [wardrobeError, setWardrobeError] = useState(null)
 
   const loadComponents = async () => {
+    const request = ++componentRequest.current
     setLoading(true)
     setError(null)
     try {
       const data = await api.get('/api/components?all=1')
-      setComponents(data || [])
+      if (request !== componentRequest.current) return
       setCatalogue(data || [])
+      if (active.current) setComponents(data || [])
     } catch (err) {
-      setError(err.message || 'Failed to load components')
+      if (active.current && request === componentRequest.current) setError(err.message || 'Failed to load components')
     } finally {
-      setLoading(false)
+      if (active.current && request === componentRequest.current) setLoading(false)
     }
   }
 
   const loadBaseReadings = async () => {
+    const { slot, manner } = readingScope.current
+    const scope = `${slot}:${manner}`
+    const request = ++readingRequest.current
+    const current = () => active.current && request === readingRequest.current
+      && scope === `${readingScope.current.slot}:${readingScope.current.manner}`
+    setReadingLoading(true)
     setReadingError(null)
     try {
-      const data = await api.get(`/api/readings?slot=${slotFilter}&manner=${mannerFilter}`)
+      const data = await api.get(`/api/readings?slot=${slot}&manner=${manner}`)
+      if (!current()) return
       setBaseReadings(data || [])
+      setLoadedReadingScope(scope)
     } catch (err) {
-      setReadingError(err.message || 'Failed to load readings')
+      if (current()) setReadingError(err.message || 'Failed to load readings')
+    } finally {
+      if (current()) setReadingLoading(false)
     }
   }
 
-  // The wardrobe is a store with no screen of its own: the outfit picker in a
-  // session reads it out of `wardrobe.js`, which the app fills once at startup.
-  // Loading it here refills that module store too, so an import lands in the
-  // picker without a reload.
   const loadWardrobe = async () => {
+    const request = ++wardrobeRequest.current
+    setWardrobeLoading(true)
     setWardrobeError(null)
     try {
       const data = await api.get('/api/wardrobe')
-      setWardrobeRows({ garments: data?.garments || [], outfits: data?.outfits || [] })
+      if (request !== wardrobeRequest.current) return
       setWardrobe(data)
+      if (active.current) {
+        setWardrobeRows({ garments: data?.garments || [], outfits: data?.outfits || [] })
+        setWardrobeLoaded(true)
+      }
     } catch (err) {
-      setWardrobeError(err.message || 'Failed to load wardrobe')
+      if (active.current && request === wardrobeRequest.current) setWardrobeError(err.message || 'Failed to load wardrobe')
+    } finally {
+      if (active.current && request === wardrobeRequest.current) setWardrobeLoading(false)
     }
   }
 
@@ -103,8 +151,10 @@ export default function Catalogue() {
   }
 
   useEffect(() => {
+    active.current = true
     loadComponents()
     loadWardrobe()
+    return () => { active.current = false; readingRequest.current++ }
   }, [])
 
   useEffect(() => {
@@ -127,19 +177,20 @@ export default function Catalogue() {
       setNewReadingLabel('')
       await loadBaseReadings()
     } catch (err) {
-      setReadingError(err.message || 'Failed to add reading')
+      setReadingError(`Reading ${newReadingKey.trim()} (${slotFilter} · ${mannerFilter}): ${err.message || 'Failed to add reading'}`)
     } finally {
       setReadingSaving(false)
     }
   }
 
   const handleDeleteBaseReading = async (readingId) => {
+    if (!confirm(`Delete base reading #${readingId}? Readings referenced by stored answers cannot be deleted.`)) return
     setReadingError(null)
     try {
-      await api.delete(`/api/readings/${readingId}`)
+      await api.del(`/api/readings/${readingId}`)
       await loadBaseReadings()
     } catch (err) {
-      setReadingError(err.message || 'Failed to delete reading')
+      setReadingError(`Reading #${readingId}: ${err.message || 'Failed to delete reading'}`)
     }
   }
 
@@ -231,9 +282,10 @@ export default function Catalogue() {
   }
 
   const handleDelete = async (id) => {
+    if (!confirm(`Delete component #${id}? This permanently removes an unmeasured component. Measured components must be retired instead.`)) return
     setError(null)
     try {
-      await api.delete(`/api/components/${id}`)
+      await api.del(`/api/components/${id}`)
       await loadComponents()
     } catch (err) {
       setError(err.message || 'Failed to delete component')
@@ -244,362 +296,195 @@ export default function Catalogue() {
     if (slotFilter && c.slot !== slotFilter) return false
     if (mannerFilter && c.manner !== mannerFilter) return false
     if (!showRetired && c.retired_at) return false
+    const text = query.trim().toLowerCase()
+    if (text && ![c.id, c.concept_key, c.family, c.faces, c.wording, c.judge_label, ...(c.cameras || [])]
+      .some((value) => String(value ?? '').toLowerCase().includes(text))) return false
     return true
   })
 
+  const editorOpen = Boolean(editing)
+  useEffect(() => {
+    if (!editorOpen) return
+    const trigger = document.activeElement
+    const overflow = document.body.style.overflow
+    const dialog = dialogRef.current
+    dialog.showModal()
+    document.body.style.overflow = 'hidden'
+    return () => {
+      dialog.close()
+      document.body.style.overflow = overflow
+      if (trigger?.isConnected) trigger.focus()
+      else addButtonRef.current?.focus()
+    }
+  }, [editorOpen])
+  useEffect(() => { if (formError) formErrorRef.current?.focus() }, [formError])
+
+  const visibleReadings = loadedReadingScope === `${slotFilter}:${mannerFilter}` ? baseReadings : []
+  const editField = (field, value) => setFormValues((previous) => ({ ...previous, [field]: value }))
   return (
-    <div className="catalogue-view" style={{ maxWidth: 1080, margin: '20px auto', padding: '0 16px' }}>
-      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <h2 style={{ margin: 0 }}>Component Catalogue</h2>
-          <p className="muted" style={{ margin: '4px 0 0', fontSize: 13 }}>
-            Prompt components stored in SQLite for camera positions, acts, and framing.
-          </p>
-        </div>
-        <div className="row" style={{ gap: 8 }}>
-          <button className="primary" onClick={openAdd}>+ Add Component</button>
-          <button onClick={handleImport}>Import Measured Seed</button>
-        </div>
-      </div>
-
-      {error && <div className="error" style={{ marginBottom: 14 }}>{error}</div>}
-      {notice && <div className="notice" style={{ marginBottom: 14, background: 'var(--panel)', padding: '8px 14px', borderRadius: 4 }}>{notice}</div>}
-
-      <div className="row panel" style={{ gap: 16, alignItems: 'center', marginBottom: 16, padding: '10px 14px' }}>
-        <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-          <label style={{ fontSize: 13, fontWeight: 500 }}>Slot:</label>
-          <select value={slotFilter} onChange={(e) => setSlotFilter(e.target.value)}>
-            <option value="camera">camera</option>
-            <option value="act">act</option>
-            <option value="framing">framing</option>
-          </select>
-        </div>
-
-        <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-          <label style={{ fontSize: 13, fontWeight: 500 }}>Manner:</label>
-          {/* `ALL_MANNERS` and not `MANNERS`: this screen lists the rows that
-              EXIST, and a manner a session cannot be started in still holds
-              components - the mined `pov` rows are 74 of them. Typed out as
-              three literal options it was a second copy of the manner list, and
-              the day `pov` was added the screen quietly could not show it. */}
-          <select value={mannerFilter} onChange={(e) => setMannerFilter(e.target.value)}>
-            {ALL_MANNERS.map((m) => (
-              <option key={m.key} value={m.key}>{m.key}</option>
-            ))}
-          </select>
-        </div>
-
-        <label className="row" style={{ gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={showRetired}
-            onChange={(e) => setShowRetired(e.target.checked)}
-          />
-          Show retired components
-        </label>
-      </div>
-
-      {loading ? (
-        <p className="muted">Loading components...</p>
-      ) : filtered.length === 0 ? (
-        <div className="panel" style={{ textAlign: 'center', padding: '30px 20px' }}>
-          <p className="muted" style={{ margin: '0 0 12px' }}>
-            No components found for slot <b>{slotFilter}</b> and manner <b>{mannerFilter}</b>.
-          </p>
-          <button onClick={handleImport}>Import Measured Catalogue</button>
-        </div>
-      ) : (
-        <div style={{ display: 'grid', gap: 10 }}>
-          {filtered.map((c) => (
-            <div key={c.id} className="panel" style={{ opacity: c.retired_at ? 0.6 : 1, padding: 14 }}>
-              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div>
-                  <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 4 }}>
-                    <b style={{ fontSize: 15 }}>{c.concept_key}</b>
-                    <span className="badge">{c.slot} · {c.manner}</span>
-                    {c.family && <span className="badge muted">family: {c.family}</span>}
-                    {c.faces && <span className="badge muted">faces: {c.faces}</span>}
-                    {c.cameras?.length > 0 && (
-                      <span className="badge muted">cameras: {c.cameras.join(', ')}</span>
-                    )}
-                    {c.retired_at && <span className="badge failed">retired</span>}
-                  </div>
-                  <div style={{ margin: '4px 0', fontSize: 14 }}>
-                    <span className="muted">Prompt wording: </span>
-                    <span>{c.wording}</span>
-                  </div>
-                  <div style={{ margin: '4px 0', fontSize: 14 }}>
-                    <span className="muted">Judge label: </span>
-                    <span style={{ color: 'var(--accent)' }}>{c.judge_label}</span>
-                  </div>
-                  {/* The evidence, and `contradicted` said out loud beside the
-                      rest of it. A photograph that failed because the body and
-                      the camera disagree is a different finding from one that
-                      rendered some other component, and merging them into a
-                      single miss count is how the same defect gets measured
-                      twice. */}
-                  <div className="row" style={{ gap: 6, marginTop: 6, alignItems: 'center' }}>
-                    <span className="muted" style={{ fontSize: 12 }}>Evidence:</span>
-                    {c.judged > 0 ? (
-                      <>
-                        <span className="badge">{c.state}</span>
-                        <span className="badge muted">
-                          arrived {c.arrived} of {c.judged}
-                        </span>
-                        {c.contradicted > 0 && (
-                          <span
-                            className="badge failed"
-                            title="Misses the judge recorded as the body and the camera contradicting each other, not as some other component"
-                          >
-                            {c.contradicted} contradicted
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      <span className="badge muted" title="No photograph has been judged against this component yet">
-                        not measured
-                      </span>
-                    )}
+    <div className="studio-ui ui-page catalogue-view">
+      <header className="ui-page-header">
+        <h1 className="ui-page-title">Catalogue</h1>
+        <p className="ui-lead">Manage prompt components, judging vocabulary and wardrobe seeds.</p>
+      </header>
+      <nav className="ui-actions catalogue-jumps" aria-label="Catalogue sections">
+        <button className="ui-button" onClick={() => jumpTo('components')}>Components</button>
+        <button className="ui-button" onClick={() => jumpTo('readings')}>Base readings</button>
+        <button className="ui-button" onClick={() => jumpTo('wardrobe')}>Wardrobe</button>
+      </nav>
+      <div className="ui-stack">
+        <section aria-labelledby="catalogue-components-title" className="ui-stack">
+          <div className="catalogue-heading">
+            <div><h2 id="catalogue-components-title" tabIndex={-1} className="ui-section-title">Prompt components</h2>
+              <p className="ui-help">Camera positions, acts and framing. Evidence stays distinct from prompt wording.</p></div>
+            <div className="ui-actions">
+              <button ref={addButtonRef} className="ui-button ui-button--primary" onClick={openAdd}>Add component</button>
+              <button className="ui-button" disabled={pending.includes('components-import')}
+                onClick={() => runAction('components-import', handleImport)}>
+                {pending.includes('components-import') ? 'Importing…' : 'Import measured seed'}</button>
+            </div>
+          </div>
+          {error && <div className="ui-notice" data-tone="error" role="alert">{error}
+            <p className="ui-help">Existing data stays visible when available. Refresh to verify the current state before retrying a write.</p>
+            <button className="ui-button" onClick={loadComponents} disabled={loading}>Refresh components</button></div>}
+          {notice && <p className="ui-notice" role="status">{notice}</p>}
+          <div className="ui-surface catalogue-filters" role="search" aria-label="Component filters">
+            <div className="ui-field catalogue-search"><label className="ui-label" htmlFor="catalogue-search">Search components</label>
+              <input id="catalogue-search" type="search" className="ui-control" value={query} onChange={(event) => setQuery(event.target.value)} aria-describedby="catalogue-search-help" />
+              <p id="catalogue-search-help" className="ui-help">Search the current slot and manner by key, wording, label, family, camera or ID.</p></div>
+            <div className="ui-field"><label className="ui-label" htmlFor="catalogue-slot">Slot</label>
+              <select id="catalogue-slot" className="ui-control" value={slotFilter} onChange={(event) => setSlotFilter(event.target.value)}>
+                <option value="camera">camera</option><option value="act">act</option><option value="framing">framing</option>
+              </select></div>
+            <div className="ui-field"><label className="ui-label" htmlFor="catalogue-manner">Manner</label>
+              <select id="catalogue-manner" className="ui-control" value={mannerFilter} onChange={(event) => setMannerFilter(event.target.value)}>
+                {ALL_MANNERS.map((manner) => <option key={manner.key} value={manner.key}>{manner.key}</option>)}
+              </select></div>
+            <label className="catalogue-check"><input type="checkbox" checked={showRetired} onChange={(event) => setShowRetired(event.target.checked)} />Show retired components</label>
+          </div>
+          <p className="ui-help" role="status">{loading ? 'Loading components…' : error ? 'The latest refresh failed. Refresh to verify the current inventory.' : `${filtered.length} shown · ${components.length} total`}</p>
+          {loading && !components.length ? <div className="ui-surface" aria-busy="true">Loading catalogue…</div>
+            : !filtered.length ? <div className="ui-surface catalogue-empty">
+              <h3 className="ui-section-title">{error ? 'Components unavailable' : !components.length ? 'No components yet' : 'No matching components'}</h3>
+              <p className="ui-help">{error ? 'Refresh components to verify the inventory.' : !components.length
+                ? 'Add a component or explicitly import the measured seed. Nothing is imported automatically.'
+                : 'Change the slot, manner or search, or include retired components. No records have been removed.'}</p>
+              {query && <button className="ui-button" onClick={() => setQuery('')}>Clear search</button>}
+            </div> : <div className="ui-stack catalogue-cards">
+              {filtered.map((component) => <article key={component.id} className="ui-surface catalogue-card" aria-labelledby={`component-${component.id}-title`} aria-busy={pending.includes(`component-${component.id}`)}>
+                <div className="catalogue-card-main">
+                  <div className="ui-section-heading"><h3 id={`component-${component.id}-title`} className="ui-section-title">{component.concept_key}</h3>
+                    {component.retired_at && <span className="ui-state" data-tone="warning">Retired</span>}</div>
+                  <p className="ui-help">Component #{component.id} · {component.slot} · {component.manner}</p>
+                  <dl className="catalogue-metadata">
+                    {component.family && <div><dt>Family</dt><dd>{component.family}</dd></div>}
+                    {component.faces && <div><dt>Faces</dt><dd>{component.faces}</dd></div>}
+                    {!!component.cameras?.length && <div><dt>Cameras</dt><dd>{component.cameras.join(', ')}</dd></div>}
+                  </dl>
+                  <dl className="catalogue-wording"><div><dt>Prompt wording</dt><dd>{component.wording}</dd></div>
+                    <div><dt>Judge label</dt><dd>{component.judge_label}</dd></div></dl>
+                  <div className="ui-actions catalogue-evidence" aria-label={`Evidence for component ${component.id}`} role="group">
+                    <span className="ui-help">Evidence</span>
+                    {component.judged > 0 ? <><span className="ui-state">{component.state}</span>
+                      <span className="ui-state">Arrived {component.arrived} of {component.judged}</span>
+                      {component.contradicted > 0 && <span className="ui-state" data-tone="error" title="The judge recorded the body and camera contradicting each other, not another component">{component.contradicted} contradicted</span>}</>
+                      : <span className="ui-state" title="No photograph has been judged against this component yet">Not measured</span>}
                   </div>
                 </div>
-
-                <div className="row" style={{ gap: 6 }}>
-                  <button onClick={() => openEdit(c)}>Edit</button>
-                  {c.retired_at ? (
-                    <button onClick={() => handleRestore(c.id)}>Restore</button>
-                  ) : (
-                    <button onClick={() => handleRetire(c.id)}>Retire</button>
-                  )}
-                  <button className="icon" onClick={() => handleDelete(c.id)} title="Delete component">🗑</button>
+                <div className="ui-actions catalogue-card-actions" role="group" aria-label={`Actions for component ${component.id}`}>
+                  <button className="ui-button" aria-label={`Edit component ${component.id}`} disabled={pending.includes(`component-${component.id}`)} onClick={() => openEdit(component)}>Edit</button>
+                  <button className="ui-button" aria-label={`${component.retired_at ? 'Restore' : 'Retire'} component ${component.id}`} disabled={pending.includes(`component-${component.id}`)}
+                    onClick={() => runAction(`component-${component.id}`, () => component.retired_at ? handleRestore(component.id) : handleRetire(component.id))}>{component.retired_at ? 'Restore' : 'Retire'}</button>
+                  <button className="ui-button catalogue-danger" aria-label={`Delete component ${component.id}`} disabled={pending.includes(`component-${component.id}`)}
+                    onClick={() => runAction(`component-${component.id}`, () => handleDelete(component.id))}>Delete</button>
+                  {pending.includes(`component-${component.id}`) && <span className="ui-help" role="status">Updating…</span>}
                 </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+              </article>)}
+            </div>}
+        </section>
 
-      {/* Base Readings Management */}
-      <div className="panel" style={{ marginTop: 24, padding: 16 }}>
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <h3 style={{ fontSize: 16, marginBottom: 6 }}>
-              Base Readings ({slotFilter} · {mannerFilter})
-            </h3>
-            <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
-              The baseline vocabulary for judging passes on {slotFilter} in {mannerFilter} manner.
-            </p>
-          </div>
-          <button onClick={handleImportReadings} title="Load data/readings-seed.json. An existing key is skipped and its label left alone: a label is the question a stored verdict was answered against.">
-            Import Readings Seed
-          </button>
-        </div>
-
-        {readingError && <div className="error" style={{ marginBottom: 12 }}>{readingError}</div>}
-        {readingNotice && <div className="notice" style={{ marginBottom: 12, background: 'var(--panel)', padding: '8px 14px', borderRadius: 4 }}>{readingNotice}</div>}
-
-        {baseReadings.length > 0 ? (
-          <table style={{ width: '100%', marginBottom: 16, fontSize: 13 }}>
-            <thead>
-              <tr>
-                <th style={{ width: '30%' }}>Key (family)</th>
-                <th>Label (viewer description)</th>
-                <th style={{ width: 80 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {baseReadings.map((r) => (
-                <tr key={r.id}>
-                  <td><code>{r.key}</code></td>
-                  <td>{r.label}</td>
-                  <td style={{ textAlign: 'right' }}>
-                    <button
-                      className="danger"
-                      style={{ padding: '2px 8px', fontSize: 12 }}
-                      onClick={() => handleDeleteBaseReading(r.id)}
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="muted" style={{ fontSize: 12, fontStyle: 'italic', marginBottom: 16 }}>
-            No base readings defined for {slotFilter} ({mannerFilter}).
-          </p>
-        )}
-
-        <form onSubmit={handleAddBaseReading} className="row" style={{ gap: 8, alignItems: 'flex-end' }}>
-          <div style={{ flex: 1 }}>
-            <label style={{ display: 'block', fontSize: 11, marginBottom: 2 }}>Key (family)</label>
-            <input
-              type="text"
-              placeholder="e.g. side"
-              value={newReadingKey}
-              onChange={(e) => setNewReadingKey(e.target.value)}
-              style={{ width: '100%', fontSize: 12 }}
-              required
-            />
-          </div>
-          <div style={{ flex: 2 }}>
-            <label style={{ display: 'block', fontSize: 11, marginBottom: 2 }}>Label (viewer description)</label>
-            <input
-              type="text"
-              placeholder="e.g. Profile shot from the side, level with torso"
-              value={newReadingLabel}
-              onChange={(e) => setNewReadingLabel(e.target.value)}
-              style={{ width: '100%', fontSize: 12 }}
-              required
-            />
-          </div>
-          <button type="submit" className="primary" disabled={readingSaving} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-            {readingSaving ? 'Adding...' : 'Add Base Reading'}
-          </button>
-        </form>
-      </div>
-
-      {/* The wardrobe. It has no screen of its own and no rows on this one: the
-          count IS the report, because the only question this button answers is
-          whether the store is empty. Editing a garment is still the seed file
-          plus a re-import. */}
-      <div className="panel" style={{ marginTop: 24, padding: 16 }}>
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <h3 style={{ fontSize: 16, marginBottom: 6 }}>Wardrobe</h3>
-            <p className="muted" style={{ fontSize: 12, margin: 0 }}>
-              {wardrobe.garments.length} garments · {wardrobe.outfits.length} outfits.
-              {' '}An outfit is what a session undresses through; empty, the outfit picker offers nothing.
-            </p>
-          </div>
-          <button onClick={handleImportWardrobe} title="Load data/wardrobe-seed.json. An existing key is skipped and its wording left alone: a garment's wording is the text of every state that carries it.">
-            Import Wardrobe Seed
-          </button>
-        </div>
-        {wardrobeError && <div className="error" style={{ marginTop: 12 }}>{wardrobeError}</div>}
-      </div>
-
-      {editing && (
-        <div className="modal-backdrop" style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999,
-        }}>
-          <form onSubmit={handleSave} className="panel" style={{ width: 500, maxWidth: '90vw', padding: 20 }}>
-            <h3>{editing.id ? 'Edit Component' : 'Add Component'}</h3>
-            {formError && <div className="error" style={{ marginBottom: 12 }}>{formError}</div>}
-
-            <div style={{ marginBottom: 10 }}>
-              <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>Concept Key</label>
-              <input
-                type="text"
-                required
-                value={formValues.concept_key}
-                onChange={(e) => setFormValues({ ...formValues, concept_key: e.target.value })}
-                style={{ width: '100%' }}
-              />
-            </div>
-
-            <div className="row" style={{ gap: 10, marginBottom: 10 }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>Slot</label>
-                <select
-                  value={formValues.slot}
-                  onChange={(e) => setFormValues({ ...formValues, slot: e.target.value })}
-                  style={{ width: '100%' }}
-                >
-                  <option value="camera">camera</option>
-                  <option value="act">act</option>
-                  <option value="framing">framing</option>
-                </select>
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>Manner</label>
-                <select
-                  value={formValues.manner}
-                  onChange={(e) => setFormValues({ ...formValues, manner: e.target.value })}
-                  style={{ width: '100%' }}
-                >
-                  {ALL_MANNERS.map((m) => (
-                    <option key={m.key} value={m.key}>{m.key}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="row" style={{ gap: 10, marginBottom: 10 }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>Family</label>
-                <input
-                  type="text"
-                  value={formValues.family}
-                  onChange={(e) => setFormValues({ ...formValues, family: e.target.value })}
-                  style={{ width: '100%' }}
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>Faces</label>
-                <select
-                  value={formValues.faces}
-                  onChange={(e) => setFormValues({ ...formValues, faces: e.target.value })}
-                  style={{ width: '100%' }}
-                >
-                  <option value="">(none)</option>
-                  <option value="front">front</option>
-                  <option value="side">side</option>
-                  <option value="back">back</option>
-                </select>
-              </div>
-            </div>
-
-            {formValues.slot === 'act' && (
-              <div style={{ marginBottom: 10 }}>
-                <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>
-                  Camera families that can see it, strongest first (comma-separated)
-                </label>
-                <input
-                  type="text"
-                  value={formValues.cameras}
-                  onChange={(e) => setFormValues({ ...formValues, cameras: e.target.value })}
-                  placeholder="shoulder, mirror"
-                  style={{ width: '100%' }}
-                />
-                <div className="muted" style={{ fontSize: 11, marginTop: 3 }}>
-                  Left empty, the camera plan never moves a photograph to see this act.
-                </div>
-              </div>
-            )}
-
-            <div style={{ marginBottom: 10 }}>
-              <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>Prompt Wording</label>
-              <textarea
-                required
-                rows={2}
-                value={formValues.wording}
-                onChange={(e) => setFormValues({ ...formValues, wording: e.target.value })}
-                style={{ width: '100%' }}
-              />
-            </div>
-
-            <div style={{ marginBottom: 14 }}>
-              <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>Judge Label (Viewer description)</label>
-              <textarea
-                required
-                rows={2}
-                value={formValues.judge_label}
-                onChange={(e) => setFormValues({ ...formValues, judge_label: e.target.value })}
-                style={{ width: '100%' }}
-              />
-            </div>
-
-            <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
-              <button type="button" onClick={() => setEditing(null)}>Cancel</button>
-              <button type="submit" className="primary" disabled={saving}>
-                {saving ? 'Saving...' : 'Save'}
-              </button>
-            </div>
+        <section className="ui-surface ui-stack" aria-labelledby="catalogue-readings-title">
+          <div className="catalogue-heading"><div><h2 id="catalogue-readings-title" tabIndex={-1} className="ui-section-title">Base readings</h2>
+            <p className="ui-help">Judging vocabulary for {slotFilter} · {mannerFilter}. Existing labels stay unchanged when importing.</p></div>
+            <div className="ui-actions"><button className="ui-button" onClick={loadBaseReadings} disabled={readingLoading}>Refresh readings</button>
+              <button className="ui-button" disabled={pending.includes('readings-import')} onClick={() => runAction('readings-import', handleImportReadings)}>{pending.includes('readings-import') ? 'Importing…' : 'Import readings seed'}</button></div></div>
+          {readingError && <div className="ui-notice" data-tone="error" role="alert">{readingError}<p className="ui-help">Review the named record or scope before explicitly retrying. Refresh readings reloads only the current selection.</p></div>}
+          {readingNotice && <p className="ui-notice" role="status">{readingNotice}</p>}
+          {readingLoading && <p className="ui-help" role="status">Loading readings…</p>}
+          {!!visibleReadings.length ? <ul className="catalogue-readings-list">
+            {visibleReadings.map((reading) => <li key={reading.id}>
+              <div><span className="ui-help">Key (family)</span><p><code>{reading.key}</code></p></div>
+              <div><span className="ui-help">Label (viewer description)</span><p>{reading.label}</p></div>
+              <button className="ui-button catalogue-danger" aria-label={`Delete reading ${reading.id}`} disabled={pending.includes(`reading-${reading.id}`)} onClick={() => runAction(`reading-${reading.id}`, () => handleDeleteBaseReading(reading.id))}>Delete</button>
+            </li>)}
+          </ul> : !readingLoading && <p className="ui-help">{readingError ? 'Readings are unavailable for the selected scope.' : `No base readings defined for ${slotFilter} (${mannerFilter}).`}</p>}
+          <form onSubmit={(event) => { event.preventDefault(); runAction('reading-add', () => handleAddBaseReading(event)) }} className="catalogue-reading-form">
+            <div className="ui-field"><label className="ui-label" htmlFor="catalogue-reading-key">Key (family)</label>
+              <input id="catalogue-reading-key" className="ui-control" required value={newReadingKey} disabled={readingSaving} onChange={(event) => setNewReadingKey(event.target.value)} placeholder="side" /></div>
+            <div className="ui-field"><label className="ui-label" htmlFor="catalogue-reading-label">Label (viewer description)</label>
+              <input id="catalogue-reading-label" className="ui-control" required value={newReadingLabel} disabled={readingSaving} onChange={(event) => setNewReadingLabel(event.target.value)} placeholder="Profile view at torso height" /></div>
+            <button className="ui-button ui-button--primary" type="submit" disabled={readingSaving}>{readingSaving ? 'Adding…' : 'Add base reading'}</button>
           </form>
-        </div>
-      )}
+        </section>
+
+        <section className="ui-surface" aria-labelledby="catalogue-wardrobe-title">
+          <div className="catalogue-heading"><div><h2 id="catalogue-wardrobe-title" tabIndex={-1} className="ui-section-title">Wardrobe</h2>
+            <p className="ui-help">Inventory summary for the existing session outfit picker. This panel does not edit garments or outfits.</p></div>
+            <div className="ui-actions"><button className="ui-button" onClick={loadWardrobe} disabled={wardrobeLoading}>Refresh wardrobe</button>
+              <button className="ui-button" disabled={pending.includes('wardrobe-import')} onClick={() => runAction('wardrobe-import', handleImportWardrobe)}>{pending.includes('wardrobe-import') ? 'Importing…' : 'Import wardrobe seed'}</button></div></div>
+          {wardrobeError && <div className="ui-notice" data-tone="error" role="alert">{wardrobeError}<p className="ui-help">Refresh wardrobe to verify the current inventory. Import is always explicit.</p></div>}
+          {wardrobeLoading && <p className="ui-help" role="status">Loading wardrobe…</p>}
+          <dl className="catalogue-wardrobe-counts"><div><dt>Garments</dt><dd>{wardrobeLoaded ? wardrobe.garments.length : '—'}</dd></div><div><dt>Outfits</dt><dd>{wardrobeLoaded ? wardrobe.outfits.length : '—'}</dd></div></dl>
+          <p className="ui-help">Import skips existing keys and keeps their wording. An empty inventory leaves the outfit picker empty.</p>
+        </section>
+      </div>
+
+      {editing && <dialog ref={dialogRef} className="catalogue-editor" aria-labelledby="catalogue-editor-title"
+        onCancel={(event) => { event.preventDefault(); if (!saving) setEditing(null) }}
+        onKeyDown={(event) => {
+          if (event.key !== 'Tab') return
+          const controls = [...event.currentTarget.querySelectorAll('input:not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled)')]
+          const first = controls[0], last = controls[controls.length - 1]
+          if (event.shiftKey && (event.target === first || !controls.includes(event.target))) { event.preventDefault(); last?.focus() }
+          else if (!event.shiftKey && event.target === last) { event.preventDefault(); first?.focus() }
+        }}>
+        <form onSubmit={(event) => { event.preventDefault(); runAction('component-save', () => handleSave(event)) }} className="ui-stack">
+          <div><h2 id="catalogue-editor-title" className="ui-section-title">{editing.id ? 'Edit component' : 'Add component'}</h2>
+            <p className="ui-help">{editing.id ? `Component #${editing.id}` : 'New catalogue entry'} · Changes are saved only with Save.</p></div>
+          {formError && <div ref={formErrorRef} className="ui-notice" data-tone="error" role="alert" tabIndex={-1}>{formError}</div>}
+          <fieldset disabled={saving} className="catalogue-editor-fields"><legend>Identity and scope</legend>
+            <div className="ui-form-grid">
+              <div className="ui-field ui-field-wide"><label className="ui-label" htmlFor="component-concept-key">Concept key</label>
+                <input id="component-concept-key" className="ui-control" required value={formValues.concept_key} onChange={(event) => editField('concept_key', event.target.value)} /></div>
+              <div className="ui-field"><label className="ui-label" htmlFor="component-slot">Slot</label>
+                <select id="component-slot" className="ui-control" value={formValues.slot} onChange={(event) => editField('slot', event.target.value)}>
+                  <option value="camera">camera</option><option value="act">act</option><option value="framing">framing</option></select></div>
+              <div className="ui-field"><label className="ui-label" htmlFor="component-manner">Manner</label>
+                <select id="component-manner" className="ui-control" value={formValues.manner} onChange={(event) => editField('manner', event.target.value)}>
+                  {ALL_MANNERS.map((manner) => <option key={manner.key} value={manner.key}>{manner.key}</option>)}</select></div>
+              <div className="ui-field"><label className="ui-label" htmlFor="component-family">Family</label>
+                <input id="component-family" className="ui-control" value={formValues.family} onChange={(event) => editField('family', event.target.value)} /></div>
+              <div className="ui-field"><label className="ui-label" htmlFor="component-faces">Faces</label>
+                <select id="component-faces" className="ui-control" value={formValues.faces} onChange={(event) => editField('faces', event.target.value)}>
+                  <option value="">(none)</option><option value="front">front</option><option value="side">side</option><option value="back">back</option></select></div>
+              {formValues.slot === 'act' && <div className="ui-field ui-field-wide"><label className="ui-label" htmlFor="component-cameras">Camera families, strongest first</label>
+                <input id="component-cameras" className="ui-control" value={formValues.cameras} onChange={(event) => editField('cameras', event.target.value)} aria-describedby="component-cameras-help" placeholder="shoulder, mirror" />
+                <p id="component-cameras-help" className="ui-help">Comma-separated and ordered. Empty means the camera plan never moves a photograph to see this act.</p></div>}
+            </div>
+          </fieldset>
+          <fieldset disabled={saving} className="catalogue-editor-fields"><legend>Wording and recognition</legend>
+            <div className="ui-stack">
+              <div className="ui-field"><label className="ui-label" htmlFor="component-wording">Prompt wording</label>
+                <textarea id="component-wording" className="ui-control" rows={3} required value={formValues.wording} onChange={(event) => editField('wording', event.target.value)} /></div>
+              <div className="ui-field"><label className="ui-label" htmlFor="component-judge-label">Judge label (viewer description)</label>
+                <textarea id="component-judge-label" className="ui-control" rows={3} required value={formValues.judge_label} onChange={(event) => editField('judge_label', event.target.value)} aria-describedby="component-judge-help" />
+                <p id="component-judge-help" className="ui-help">Describe what the viewer sees. This must differ from the prompt wording; the server validates it.</p></div>
+            </div>
+          </fieldset>
+          <div className="ui-actions catalogue-editor-actions"><button className="ui-button" type="button" disabled={saving} onClick={() => setEditing(null)}>Cancel</button>
+            <button className="ui-button ui-button--primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button></div>
+        </form>
+      </dialog>}
     </div>
   )
 }

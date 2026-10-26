@@ -181,3 +181,14 @@ wrapping, Escape and focus restoration support keyboard operation. Gallery
 selection and mutation handlers remain in SessionView; the viewer only selects
 photos and comparison positions. Navigation, stage editors, execution panels and
 other galleries do not inherit these styles.
+
+### Catalogue
+
+`Catalogue.css` is scoped under `.catalogue-view` and reuses the existing studio
+tokens, fields, buttons, notices and surfaces. Prompt wording, viewer labels and
+measured evidence remain separate. Base readings use one semantic list that
+adapts its columns on mobile, without duplicating records. Native dialog semantics,
+explicit Tab wrapping, error focus and focus restoration support component editing.
+Section jumps move focus without changing the Catalogue route or unmounting forms.
+The shared foundation styles, catalogue/wardrobe stores and their consumers remain
+unchanged; existing store refreshes still run after explicit imports complete.

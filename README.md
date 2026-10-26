@@ -893,10 +893,17 @@ row — `arrived N of M`, the cell state, contradictions counted apart. The
 **Judge** screen (`#/judge`) scores photographs blind against neutral labels,
 never against the prompt wording.
 
-The store ships **empty**: press *Import Measured Catalogue* once, or composing
+The store ships **empty**: press *Import measured seed* once, or composing
 and creating legacy sessions refuse until it holds something. `resource-v1`
 session drafts do not require the measured catalogue and are not subject to this
 refusal or to catalogue cell uniqueness.
+
+Catalogue separates prompt components, base readings and wardrobe imports.
+Search narrows the current slot/manner selection without changing stored order;
+retired rows stay available through Show retired components. Edits use an
+explicit Save, and deletion requires confirmation while backend evidence guards
+remain authoritative. See [Catalogue](docs/catalogue.md) for the screen's
+operations, recovery and shared-store behavior.
 
 The detail — the reading vocabulary, the two scopes, the pass refusal, the
 camera families an act carries — is in [judging](docs/judging.md) and
