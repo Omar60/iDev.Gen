@@ -6670,7 +6670,7 @@ class TestTask41ClosedAuthoringSchema:
 
 
 class TestTask47ContinuityComparison:
-    def test_authoring_continuity_fields_are_shared_and_brief_wardrobe_are_excluded(self):
+    def test_authoring_continuity_fields_are_shared_and_brief_wardrobe_are_excluded(self, isolated_db):
         revision = _task41_resource_revision()
         other = _build_revision(
             "inv_task47_rooms", "inv_task47_room_02", INV_ROOM_PAYLOAD,
@@ -6726,7 +6726,7 @@ class TestTask47ContinuityComparison:
         pre_authoring = {key: value for key, value in plan.items() if key != "authoring"}
         assert not session_plan._plan_continuity_changed(pre_authoring, pre_authoring)
 
-    def test_complete_look_snapshot_uses_canonical_json_comparison(self):
+    def test_complete_look_snapshot_uses_canonical_json_comparison(self, isolated_db):
         revision = _task41_resource_revision()
         auth = _task41_valid_authoring(
             scene_anchor_triple=revision,
