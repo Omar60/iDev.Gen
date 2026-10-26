@@ -4,6 +4,7 @@ import { go } from '../App.jsx'
 import SessionNavigation from './SessionNavigation.jsx'
 import '../ui/foundations.css'
 import './SessionNavigation.css'
+import './SessionEditors.css'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
@@ -405,6 +406,19 @@ const wardrobeStates = (session) => wardrobeArc(session).map((s) => s.text)
 const modelStem = (checkpoint) =>
   (checkpoint || '').split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'copy'
 
+function SessionEditorStatus({ locked, error, onDismiss }) {
+  const errorRef = useRef(null)
+  useEffect(() => { if (error) errorRef.current?.focus() }, [error])
+  return <>
+    {locked && <p className="ui-notice" role="status">Editing is locked by the current operation. Use the existing status and recovery controls above.</p>}
+    {error && <div className="ui-notice" data-tone="error" role="alert" ref={errorRef} tabIndex={-1}><p>{error}</p><button type="button" className="ui-button" onClick={() => {
+      const stage = errorRef.current?.closest('.session-stage-editor')
+      onDismiss()
+      stage?.querySelector('input:not(:disabled), textarea:not(:disabled), summary, .session-editor-actions button')?.focus()
+    }}>Dismiss error</button></div>}
+  </>
+}
+
 export default function SessionView({
   id,
   initialSession = null,
@@ -547,6 +561,17 @@ export default function SessionView({
   const llm = !!config.llm_ok
 
   const [plan, setPlan] = useState(initialPlan)
+  const takeWorkspaceRef = useRef(null)
+  const takeFocusRequest = useRef(null)
+  useEffect(() => {
+    const request = takeFocusRequest.current
+    if (!request) return
+    takeFocusRequest.current = null
+    const cards = [...(takeWorkspaceRef.current?.querySelectorAll('[data-take-id]') || [])]
+    const target = request.action === 'add' ? cards.at(-1)
+      : cards.find((card) => card.dataset.takeId === request.id) || cards[Math.min(request.index, cards.length - 1)]
+    target?.querySelector('[data-take-label]')?.focus()
+  }, [plan?.takes])
   const [savedPlan, setSavedPlan] = useState(initialPlan)
   const [planSessionId, setPlanSessionId] = useState(() => (
     initialPlan && String(initialSession?.id) === String(id) ? String(id) : ''
@@ -2784,7 +2809,7 @@ export default function SessionView({
 
   return (
     <>
-      {error && <div className="error" onClick={() => setError('')}>{error}</div>}
+      {error && !(isResource && canPreparePlan({ plan, planRevision }) && ['character', 'constants', 'takes'].includes(activeStep)) && <div className="error" onClick={() => setError('')}>{error}</div>}
       {planSaveImpact && (
         <div style={{
           position: 'fixed', inset: 0, zIndex: 1000, display: 'grid', placeItems: 'center',
@@ -3584,51 +3609,53 @@ export default function SessionView({
           ) : (
             <>
           {activeStep === 'character' && (
-            <div>
-              <h3>1. Character</h3>
+            <section className="studio-ui session-stage-editor" aria-labelledby="session-character-title">
+              <div className="ui-section-heading"><h3 className="ui-section-title" id="session-character-title">1. Character</h3><span className="ui-state">Fixed session identity</span></div>
+              <SessionEditorStatus locked={planEditLocked} error={error} onDismiss={() => setError('')} />
               <p className="muted" style={{ margin: '0 0 10px' }}>
                 Character identity is fixed for this session. Base model and LoRA parameters apply to all takes.
               </p>
-              <div className="grid-form" style={{ marginBottom: 12 }}>
+              <div className="session-fields">
                 <div>
-                  <label>Model</label>
-                  <input readOnly disabled value={s.model?.name || s.model?.id || ''} />
+                  <label htmlFor={`session-${id}-model`}>Model</label>
+                  <input id={`session-${id}-model`} className="ui-control" readOnly disabled value={s.model?.name || s.model?.id || ''} />
                 </div>
                 <div>
-                  <label>Trigger / Prefix</label>
-                  <input readOnly disabled value={s.model?.trigger || '(none)'} />
+                  <label htmlFor={`session-${id}-trigger`}>Trigger / Prefix</label>
+                  <input id={`session-${id}-trigger`} className="ui-control" readOnly disabled value={s.model?.trigger || '(none)'} />
                 </div>
                 <div>
-                  <label>Base Model / Checkpoint</label>
-                  <input readOnly disabled value={s.checkpoint || s.settings?.checkpoint || 'Default'} />
+                  <label htmlFor={`session-${id}-checkpoint`}>Base Model / Checkpoint</label>
+                  <input id={`session-${id}-checkpoint`} className="ui-control" readOnly disabled value={s.checkpoint || s.settings?.checkpoint || 'Default'} />
                 </div>
                 <div>
-                  <label>LoRA Strength</label>
-                  <input readOnly disabled value={s.settings?.lora_strength ?? '1.0'} />
+                  <label htmlFor={`session-${id}-lora`}>LoRA Strength</label>
+                  <input id={`session-${id}-lora`} className="ui-control" readOnly disabled value={s.settings?.lora_strength ?? '1.0'} />
                 </div>
               </div>
               <p className="muted" style={{ fontSize: 12 }}>
                 To adjust checkpoint profiles or LoRA strength, use the ⚙ Settings panel above.
               </p>
-              <div className="row" style={{ marginTop: 12 }}>
+              <div className="row session-editor-actions">
                 <span className="spacer" style={{ flex: 1 }} />
-                <button className="primary" onClick={() => navigateStep('constants')}>
+                <button className="ui-button ui-button--primary" onClick={() => navigateStep('constants')}>
                   Next: Scene / Constants →
                 </button>
               </div>
-            </div>
+            </section>
           )}
 
           {activeStep === 'constants' && (
-            <div>
-              <h3>2. Scene / Constants</h3>
+            <section className="studio-ui session-stage-editor" aria-labelledby="session-constants-title">
+              <div className="ui-section-heading"><h3 className="ui-section-title" id="session-constants-title">2. Scene / Constants</h3><span className="ui-state">Plan revision {planRevision}</span></div>
+              <SessionEditorStatus locked={planEditLocked} error={error} onDismiss={() => setError('')} />
               <p className="muted" style={{ margin: '0 0 10px' }}>
                 Set constants shared across the session. The look sets appearance, location, and lighting.
               </p>
               {plan?.authoring && (
                 <>
                   {renderSavedSharedSummary()}
-                  <section aria-label="Shared choices" style={{ marginBottom: 14 }}>
+                  <section aria-label="Shared choices" className="session-shared-choices">
                     <h4 style={{ margin: '0 0 4px' }}>Shared Choices</h4>
                     <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
                       Edit the saved values directly, record an empty choice, or review an assistant proposal before accepting it.
@@ -3725,7 +3752,7 @@ export default function SessionView({
                             ))}
                             <button
                               type="button"
-                              className="primary"
+                              className="ui-button ui-button--primary"
                               onClick={acceptSharedSuggestions}
                               disabled={
                                 manualDecisionBusy || sharedAcceptBusy || lookProgressionBusy || !planSessionCurrent || planDirty
@@ -3748,9 +3775,10 @@ export default function SessionView({
                   </section>
                 </>
               )}
-              <div style={{ marginBottom: 12 }}>
-                <label>Look (appearance, place, light)</label>
-                <textarea
+              <div className="session-field">
+                <label htmlFor={`session-${id}-look`}>Look (appearance, place, light)</label>
+                <p className="ui-help" id={`session-${id}-look-help`}>Shared appearance, place and light. Empty text keeps the existing no-additional-constraint meaning.</p>
+                <textarea id={`session-${id}-look`} aria-describedby={`session-${id}-look-help`} className="ui-control"
                   rows={3}
                   value={plan?.look ?? ''}
                   disabled={planEditLocked}
@@ -3763,9 +3791,10 @@ export default function SessionView({
                   }}
                 />
               </div>
-              <div style={{ marginBottom: 12 }}>
-                <label>Initial Wardrobe</label>
-                <textarea
+              <div className="session-field">
+                <label htmlFor={`session-${id}-wardrobe`}>Initial Wardrobe</label>
+                <p className="ui-help" id={`session-${id}-wardrobe-help`}>The default for every take until an explicit scoped wardrobe change applies.</p>
+                <textarea id={`session-${id}-wardrobe`} aria-describedby={`session-${id}-wardrobe-help`} className="ui-control"
                   rows={2}
                   value={plan?.initial_wardrobe ?? ''}
                   disabled={planEditLocked}
@@ -3779,15 +3808,15 @@ export default function SessionView({
                 />
               </div>
               <div style={{ marginBottom: 12 }}>
-                <label>Selected Resources (Pinned Revisions)</label>
+                <h4 className="ui-section-title">Selected Resources (Pinned Revisions)</h4>
                 {(plan?.selected_resources && plan.selected_resources.length > 0) ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
                     {plan.selected_resources.map((res, idx) => (
-                      <div key={idx} className="row" style={{ padding: '6px 8px', background: 'var(--panel-2)', borderRadius: 6, fontSize: 12 }}>
+                      <div key={idx} className="session-resource-identity">
                         <span className="badge">{res.library_key}</span>
                         <span><b>{res.source_id}</b></span>
                         <span className="muted" style={{ fontFamily: 'monospace', fontSize: 11 }}>
-                          digest: {res.content_digest?.slice(0, 16)}…
+                          digest: {res.content_digest}
                         </span>
                       </div>
                     ))}
@@ -3798,13 +3827,13 @@ export default function SessionView({
                   </p>
                 )}
               </div>
-              <div className="row" style={{ marginTop: 12 }}>
-                <button onClick={() => navigateStep('character')}>← Back: Character</button>
-                <button onClick={savePlan} disabled={!planDirty || planEditLocked}>Save Draft</button>
+              <div className="row session-editor-actions">
+                <button className="ui-button" onClick={() => navigateStep('character')}>← Back: Character</button>
+                <button className="ui-button" onClick={savePlan} disabled={!planDirty || planEditLocked}>Save Draft</button>
                 <span className="spacer" style={{ flex: 1 }} />
-                <button className="primary" onClick={() => navigateStep('takes')}>Next: Takes →</button>
+                <button className="ui-button ui-button--primary" onClick={() => navigateStep('takes')}>Next: Takes →</button>
               </div>
-            </div>
+            </section>
           )}
 
           {activeStep === 'takes' && (() => {
@@ -3815,15 +3844,23 @@ export default function SessionView({
             )).length
 
             return (
-              <div>
-                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <section className="studio-ui session-stage-editor" aria-labelledby="session-takes-title" ref={takeWorkspaceRef}
+                onClickCapture={(event) => {
+                  const button = event.target.closest('button[data-take-action]')
+                  if (!button || button.disabled) return
+                  const card = button.closest('[data-take-id]')
+                  takeFocusRequest.current = { action: button.dataset.takeAction, id: card?.dataset.takeId,
+                    index: Number(card?.dataset.takeIndex || 0) }
+                }}>
+                <SessionEditorStatus locked={planEditLocked} error={error} onDismiss={() => setError('')} />
+                <div className="row session-editor-heading">
                   <div>
-                    <h3 style={{ margin: 0 }}>3. Takes ({plan?.takes?.length || 0})</h3>
+                    <h3 className="ui-section-title" id="session-takes-title">3. Takes ({plan?.takes?.length || 0})</h3>
                     <p className="muted" style={{ margin: '2px 0 0' }}>
                       Configure takes. Creative choices (camera, framing, pose, expression) may repeat across takes. Stable take IDs are preserved.
                     </p>
                   </div>
-                  <button
+                  <button className="ui-button ui-button--primary" data-take-action="add"
                     disabled={planEditLocked}
                     onClick={() => {
                       if (!plan) return
@@ -3880,18 +3917,13 @@ export default function SessionView({
 
                     return (
                       <div
-                        key={take.take_id}
-                        style={{
-                          border: '1px solid var(--line)',
-                          borderRadius: 8,
-                          padding: 10,
-                          background: 'var(--panel-2)',
-                        }}
+                        key={take.take_id} className="session-take" data-take-id={take.take_id} data-take-index={index}
+                        role="group" aria-labelledby={`take-${take.take_id}-title`}
                       >
                         <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
                           <div className="row" style={{ gap: 8, alignItems: 'center' }}>
                             <span className="badge" style={{ fontWeight: 600 }}>{take.take_id}</span>
-                            <span className="muted">Take {index + 1}</span>
+                            <h4 id={`take-${take.take_id}-title`}>Take {index + 1}</h4>
                             {isGenerated ? (
                               <span className="badge ready">✓ Generated [Shot #{generatedItem?.linked_shot_id || '—'}]</span>
                             ) : planDirty ? (
@@ -3907,6 +3939,8 @@ export default function SessionView({
                           <div className="row" style={{ gap: 4 }}>
                             <button
                               className="icon"
+                              data-take-action="up"
+                              aria-label={`Move take up: ${take.label || take.take_id}`}
                               title="Move take up"
                               disabled={planEditLocked || index === 0}
                               onClick={() => {
@@ -3922,6 +3956,8 @@ export default function SessionView({
                             </button>
                             <button
                               className="icon"
+                              data-take-action="down"
+                              aria-label={`Move take down: ${take.label || take.take_id}`}
                               title="Move take down"
                               disabled={planEditLocked || index === (plan?.takes?.length || 1) - 1}
                               onClick={() => {
@@ -3937,6 +3973,8 @@ export default function SessionView({
                             </button>
                             <button
                               className="icon danger"
+                              data-take-action="remove"
+                              aria-label={`Remove take: ${take.label || take.take_id}`}
                               title="Remove take"
                               disabled={planEditLocked || (plan?.takes || []).length <= 1}
                               onClick={() => {
@@ -3949,13 +3987,13 @@ export default function SessionView({
                                 setReviewedRevision(null)
                               }}
                             >
-                              🗑
+                              Remove
                             </button>
                           </div>
                         </div>
                         <div style={{ marginBottom: 8 }}>
-                          <label>Label</label>
-                          <input
+                          <label htmlFor={`take-${take.take_id}-label`}>Label</label>
+                          <input id={`take-${take.take_id}-label`} className="ui-control" data-take-label aria-describedby={`take-${take.take_id}-title`}
                             value={take.label || ''}
                             disabled={planEditLocked}
                             placeholder="e.g. Wide shot at entrance"
@@ -3981,10 +4019,10 @@ export default function SessionView({
                           style={{ marginBottom: 8 }}
                         >
                           <summary>Advanced take fields (camera, framing, pose, expression)</summary>
-                          <div className="grid-form" style={{ marginTop: 8 }}>
+                          <div className="session-fields">
                           <div>
-                            <label>Camera</label>
-                            <input
+                            <label htmlFor={`take-${take.take_id}-camera`}>Camera</label>
+                            <input id={`take-${take.take_id}-camera`} className="ui-control"
                               value={take.camera || ''}
                               disabled={planEditLocked}
                               placeholder="e.g. eye-level, 50mm"
@@ -3999,8 +4037,8 @@ export default function SessionView({
                             />
                           </div>
                           <div>
-                            <label>Framing</label>
-                            <input
+                            <label htmlFor={`take-${take.take_id}-framing`}>Framing</label>
+                            <input id={`take-${take.take_id}-framing`} className="ui-control"
                               value={take.framing || ''}
                               disabled={planEditLocked}
                               placeholder="e.g. medium full shot"
@@ -4015,8 +4053,8 @@ export default function SessionView({
                             />
                           </div>
                           <div>
-                            <label>Pose</label>
-                            <input
+                            <label htmlFor={`take-${take.take_id}-pose`}>Pose</label>
+                            <input id={`take-${take.take_id}-pose`} className="ui-control"
                               value={take.pose || ''}
                               disabled={planEditLocked}
                               placeholder="e.g. standing leaning against doorway"
@@ -4030,9 +4068,9 @@ export default function SessionView({
                               }}
                             />
                           </div>
-                          <div style={{ gridColumn: 'span 2' }}>
-                            <label>Expression</label>
-                            <input
+                          <div className="session-field-wide">
+                            <label htmlFor={`take-${take.take_id}-expression`}>Expression</label>
+                            <input id={`take-${take.take_id}-expression`} className="ui-control"
                               value={take.expression || ''}
                               disabled={planEditLocked}
                               placeholder="e.g. calm neutral expression, direct eye contact"
@@ -4050,9 +4088,9 @@ export default function SessionView({
                         </details>
 
                         {/* Wardrobe Display and Scope Controls */}
-                        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
+                        <section className="session-take-wardrobe" aria-label={`Wardrobe for ${take.take_id}`}>
                           <label htmlFor={`coverage-${take.take_id}`}>Wardrobe coverage / detail (optional, this take only)</label>
-                          <textarea
+                          <textarea className="ui-control" aria-describedby={`coverage-help-${take.take_id}`}
                             id={`coverage-${take.take_id}`}
                             rows={2}
                             maxLength={2000}
@@ -4068,7 +4106,7 @@ export default function SessionView({
                               setReviewedRevision(null)
                             }}
                           />
-                          <p className="muted" style={{ fontSize: 12, margin: '4px 0 10px' }}>
+                          <p className="ui-help" id={`coverage-help-${take.take_id}`}>
                             Explicit positive detail added beside the effective wardrobe for text-to-image and guide workflows.
                             Describe covered or bare regions and absent garments. No detail is inferred; the wardrobe sentence stays unchanged.
                             Reference edit instructions omit this detail. Images still require visual review.
@@ -4134,8 +4172,8 @@ export default function SessionView({
 
                           {existingChange && (
                             <div style={{ marginTop: 6, padding: 8, background: 'var(--panel)', borderRadius: 6, border: '1px solid var(--line)' }}>
-                              <div className="row" style={{ gap: 16, marginBottom: 6 }}>
-                                <label style={{ margin: 0, fontWeight: 600 }}>Scope:</label>
+                              <div className="row" role="group" aria-label={`Wardrobe scope for ${take.take_id}`} style={{ gap: 16, marginBottom: 6 }}>
+                                <span style={{ fontWeight: 600 }}>Scope:</span>
                                 <label className="chk" style={{ padding: 0 }}>
                                   <input
                                     type="radio"
@@ -4178,8 +4216,8 @@ export default function SessionView({
                                 </label>
                               </div>
                               <div>
-                                <label>Wardrobe Description</label>
-                                <textarea
+                                <label htmlFor={`wardrobe-${take.take_id}`}>Wardrobe Description</label>
+                                <textarea id={`wardrobe-${take.take_id}`} className="ui-control"
                                   rows={2}
                                   value={existingChange.wardrobe}
                                   disabled={planEditLocked}
@@ -4199,20 +4237,20 @@ export default function SessionView({
                               </div>
                             </div>
                           )}
-                        </div>
+                        </section>
                       </div>
                     )
                   })}
                 </div>
                 </fieldset>
 
-                <div className="row" style={{ marginTop: 12 }}>
-                  <button onClick={() => navigateStep('constants')}>← Back: Scene / Constants</button>
-                  <button onClick={savePlan} disabled={!planDirty || planEditLocked}>Save Draft</button>
+                <div className="row session-editor-actions">
+                  <button className="ui-button" onClick={() => navigateStep('constants')}>← Back: Scene / Constants</button>
+                  <button className="ui-button" onClick={savePlan} disabled={!planDirty || planEditLocked}>Save Draft</button>
                   <span className="spacer" style={{ flex: 1 }} />
-                  <button className="primary" onClick={() => navigateStep('review')}>Next: Review →</button>
+                  <button className="ui-button ui-button--primary" onClick={() => navigateStep('review')}>Next: Review →</button>
                 </div>
-              </div>
+              </section>
             )
           })()}
 

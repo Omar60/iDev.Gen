@@ -2849,3 +2849,35 @@ Legacy sessions keep their controls, settings, editing and gallery without the
 resource stage navigation. Stage contents, generation logic and Full Auto recovery
 are unchanged. Drafts stay in the existing mounted SessionView state; this change
 does not add persistence across a full reload or leaving the session.
+
+
+## Studio Character, Scene and Takes editors
+
+Character keeps its existing fixed session identity, checkpoint and LoRA values;
+it does not introduce a character replacement action. Scene / Constants separates
+the existing saved shared summary and reviewed suggestions from editable look and
+initial-wardrobe constraints. These fields retain their explicit empty-string
+semantics and save through the existing plan revision flow. Pinned resources show
+their library, source ID and full content digest without changing the selection.
+
+Takes remain an ordered list of cards, rather than the separate Review table.
+Each card keeps its stable take ID, ordinal, preparation status, label, creative
+choices and effective wardrobe. Field labels are associated with their inputs;
+creative fields use two columns on wide screens and one on mobile. The advanced
+fields disclosure retains its existing manual/automatic defaults and per-ID state.
+No cards, fields or wardrobe facts are duplicated for a second responsive layout.
+
+Move up/down, removal and new-take creation use their existing handlers. After
+these actions, focus moves to the affected or neighboring take's Label field,
+which also describes its current ordinal. Reordering does not renumber IDs or
+rewrite take values. A wardrobe change remains explicitly scoped to this take
+only or from here onward; removal restores inheritance through the existing rule.
+Coverage detail stays separate from the effective wardrobe and is never inferred.
+
+Save Draft remains explicit, including existing downstream-impact confirmation
+and revision checks. Navigation does not prepare, approve, submit or generate.
+A save error appears once within the active editor, retains the draft and receives
+focus. Dismiss error clears only the message and returns focus to a stable control.
+Full Auto, Review, Generation, Legacy editors, navigation and gallery remain
+outside these scoped styles. Draft persistence across leaving/reloading is not
+expanded by this presentation change.

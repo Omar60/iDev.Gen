@@ -1,0 +1,38 @@
+.session-stage-editor { min-width: 0; padding: 20px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-surface); background: var(--ui-color-surface); }
+.session-stage-editor .ui-section-heading { justify-content: space-between; }
+.session-stage-editor .muted { color: var(--ui-color-muted); }
+.session-stage-editor :is(p, code, .badge) { overflow-wrap: anywhere; }
+.session-stage-editor > .ui-notice { margin: 12px 0; }
+.session-stage-editor .session-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 16px 0; }
+.session-fields > div, .session-field { min-width: 0; display: grid; align-content: start; gap: 8px; }
+.session-stage-editor .session-field { margin: 20px 0; }
+.session-stage-editor .session-fields label, .session-field > label, .session-take label { color: var(--ui-color-text); font-size: var(--ui-text-label); }
+.session-stage-editor .ui-control { min-height: 44px; }
+.session-stage-editor .ui-control:disabled { opacity: 1; color: var(--ui-color-muted); }
+.session-stage-editor .session-field-wide { grid-column: 1 / -1; }
+.session-stage-editor .session-editor-actions { flex-wrap: wrap; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--ui-color-border); gap: 8px; }
+.session-shared-choices { min-width: 0; margin-bottom: 24px; padding: 16px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-control); }
+.session-resource-identity { display: grid; gap: 8px; padding: 16px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-control); background: var(--ui-color-field); overflow-wrap: anywhere; }
+.session-editor-heading { justify-content: space-between; align-items: start; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.session-take { min-width: 0; padding: 20px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-control); background: var(--ui-color-field); }
+.session-take > .row { flex-wrap: wrap; gap: 12px; align-items: start; }
+.session-take h4 { margin: 0; color: var(--ui-color-text); font-size: var(--ui-text-heading); }
+.session-take > .row .row { flex-wrap: wrap; }
+.session-take button { min-height: 44px; min-width: 44px; font-size: var(--ui-text-label); }
+.session-take .icon { width: auto; padding: 8px 12px; }
+.session-take summary { min-height: 44px; padding: 12px 0; box-sizing: border-box; cursor: pointer; color: var(--ui-color-accent); }
+.session-take .session-take-wardrobe { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--ui-color-border); min-width: 0; }
+.session-take-wardrobe > label { display: block; margin-bottom: 8px; }
+.session-take-wardrobe > .ui-help { margin: 8px 0 16px; }
+.session-take-wardrobe .row { flex-wrap: wrap; gap: 12px; }
+.session-take-wardrobe .chk { display: inline-flex; gap: 8px; align-items: center; min-height: 44px; }
+.session-take-wardrobe input[type="radio"] { width: 20px; height: 20px; margin: 0; accent-color: var(--ui-color-accent); }
+.session-stage-editor :is(input, textarea, button, summary, [tabindex]):focus-visible { outline: 2px solid var(--ui-color-accent); outline-offset: 3px; }
+.session-stage-editor [tabindex] { scroll-margin-top: 100px; }
+@media (max-width: 599px) {
+  .session-stage-editor, .session-take { padding: 16px; }
+  .session-stage-editor .session-fields { grid-template-columns: minmax(0, 1fr); }
+  .session-stage-editor .session-editor-actions .spacer { display: none; }
+  .session-stage-editor .session-editor-actions { align-items: stretch; }
+  .session-stage-editor .session-editor-actions button { flex: 1 1 130px; }
+}

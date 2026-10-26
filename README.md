@@ -1003,3 +1003,9 @@ The [session editor navigation](docs/sessions.md#studio-session-navigation) grou
 session identity, photo progress and the five resource-v1 stages in a responsive
 studio header. Stage links retain existing review gates and never authorize an
 operation; Legacy controls remain separate.
+
+
+Character, Scene / Constants and Takes now use scoped studio forms with associated
+labels, explicit pinned-resource identities and responsive take cards. Take
+reordering preserves stable IDs and scoped wardrobe behavior. See
+[session editing](docs/sessions.md#studio-character-scene-and-takes-editors).

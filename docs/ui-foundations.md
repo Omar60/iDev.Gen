@@ -147,3 +147,14 @@ warnings remain outside it.
 The navigation keeps the root editor mounted, labels its current stage, exposes
 Generation blockers and focuses its heading after a stage change. Stage contents,
 Full Auto controls, take editors and gallery keep their existing layout and rules.
+
+
+### Character, Scene and Takes forms
+
+`SessionEditors.css` scopes studio surfaces, typography, associated controls,
+44px actions and responsive grids to the first three resource-v1 editors.
+Existing shared-look components are retained. Take cards distinguish identity,
+creative choices and wardrobe scope without replacing handlers or mounting a
+second mobile list. Focus follows explicit take mutations and save errors;
+error dismissal returns to an available editor control. Review, Generation,
+Full Auto, Legacy and the session navigation keep their existing styles.
