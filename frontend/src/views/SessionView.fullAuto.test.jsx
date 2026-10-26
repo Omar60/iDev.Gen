@@ -1446,3 +1446,58 @@ it('waits for cancellation settlement before editing, then compares the correcte
     accept_changed_scope: true,
   })
 })
+it('keeps the review scroll region keyboard reachable and every operation separately named', async () => {
+  const post = vi.spyOn(api, 'post')
+  const control = vi.spyOn(api, 'postWithStatus')
+  await renderSession(null, { activeStep: 'review', sessionStatus: 'draft' })
+  await settle()
+  const region = container.querySelector('[aria-label="Planned take review"]')
+  expect(region.tabIndex).toBe(0)
+  expect(document.getElementById(region.getAttribute('aria-describedby')).textContent).toContain('arrow keys')
+  region.focus()
+  expect(document.activeElement).toBe(region)
+  expect([...container.querySelectorAll('.execution-sequence b')].map((item) => item.textContent)).toEqual(['Prepare', 'Approve Review', 'Submit', 'Run'])
+  expect(container.querySelector('[aria-label="Select take take-001 for submission"]')).toBeTruthy()
+  expect(post).not.toHaveBeenCalled()
+  expect(control).not.toHaveBeenCalled()
+})
+
+it('keeps unknown-outcome recovery disabled until separate risk consent', async () => {
+  const run = makeRun({ retry_control: { ...makeRun().retry_control,
+    can_retry_failed_shots: false, can_accept_unknown_outcome_risk: true,
+    unknown_outcome_shot_ids: [701], unknown_attempt_ids: ['attempt-invented'],
+    unknown_outcome_warning: 'The remote outcome remains unknown.' } })
+  const control = vi.spyOn(api, 'postWithStatus')
+  const post = vi.spyOn(api, 'postVersioned')
+  await renderSession(run)
+  await settle()
+  const panel = container.querySelector('[aria-label="Full Auto run"]')
+  const retry = [...panel.querySelectorAll('button')].find((item) => item.textContent.includes('Retry unknown'))
+  expect(retry).toBeTruthy()
+  expect(retry.disabled).toBe(true)
+  await act(async () => { retry.click() })
+  expect(control).not.toHaveBeenCalled()
+  expect(post).not.toHaveBeenCalled()
+  const consent = panel.querySelector('input[type="checkbox"]')
+  await act(async () => { consent.click() })
+  expect(retry.disabled).toBe(false)
+  expect(control).not.toHaveBeenCalled()
+  expect(post).not.toHaveBeenCalled()
+  await act(async () => { consent.click() })
+  expect(retry.disabled).toBe(true)
+})
+
+it('reports active, failed and cancelled Generation shots separately without writes', async () => {
+  const post = vi.spyOn(api, 'post')
+  const control = vi.spyOn(api, 'postWithStatus')
+  const mixedSession = { ...session, shots: [...session.shots, { id: 703, status: 'running' }, { id: 704, status: 'pending' }] }
+  const read = vi.mocked(api.get).getMockImplementation()
+  vi.mocked(api.get).mockImplementation((path) => path === `/api/sessions/${session.id}` ? Promise.resolve(mixedSession) : read(path))
+  await renderSession(null, { activeStep: 'generation', initialReviewedRevision: 3, sessionOverride: mixedSession })
+  await settle()
+  const results = container.querySelector('[role="group"][aria-label="Generation results"]')
+  expect(results).toBeTruthy()
+  expect([...results.children].map((item) => item.textContent)).toEqual(['1 completed', '1 pending', '1 running', '1 failed', '1 cancelled'])
+  expect(post).not.toHaveBeenCalled()
+  expect(control).not.toHaveBeenCalled()
+})

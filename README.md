@@ -794,6 +794,10 @@ explicitly approve its revision, submit the selected ready takes, and then press
 **Run** to start ComfyUI work. A ready snapshot alone does not approve, submit,
 or generate a photo.
 
+The studio Review table supports keyboard horizontal scrolling on mobile;
+Full Auto shows progress separately from authorization allowances and explicit
+recovery controls. Prepare, Approve Review, Submit and Run remain distinct actions.
+
 Plan-level resource field markers identify descriptive inputs used during
 preparation; they are informational and do not establish a semantic conflict.
 They remain visible after approval. When markers are present, **Proceed to

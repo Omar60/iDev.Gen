@@ -2881,3 +2881,19 @@ focus. Dismiss error clears only the message and returns focus to a stable contr
 Full Auto, Review, Generation, Legacy editors, navigation and gallery remain
 outside these scoped styles. Draft persistence across leaving/reloading is not
 expanded by this presentation change.
+
+## Studio Review, Generation and Full Auto
+
+Review names four distinct explicit operations: Prepare compiles take prompts,
+Approve Review approves the exact plan revision, Submit queues the selected
+prepared takes, and Run starts queued shots from the existing top bar.
+Changing stages does not perform any of these operations. The review table keeps
+all fields in one keyboard-focusable horizontal scroll region on narrow screens.
+Selection and adaptation inputs have explicit accessible names.
+
+Generation summarizes completed, pending and failed shots without replacing the
+existing gallery or Run controls. Full Auto separates progress counts from
+authorization allowances, blockers and scope comparisons. Targets and partial
+results remain available in the native disclosure. Unknown-outcome risk consent,
+exact-request replay and cancellation reconciliation retain their existing
+explicit operations; this presentation does not add automatic recovery or consent.

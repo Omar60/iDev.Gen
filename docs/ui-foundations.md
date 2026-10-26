@@ -158,3 +158,14 @@ creative choices and wardrobe scope without replacing handlers or mounting a
 second mobile list. Focus follows explicit take mutations and save errors;
 error dismissal returns to an available editor control. Review, Generation,
 Full Auto, Legacy and the session navigation keep their existing styles.
+
+### Review and execution surfaces
+
+`SessionExecution.css` scopes execution typography, focus indicators, 44px actions,
+operation explanations and progress surfaces to Review, Generation and Full Auto.
+Review keeps one semantic table with an independently scrollable, named keyboard
+region; no duplicate mobile DOM is mounted. Responsive grids allow long technical
+identities to wrap without changing their values. Progress counts remain separate
+from authorization and allowances; they do not imply a percentage of the entire
+Full Auto journey. Navigation, the first three editors, Legacy and gallery styles
+are outside this scope.

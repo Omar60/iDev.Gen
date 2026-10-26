@@ -5,6 +5,7 @@ import SessionNavigation from './SessionNavigation.jsx'
 import '../ui/foundations.css'
 import './SessionNavigation.css'
 import './SessionEditors.css'
+import './SessionExecution.css'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
@@ -3238,10 +3239,11 @@ export default function SessionView({
       />}
 
       {isResource && (
-        <section className="panel" aria-label="Full Auto run" style={{ marginBottom: 14 }}>
+        <section className="panel studio-ui session-execution session-full-auto" aria-label="Full Auto run" style={{ marginBottom: 14 }}>
           <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
             <div>
-              <h3 style={{ margin: 0 }}>Full Auto</h3>
+              <h3 className="ui-section-title">Full Auto</h3>
+              <p className="ui-help">Server-controlled execution. Consent and recovery remain explicit.</p>
               {fullAutoRunForSession && (
                 <p className="muted" style={{ margin: '3px 0 0', fontSize: 12 }}>
                   Run <code>{fullAutoRunForSession.run_id}</code> · {fullAutoRunForSession.state.replaceAll('_', ' ')} · {fullAutoRunForSession.phase}
@@ -3293,7 +3295,7 @@ export default function SessionView({
               ])]
             return (
               <>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(125px, 1fr))', gap: 8, marginTop: 10 }}>
+                <div className="execution-metrics" role="group" aria-label="Full Auto progress" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 125px), 1fr))', gap: 8, marginTop: 10 }}>
                   <span><b>Targets</b><br />{progress.target_count}</span>
                   <span><b>Prepared</b><br />{progress.prepared_count}</span>
                   <span><b>Submitted</b><br />{progress.submitted_count}</span>
@@ -3302,7 +3304,7 @@ export default function SessionView({
                   <span><b>Cancelled</b><br />{progress.cancelled_count}</span>
                   <span><b>Unsettled work</b><br />{progress.unresolved_work_count}</span>
                 </div>
-                <div className="muted" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 5, marginTop: 8, fontSize: 12 }}>
+                <div className="muted execution-authorization" role="group" aria-label="Full Auto authorization and allowances" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 210px), 1fr))', gap: 5, marginTop: 8, fontSize: 12 }}>
                   <span>Assistant calls remaining: {allowances.assistant_calls_remaining_lower_bound} / {allowances.assistant_calls_total} (per take {allowances.assistant_calls_per_take})</span>
                   <span>Image attempts remaining: {allowances.image_attempts_remaining_lower_bound} / {allowances.image_attempts_total} (per take {allowances.image_attempts_per_take})</span>
                   <span>Authorization: {run.authorization_version || 'unknown'} · {run.policy_version || 'unknown'}</span>
@@ -3445,7 +3447,7 @@ export default function SessionView({
                         ? `The authorized scope changed: ${fullAutoComparison.changed_fields.join(', ') || 'review the old and new scope below'}. Explicit acceptance is required.`
                         : 'The current scope matches the saved authorization. No changed-scope consent is needed.'}
                     </p>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 10 }}>
                       <div><b>Previously authorized</b><div className="muted" style={{ fontSize: 11 }}>{compareSummary(fullAutoComparison.old_scope.summary)}</div><div className="muted">Expires {fullAutoComparison.old_scope.authorization_expires_at}</div></div>
                       <div><b>Current scope</b><div className="muted" style={{ fontSize: 11 }}>{compareSummary(fullAutoComparison.new_scope.summary)}</div><div className="muted">Expires {fullAutoComparison.new_scope.authorization_expires_at}</div></div>
                     </div>
@@ -3485,7 +3487,7 @@ export default function SessionView({
                 )}
                 <details style={{ marginTop: 9 }}>
                   <summary>Full Auto targets and results ({progress.target_take_ids.length} takes · {resultRows.length} submitted shots)</summary>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10, marginTop: 7 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 10, marginTop: 7 }}>
                     <div><b>All target takes</b><ul style={{ margin: '4px 0', paddingLeft: 20 }}>{progress.target_take_ids.map((takeId) => <li key={takeId}><code>{takeId}</code></li>)}</ul></div>
                     <div><b>Submitted shot outcomes</b>{resultRows.length
                       ? <ul style={{ margin: '4px 0', paddingLeft: 20 }}>{resultRows.map(({ shotId, state, shot }) => <li key={shotId}>Shot #{shotId}: {state}{shot?.error ? ` · ${shot.error}` : ''}</li>)}</ul>
@@ -4270,10 +4272,10 @@ export default function SessionView({
             const allReadySelected = readyTakeIds.length > 0 && readyTakeIds.every((tid) => selectedTakeIds.has(tid))
 
             return (
-              <div>
+              <div className="studio-ui session-execution session-review">
                 <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <div>
-                    <h3 style={{ margin: 0 }}>4. Review</h3>
+                    <h3 className="ui-section-title">4. Review</h3>
                     <p className="muted" style={{ margin: '2px 0 0' }}>
                       Review session configuration, effective prompts, provenance, and conflicts before generating.
                     </p>
@@ -4305,6 +4307,14 @@ export default function SessionView({
                     )}
                   </div>
                 </div>
+
+                <ol className="execution-sequence" aria-label="Explicit generation operations">
+                  <li><b>Prepare</b><span>Compile authoritative take prompts.</span></li>
+                  <li><b>Approve Review</b><span>Approve this exact plan revision.</span></li>
+                  <li><b>Submit</b><span>Add selected prepared takes to the queue.</span></li>
+                  <li><b>Run</b><span>Start queued shots using the top bar.</span></li>
+                </ol>
+                <p className="ui-help">Each operation is explicit. Changing stages does not prepare, approve, submit, or run anything.</p>
 
                 {planDirty && (
                   <div style={{
@@ -4364,7 +4374,7 @@ export default function SessionView({
                   </div>
                 )}
 
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, marginBottom: 14 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: 12, marginBottom: 14 }}>
                   <div style={{ background: 'var(--panel-2)', padding: 10, borderRadius: 8 }}>
                     <div style={{ fontWeight: 600, marginBottom: 6 }}>Character Identity</div>
                     <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
@@ -4406,7 +4416,7 @@ export default function SessionView({
                     <p className="muted" style={{ margin: '0 0 10px', fontSize: 12 }}>
                       Saved look and wardrobe values are additional constraints. Empty values leave the selected scene descriptions intact.
                     </p>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginBottom: 12 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 10, marginBottom: 12 }}>
                       {[
                         ['Look', sharedSummary.look],
                         ['Initial Wardrobe', sharedSummary.initial_wardrobe],
@@ -4666,7 +4676,8 @@ export default function SessionView({
                       </span>
                     )}
                   </div>
-                  <div style={{ overflowX: 'auto' }}>
+                  <p id="review-table-help" className="ui-help">Scroll the take review horizontally to inspect every field and action. Keyboard: focus the table region, then use the arrow keys.</p>
+                  <div className="execution-table-scroll" role="region" aria-label="Planned take review" aria-describedby="review-table-help" tabIndex={0}>
                     <table>
                       <thead>
                         <tr>
@@ -4676,6 +4687,7 @@ export default function SessionView({
                               checked={allReadySelected}
                               onChange={() => handleSelectAllReady(readyTakeIds)}
                               disabled={readyTakeIds.length === 0 || planDirty || submittingTakes}
+                              aria-label="Select all ready takes"
                               title={readyTakeIds.length === 0 ? 'No ready takes available to select' : 'Select all ready takes'}
                             />
                           </th>
@@ -4756,6 +4768,7 @@ export default function SessionView({
                                   <input
                                     type="checkbox"
                                     checked={selectedTakeIds.has(t.take_id)}
+                                    aria-label={`Select take ${t.take_id} for submission`}
                                     onChange={() => handleToggleTakeSelect(t.take_id)}
                                     disabled={!isSelectable}
                                     title={
@@ -4871,7 +4884,7 @@ export default function SessionView({
                                       </div>
 
                                       {/* Effective Wardrobe & Look */}
-                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 10 }}>
+                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: 10 }}>
                                         <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
                                           <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>Effective Wardrobe</div>
                                           <div style={{ fontSize: 12 }}>{displaySnapshotField('wardrobe', d.wardrobe, 'no wardrobe description')}</div>
@@ -5098,6 +5111,7 @@ export default function SessionView({
                                                     <input
                                                       type="text"
                                                       style={{ flex: 1, fontSize: 11 }}
+                                                      aria-label={`Adapted ${c.resource_field || 'value'} for take ${t.take_id}`}
                                                       placeholder={`Enter adapted ${c.resource_field || 'value'}...`}
                                                       value={draftVal}
                                                       onChange={(e) => {
@@ -5200,10 +5214,10 @@ export default function SessionView({
           })()}
 
           {activeStep === 'generation' && (
-            <div style={{ marginBottom: 4 }}>
+            <div className="studio-ui session-execution session-generation" style={{ marginBottom: 4 }}>
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                  <h3 style={{ margin: 0 }}>5. Generation</h3>
+                  <h3 className="ui-section-title">5. Generation</h3>
                   <p className="muted" style={{ margin: '2px 0 0' }}>
                     {s.shots.length > 0
                       ? `Session gallery (${done}/${s.shots.length} completed).`
@@ -5211,6 +5225,13 @@ export default function SessionView({
                         ? `Session plan reviewed (${pending} pending shots ready to run). Click Run in the top bar to shoot.`
                         : 'Session plan reviewed. Materialized takes will appear here ready to run.'}
                   </p>
+                </div>
+                <div className="execution-results" role="group" aria-label="Generation results">
+                  <span><b>{done}</b> completed</span>
+                  <span><b>{pending}</b> pending</span>
+                  <span><b>{s.shots.filter((shot) => shot.status === 'running').length}</b> running</span>
+                  <span><b>{s.shots.filter((shot) => shot.status === 'failed').length}</b> failed</span>
+                  <span><b>{s.shots.filter((shot) => shot.status === 'cancelled').length}</b> cancelled</span>
                 </div>
                 <button onClick={() => navigateStep('review')}>← Back to Review</button>
               </div>
