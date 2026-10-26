@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api, shotImage, versionText } from '../api'
 import { go } from '../App.jsx'
+import SessionNavigation from './SessionNavigation.jsx'
+import '../ui/foundations.css'
+import './SessionNavigation.css'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
@@ -2845,11 +2848,24 @@ export default function SessionView({
           </ul>
         </div>
       )}
-      <div className="row" style={{ justifyContent: 'space-between' }}>
-        <div>
-          <h1>{s.name}</h1>
+      <header className="studio-ui session-header">
+        <div className="session-identity">
+          <a className="session-back" href="#/sessions">All sessions</a>
+          <div className="ui-actions">
+            <span className="ui-state">Session {s.id}</span>
+            <span className="ui-state">{isResource ? 'Resource workflow' : 'Legacy workflow'}</span>
+            <span className="ui-state" data-tone={s.status === 'failed' ? 'error' : s.status === 'done' ? 'success' : undefined}>{s.status}</span>
+          </div>
+          <h1>{s.name?.trim() ? s.name : `Session ${s.id}`}</h1>
+          <p className="session-model"><a href={`#/model/${s.model.id}`}>{s.model.name}</a></p>
+          {isResource && s.diagnostic && (
+              <p role="alert" className="muted" style={{ marginTop: -6 }}>
+                <b>Resource plan needs attention{s.diagnostic.code ? ` (${s.diagnostic.code})` : ''}:</b> {s.diagnostic.message || 'Plan-owned look and wardrobe are unavailable.'}
+              </p>
+          )}
+          <details className="session-metadata">
+          <summary>Technical session settings</summary>
           <p className="muted">
-            <a href={`#/model/${s.model.id}`}>{s.model.name}</a> ·{' '}
             <Sent slot="width height">{s.settings.width}×{s.settings.height}</Sent> ·{' '}
             <Sent slot="steps">{s.settings.steps} steps</Sent> ·{' '}
             <Sent slot="cfg">cfg {s.settings.cfg}</Sent> ·{' '}
@@ -2857,11 +2873,10 @@ export default function SessionView({
             {s.settings.sampler && <> · <Sent slot="sampler">{s.settings.sampler}</Sent></>}
             {s.settings.scheduler && <> · <Sent slot="scheduler">{s.settings.scheduler}</Sent></>}
           </p>
+          </details>
           {isResource ? (
             s.diagnostic ? (
-              <p role="alert" className="muted" style={{ marginTop: -6 }}>
-                <b>Resource plan needs attention{s.diagnostic.code ? ` (${s.diagnostic.code})` : ''}:</b> {s.diagnostic.message || 'Plan-owned look and wardrobe are unavailable.'}
-              </p>
+              null
             ) : (
               <div className="muted" style={{ marginTop: -6, fontSize: 13 }}>
                 <p style={{ margin: '0 0 3px' }}>
@@ -2908,7 +2923,7 @@ export default function SessionView({
             {(tagsOpen || tags.length > 0) && (
               <form onSubmit={(e) => { e.preventDefault(); addTag(tagDraft) }}
                     style={{ display: 'flex', gap: 4, flex: '0 1 200px' }}>
-                <input value={tagDraft} onChange={(e) => setTagDraft(e.target.value)}
+                <input aria-label="New session tag" value={tagDraft} onChange={(e) => setTagDraft(e.target.value)}
                        onBlur={() => { if (!tagDraft) setTagsOpen(false) }}
                        onFocus={() => setTagsOpen(true)}
                        placeholder="Add a tag" style={{ width: '100%' }} />
@@ -2941,7 +2956,7 @@ export default function SessionView({
             </p>
           )}
         </div>
-        <div className="row">
+        <div className="row session-actions" role="group" aria-label="Session actions">
           {kind && <span className="badge" title={KINDS[kind].blurb}>{KINDS[kind].label}</span>}
           {canGenerateSession(s, {
             plan,
@@ -3158,7 +3173,44 @@ export default function SessionView({
             })
           }}>Delete</button>
         </div>
-      </div>
+        <aside className="session-context" aria-label="Session progress">
+          <h2 className="ui-section-title">Session progress</h2>
+          <p>{done} of {s.shots.length} photos completed{failed ? ` · ${failed} failed` : ''}</p>
+          {s.shots.length > 0 && <progress aria-label="Completed photos" value={done} max={s.shots.length} />}
+          <p className="ui-help">{isResource ? `${plan?.takes?.length || 0} plan takes` : 'Legacy session'}</p>
+        </aside>
+      </header>
+
+      {isResource && <SessionNavigation
+        id={id} activeStep={activeStep} onNavigate={navigateStep}
+        planReady={canPreparePlan({ plan, planRevision })}
+        generationDisabled={activeStep !== 'generation' && (
+                  activeStep !== 'review' ||
+                  reviewBlocksFinalization ||
+                  !canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflictMarkers, reviewedRevision })
+                )}
+        generationReason={
+                  activeStep !== 'generation' && activeStep !== 'review'
+                    ? 'Review step must be completed before generation'
+                    : planDirty
+                      ? 'Plan has unsaved changes'
+                      : hasKnownStaleAdaptations
+                        ? 'A reviewed adaptation is stale; save a new plan revision before proceeding'
+                        : (activeStep === 'review' && planReviewStatus !== 'ready')
+                          ? 'All take reviews must load successfully before proceeding'
+                        : reviewedRevision !== planRevision
+                          ? 'Approve Review for the current plan revision before proceeding'
+                        : !plan?.takes?.length
+                          ? 'Plan must contain at least one take'
+                          : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
+                            ? 'Session has no workflow assigned'
+                          : hasPlanConflictMarkers
+                            ? 'Resource markers remain visible; this plan revision is approved'
+                            : ''
+                }
+        takeCount={plan?.takes?.length || 0} shotCount={s.shots?.length || 0}
+        revision={planRevision} dirty={planDirty} notice={planNotice}
+      />}
 
       {isResource && (
         <section className="panel" aria-label="Full Auto run" style={{ marginBottom: 14 }}>
@@ -3531,81 +3583,6 @@ export default function SessionView({
             </div>
           ) : (
             <>
-              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <div className="row" style={{ gap: 6 }}>
-              <button
-                type="button"
-                className={'chip' + (activeStep === 'character' ? ' on' : '')}
-                onClick={() => navigateStep('character')}
-              >
-                1. Character
-              </button>
-              <button
-                type="button"
-                className={'chip' + (activeStep === 'constants' ? ' on' : '')}
-                onClick={() => navigateStep('constants')}
-              >
-                2. Scene / Constants
-              </button>
-              <button
-                type="button"
-                className={'chip' + (activeStep === 'takes' ? ' on' : '')}
-                onClick={() => navigateStep('takes')}
-              >
-                3. Takes {plan?.takes ? `(${plan.takes.length})` : ''}
-              </button>
-              <button
-                type="button"
-                className={'chip' + (activeStep === 'review' ? ' on' : '')}
-                onClick={() => navigateStep('review')}
-              >
-                4. Review
-              </button>
-              <button
-                type="button"
-                className={'chip' + (activeStep === 'generation' ? ' on' : '')}
-                onClick={() => navigateStep('generation')}
-                disabled={activeStep !== 'generation' && (
-                  activeStep !== 'review' ||
-                  reviewBlocksFinalization ||
-                  !canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflictMarkers, reviewedRevision })
-                )}
-                title={
-                  activeStep !== 'generation' && activeStep !== 'review'
-                    ? 'Review step must be completed before generation'
-                    : planDirty
-                      ? 'Plan has unsaved changes'
-                      : hasKnownStaleAdaptations
-                        ? 'A reviewed adaptation is stale; save a new plan revision before proceeding'
-                        : (activeStep === 'review' && planReviewStatus !== 'ready')
-                          ? 'All take reviews must load successfully before proceeding'
-                        : reviewedRevision !== planRevision
-                          ? 'Approve Review for the current plan revision before proceeding'
-                        : !plan?.takes?.length
-                          ? 'Plan must contain at least one take'
-                          : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
-                            ? 'Session has no workflow assigned'
-                          : hasPlanConflictMarkers
-                            ? 'Resource markers remain visible; this plan revision is approved'
-                            : ''
-                }
-              >
-                5. Generation {s.shots?.length ? `(${s.shots.length})` : ''}
-              </button>
-            </div>
-            <div className="row" style={{ gap: 8 }}>
-              {planRevision !== null && (
-                <span className="badge" title="Current plan revision">Rev {planRevision}</span>
-              )}
-              {planDirty && (
-                <span className="badge pending" title="Unsaved changes in draft plan">Unsaved changes</span>
-              )}
-              {planNotice && (
-                <span className="badge ready">{planNotice}</span>
-              )}
-            </div>
-          </div>
-
           {activeStep === 'character' && (
             <div>
               <h3>1. Character</h3>

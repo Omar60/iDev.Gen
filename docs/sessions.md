@@ -2821,3 +2821,31 @@ Deleting a session from the app deletes its folder too. If a file is locked and
 the folder survives, the app says so instead of leaving it quietly behind —
 session numbers are reused, and a leftover folder would show its photos inside a
 later session.
+
+
+## Studio session navigation
+
+The editor header shows the session identity, model, workflow mode, status and
+completed-photo progress. Empty names display `Session N` without modifying the
+stored name. Technical session settings remain available in an explicit native disclosure.
+Look, wardrobe, tags, reference warnings and their existing controls remain visible
+outside that disclosure. No header controls are unmounted when it closes.
+
+Resource-v1 stages remain Character, Scene / Constants, Takes, Review and
+Generation. The current stage, plan revision, unsaved edits and the reason
+Generation is blocked are shown separately. Stages use five columns on wide
+screens, three on tablets and two on small screens. Changing stage moves focus to
+the current-stage heading. Tab and Enter operate the native buttons.
+
+Existing `#/session/N` and model links remain valid. Optional `?step=character`,
+`constants`, `takes`, `review` or `generation` links use the same navigation guards
+as the editor. Other query parameters are retained. Rejected transitions restore
+the visible stage in the URL; unknown stage names are ignored. A Generation link
+cannot bypass Review, approval, unsaved-plan checks or readiness. Use **Link to
+current stage** to copy or open the view in another tab. Accepted navigation does
+not save, prepare, approve, submit or run anything.
+
+Legacy sessions keep their controls, settings, editing and gallery without the
+resource stage navigation. Stage contents, generation logic and Full Auto recovery
+are unchanged. Drafts stay in the existing mounted SessionView state; this change
+does not add persistence across a full reload or leaving the session.

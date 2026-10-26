@@ -136,3 +136,14 @@ are labelled separately from authoritative saved readiness. Saved facts can be
 inspected without overwriting the draft; final confirmation is renewed after a
 publication error. No styling or navigation action changes acceptance or Full
 Auto authorization.
+
+
+### Session editor shell
+
+`SessionNavigation.css` scopes studio tokens to the session header and resource
+stage navigation. The header separates identity, existing actions and contextual
+photo progress. Native disclosure retains technical settings; existing controls and reference
+warnings remain outside it.
+The navigation keeps the root editor mounted, labels its current stage, exposes
+Generation blockers and focuses its heading after a stage change. Stage contents,
+Full Auto controls, take editors and gallery keep their existing layout and rules.

@@ -997,3 +997,9 @@ inspectable provenance, and distinct draft/server-readiness states. Saved profil
 facts can be inspected without replacing a draft. Standalone publication errors
 retain draft facts for revision inspection and renewed review; combined saves
 retain their separate identical-request recovery.
+
+
+The [session editor navigation](docs/sessions.md#studio-session-navigation) groups
+session identity, photo progress and the five resource-v1 stages in a responsive
+studio header. Stage links retain existing review gates and never authorize an
+operation; Legacy controls remain separate.

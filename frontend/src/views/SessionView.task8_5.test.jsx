@@ -99,7 +99,9 @@ describe('Task 8.5 resource review presentation', () => {
       await Promise.resolve()
     })
 
-    const details = [...container.querySelectorAll('details')]
+    const details = [...container.querySelectorAll('details')].filter((element) => (
+      element.querySelector('summary')?.textContent === 'Advanced take fields (camera, framing, pose, expression)'
+    ))
     expect(details).toHaveLength(2)
     expect(details.map((element) => element.open)).toEqual([initiallyOpen, initiallyOpen])
 
