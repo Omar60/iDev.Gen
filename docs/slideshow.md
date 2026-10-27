@@ -4,7 +4,7 @@ A read-only screen that plays finished photographs across every session in a
 random order, full screen, advancing on a timer. It exists so the keepers can
 be looked at from across the room instead of on the machine that made them.
 
-Open it from the top bar (**Slideshow**), or load the address with your
+Open it from the navigation (**Slideshow**), or load the address with your
 configuration in the hash so a phone home-screen shortcut restores it on next
 open.
 
@@ -19,7 +19,7 @@ out-of-range or a non-numeric value falls back to a working default.
 | Minimum rating to include (inclusive) | 0 | 0–5 | `min_rating` | yes |
 | How many photographs to prepare ahead | 3 | 1–10 | `lookahead` | no |
 
-The rating threshold and the interval have pickers in the bar over the
+The rating threshold and the interval have labelled pickers below the
 photograph, so neither needs the address bar — which matters on the device this
 screen is for, where full screen hides the address bar and typing a query
 string is the most expensive input there is. Changing a picker writes the new
@@ -33,9 +33,9 @@ sixty. An interval that arrives from the address without being one of them —
 `lookahead` has no picker on purpose: it is tuning, set once if ever, not
 something to reach for while watching.
 
-The threshold picker is repeated on the "nothing meets this threshold" screen.
-Without it that screen would be a dead end, because the bar carrying the
-pickers is only drawn over a photograph.
+Both pickers remain available while loading, after a listing error, and when
+nothing meets the threshold. Empty and error states also offer an explicit
+reload or retry without changing the saved settings.
 
 Example: `#/slideshow?interval=5&min_rating=4&lookahead=3` plays every
 photograph rated four or higher, holds each one for five seconds, and keeps
@@ -114,8 +114,42 @@ listing route does not write.
 
 ## Leaving
 
-The top-left **Exit** link, the `Escape` key, and a click anywhere on the
-photograph all leave the slideshow and return to **Library**. Exiting the
-browser's full-screen mode (the **Fullscreen** button in the overlay, or the
-phone's back gesture) leaves the photograph full-window but inside the
-browser chrome, which is the same screen minus the browser's own controls.
+The **Exit to Library** link and Escape leave the viewer and return to Library.
+Clicking the photograph has no action. An earlier version of this page described
+click-to-exit, but the application did not implement it. Browser fullscreen can
+consume the first Escape to return to window mode; another Escape exits the
+viewer. The Fullscreen button label follows external fullscreen changes.
+
+## Studio viewer and recovery
+
+Opening the Slideshow route remains the explicit action that starts its existing
+automatic playback. There is no new play/pause or manual next/previous control.
+The photograph has its own area, separate from the session name, rating,
+interval and exit controls. Vertical, horizontal and square photographs use
+`object-fit: contain` without distortion or controls covering their edges.
+Session names wrap, with a visual session-ID fallback when a name is absent.
+
+A native modal viewer with explicit Tab wrapping keeps focus inside its controls
+and makes the
+underlying navigation inactive. Focus starts on the viewer heading, remains
+stable during timed changes, and returns to the application on exit. Body scroll,
+listeners, buffer references and the timer are cleaned up on unmount. Fullscreen
+is requested only by its button; failures are shown without repeating a request.
+Fullscreen entered by the viewer is released when it unmounts, including a
+request that finishes after navigation away.
+
+The initial list request has a distinct loading state. Changing the rating keeps
+the previous set running until the new list arrives, as before; the viewer says
+that the set is updating. Stale list and image events do not replace the current
+selection. Changing the interval preserves the set and retunes the existing timer.
+
+Missing images still advance using the unchanged deck transition. If every image
+in the set fails, an unavailable-state panel prevents repeated failing image
+mounts and offers an explicit retry. The deck and its timer are not changed or
+filtered by this panel. Retry reads the list again and builds a fresh shuffled
+set; it does not write data. A single available photograph still has no timer.
+
+Preloading retains the existing rolling decode window. An ID repeated by a
+lookahead larger than the set is decoded once per window, not once per repeated
+position. Decode failures do not stop playback. These changes add no image,
+rating, deletion, approval or generation mutations and do not change `deck.js`.

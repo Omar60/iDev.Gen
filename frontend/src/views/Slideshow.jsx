@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api, shotImage } from '../api'
 import { shuffle, nextPlay } from '../deck'
+import '../ui/foundations.css'
+import './Slideshow.css'
 
 /** The three settings the screen reads from the URL, with the working defaults
  *  the page falls back to when the hash is absent, out of range or not a number.
@@ -53,9 +55,41 @@ export default function Slideshow() {
   const [play, setPlay] = useState({ deck: [], index: 0 })
   const { deck, index } = play
   const [loadError, setLoadError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [reload, setReload] = useState(0)
+  const [failedIds, setFailedIds] = useState(new Set())
+  const [imageState, setImageState] = useState({ id: null, ready: false })
+  const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement))
+  const [fullscreenError, setFullscreenError] = useState('')
+  const dialogRef = useRef(null)
+  const headingRef = useRef(null)
+  const mounted = useRef(false)
+  const ownsFullscreen = useRef(false)
+  const currentId = useRef(null)
+  currentId.current = deck[index]?.id
+
   // Mutable, on purpose: filling a buffer is a side effect of advancing, and
   // doing it through state would re-render with a stale buffer for one frame.
   const bufferRef = useRef([])
+
+  useEffect(() => {
+    mounted.current = true
+    const dialog = dialogRef.current
+    const overflow = document.body.style.overflow
+    dialog.showModal()
+    document.body.style.overflow = 'hidden'
+    headingRef.current?.focus()
+    const onFullscreen = () => setFullscreen(Boolean(document.fullscreenElement))
+    document.addEventListener('fullscreenchange', onFullscreen)
+    return () => {
+      mounted.current = false
+      document.removeEventListener('fullscreenchange', onFullscreen)
+      bufferRef.current = []
+      document.body.style.overflow = overflow
+      dialog.close()
+      if (ownsFullscreen.current && document.fullscreenElement) document.exitFullscreen().catch(() => {})
+    }
+  }, [])
 
   // The settings live in the URL, so the screen reads them on every hash
   // change rather than only on mount. Back/forward across the history works.
@@ -70,9 +104,12 @@ export default function Slideshow() {
   useEffect(() => {
     let cancelled = false
     setLoadError('')
+    setLoading(true)
     api.get(`/api/photos?min_rating=${min_rating}`)
       .then((rows) => {
         if (cancelled) return
+        setFailedIds(new Set())
+        setImageState({ id: null, ready: false })
         setPlay({ deck: shuffle(rows), index: 0 })
         // The old buffer points at rows that no longer exist. Clear it; the
         // buffer-refill effect will fill the new deck.
@@ -80,11 +117,12 @@ export default function Slideshow() {
       })
       .catch((e) => {
         if (cancelled) return
-        setLoadError(e.message)
+        setLoadError(e.message || 'The photograph list could not be loaded.')
         setPlay({ deck: [], index: 0 })
       })
+      .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [min_rating])
+  }, [min_rating, reload])
 
   // Pre-decode the next N photographs. `decode()` resolves once the bitmap is
   // ready, which is what removes the visible stall at the swap. A photograph
@@ -117,6 +155,7 @@ export default function Slideshow() {
       img.src = shotImage(photo.id)
       img.decode().catch(() => {})   // swallowed: a single failure must not stop the slideshow
       buffer.push({ img, photo })
+      held.add(photo.id)
     }
     bufferRef.current = buffer
   }, [deck, index, lookahead])
@@ -152,85 +191,97 @@ export default function Slideshow() {
     window.location.hash = `${path}?${params.toString()}`
   }
 
-  // Escape leaves the slideshow, the same way the back link does.
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') {
-        if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
-        window.location.hash = '#/library'
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  if (loadError) {
-    return <div className="error" style={{ padding: 40 }}>Failed to load photographs: {loadError}</div>
-  }
-
-  if (deck.length === 0) {
-    // The threshold control belongs here too: without it this screen is a dead
-    // end, since the overlay that carries the controls is only drawn over a
-    // photograph and there is no photograph to draw it over.
-    return (
-      <div className="slideshow-empty">
-        <p>No photographs meet this threshold.</p>
-        <p className="muted">Lower it here, or rate some photographs first.</p>
-        <p>
-          <select className="slideshow-sel" value={min_rating} title="Minimum rating to include"
-                  onChange={(e) => setSetting('min_rating', e.target.value)}>
-            {RATING_LABELS.map((label, r) => <option key={r} value={r}>{label}</option>)}
-          </select>
-        </p>
-        <p><a href="#/library">← Back to Library</a></p>
-      </div>
-    )
+  const leave = () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+    window.location.hash = '#/library'
   }
 
   const current = deck[index]
-  // An interval that arrived from the address but is not one of the offered
-  // choices joins the list, so the control shows what is really playing rather
-  // than rendering blank and silently rewriting it on the next change.
+  const name = current?.session_name || (current ? `Session #${current.session_id}` : '')
+  const allFailed = deck.length > 0 && failedIds.size === deck.length
+  const imageLoading = current && (imageState.id !== current.id || !imageState.ready)
   const intervalChoices = INTERVAL_CHOICES.includes(interval)
     ? INTERVAL_CHOICES
     : [...INTERVAL_CHOICES, interval].sort((a, b) => a - b)
-  // The onError handler is the spec's "deleting a file mid-play skips rather
-  // than stops": the next onError fires, the index advances, the deck keeps
-  // walking past the missing file.
-  const onImgError = () => advance()
 
-  // Toggle the Fullscreen API on and off. The request needs a user gesture
-  // on most browsers, so the button is the only place it is called from: the
-  // page is already a fixed full-viewport overlay, and a user who wants the
-  // browser chrome gone (the phone's address bar, status bar) has the button
-  // for it.
-  const toggleFullscreen = (e) => {
-    if (e) e.stopPropagation()
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {})
-    } else if (document.documentElement.requestFullscreen) {
-      document.documentElement.requestFullscreen().catch(() => {})
+  const onImgError = (id) => {
+    if (!mounted.current || currentId.current !== id) return
+    setFailedIds((previous) => new Set(previous).add(id))
+    advance()
+  }
+  const toggleFullscreen = async () => {
+    setFullscreenError('')
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen()
+      else if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen()
+        if (!mounted.current) { document.exitFullscreen().catch(() => {}); return }
+        ownsFullscreen.current = true
+      }
+    } catch (error) {
+      if (mounted.current) setFullscreenError(`Fullscreen could not be changed. Try again or use the window view. ${error.message || ''}`.trim())
     }
   }
 
-  return (
-    <div className="slideshow">
-      <img src={shotImage(current.id)} alt="" onError={onImgError} />
-      <div className="slideshow-overlay" onClick={(e) => e.stopPropagation()}>
-        <span className="slideshow-name" title={current.session_name}>{current.session_name}</span>
-        <select className="slideshow-sel" value={min_rating} title="Minimum rating to include"
-                onChange={(e) => setSetting('min_rating', e.target.value)}>
-          {RATING_LABELS.map((label, r) => <option key={r} value={r}>{label}</option>)}
-        </select>
-        <select className="slideshow-sel" value={interval} title="Seconds per photograph"
-                onChange={(e) => setSetting('interval', e.target.value)}>
-          {intervalChoices.map((s) => <option key={s} value={s}>{s}s</option>)}
-        </select>
-        <button className="slideshow-btn" onClick={toggleFullscreen} title="Toggle fullscreen (browser chrome)">
-          {document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen'}
-        </button>
-        <a href="#/library" onClick={(e) => e.stopPropagation()}>← Exit</a>
-      </div>
+  const trapFocus = (event) => {
+    if (event.key !== 'Tab') return
+    const controls = [...event.currentTarget.querySelectorAll('a[href], button:not(:disabled), select:not(:disabled)')]
+    const first = controls[0]
+    const last = controls.at(-1)
+    if (event.shiftKey && (event.target === first || !controls.includes(event.target))) {
+      event.preventDefault(); last?.focus()
+    } else if (!event.shiftKey && event.target === last) {
+      event.preventDefault(); first?.focus()
+    }
+  }
+
+  return <dialog ref={dialogRef} className="studio-ui slideshow-view" aria-labelledby="ss-title" aria-modal="true"
+    onKeyDown={trapFocus} onCancel={(event) => { event.preventDefault(); leave() }}>
+    <header className="slideshow-header">
+      <div><h1 id="ss-title" ref={headingRef} tabIndex={-1}>Slideshow</h1>
+        <p className="ui-help">{current && !allFailed ? `Photograph ${index + 1} of ${deck.length}` : 'Photographs across sessions'}</p></div>
+      <span className="ui-state">Read-only</span>
+      <a className="ui-button" href="#/library">Exit to Library</a>
+    </header>
+
+    <div className="slideshow-stage" aria-busy={Boolean(loading || (!allFailed && imageLoading))}>
+      {loadError ? <section className="slideshow-message ui-surface" aria-labelledby="ss-error-title">
+        <h2 id="ss-error-title" className="ui-section-title">Photographs could not be loaded</h2>
+        <p className="ui-notice" data-tone="error" role="alert">{loadError}</p>
+        <p className="ui-section-description">Your interval and minimum rating are kept in the address. Retry the list or adjust the rating below.</p>
+        <button className="ui-button ui-button--primary" onClick={() => setReload((value) => value + 1)}>Retry photographs</button>
+      </section> : allFailed ? <section className="slideshow-message ui-surface" aria-labelledby="ss-unavailable-title">
+        <h2 id="ss-unavailable-title" className="ui-section-title">No photograph could be displayed</h2>
+        <p className="ui-section-description" role="status">The images in this set could not be loaded. Retry the list or change the minimum rating.</p>
+        <button className="ui-button" onClick={() => setReload((value) => value + 1)}>Retry photographs</button>
+      </section> : current ? <>
+        <img key={current.id} className="slideshow-photo" src={shotImage(current.id)}
+          alt={`Photograph from ${name}`} decoding="async" onError={() => onImgError(current.id)}
+          onLoad={() => { if (mounted.current && currentId.current === current.id) setImageState({ id: current.id, ready: true }) }} />
+        {imageLoading && <p className="slideshow-image-loading" role="status">Loading photograph…</p>}
+      </> : loading ? <div className="slideshow-message" role="status"><h2 className="ui-section-title">Loading photographs…</h2><p className="ui-help">Reading the photographs that meet the minimum rating.</p></div>
+        : <section className="slideshow-message ui-surface" aria-labelledby="ss-empty-title"><h2 id="ss-empty-title" className="ui-section-title">No photographs meet this threshold</h2>
+          <p className="ui-section-description">Lower the minimum rating below, or return to Library to review your photographs.</p>
+          <button className="ui-button" onClick={() => setReload((value) => value + 1)}>Reload photographs</button></section>}
     </div>
-  )
+
+    <footer className="slideshow-controls">
+      <div className="slideshow-context"><p className="slideshow-session">{name || 'No photograph selected'}</p>
+        <p className="ui-help">{loading && current ? 'Updating the photograph set…' : current && !allFailed ? deck.length === 1 ? 'Single photograph; no automatic advance.' : `Advances automatically every ${interval} seconds.` : 'Adjust the minimum rating to choose the set.'}</p>
+        {current && failedIds.size > 0 && !allFailed && <p className="ui-help" role="status">Unavailable photographs encountered: {failedIds.size}. Playback continues.</p>}
+      </div>
+      <div className="ui-field"><label className="ui-label" htmlFor="ss-rating">Minimum rating</label>
+        <select id="ss-rating" name="min_rating" className="ui-control" value={min_rating} onChange={(event) => setSetting('min_rating', event.target.value)}>
+          {RATING_LABELS.map((label, rating) => <option key={rating} value={rating}>{label}</option>)}
+        </select></div>
+      <div className="ui-field"><label className="ui-label" htmlFor="ss-interval">Seconds per photograph</label>
+        <select id="ss-interval" name="interval" className="ui-control" value={interval} onChange={(event) => setSetting('interval', event.target.value)}>
+          {intervalChoices.map((seconds) => <option key={seconds} value={seconds}>{seconds}s</option>)}
+        </select></div>
+      <div className="slideshow-fullscreen"><button className="ui-button" onClick={toggleFullscreen}
+        disabled={!fullscreen && !document.documentElement.requestFullscreen}>{fullscreen ? 'Exit fullscreen' : 'Fullscreen'}</button>
+        {!document.documentElement.requestFullscreen && <p className="ui-help">Fullscreen is unavailable in this browser.</p>}</div>
+      {fullscreenError && <p className="ui-notice slideshow-fullscreen-error" data-tone="error" role="alert">{fullscreenError}</p>}
+    </footer>
+  </dialog>
 }

@@ -573,14 +573,18 @@ inclusive `min_rating` threshold (0–5) and `lookahead` (1–10 photographs
 decoded ahead of their turn). Defaults fall back to a working slideshow when a
 value is absent, out of range or not a number.
 
-The threshold and the interval also have pickers in the bar over the
+The threshold and the interval also have labelled pickers below the
 photograph, so a phone never has to edit a query string; changing one writes it
 back into the URL, so a home-screen shortcut keeps carrying the configuration.
 
 `min_rating=0` is what makes the screen useful on day one: every finished,
 un-rejected photograph is unrated at first, and the bar with thirteen
 photographs in it is what the same screen looks like once a few sessions
-have been rated. See [slideshow](docs/slideshow.md) for the full page.
+have been rated. The studio viewer separates complete photographs from its
+labelled controls, contains keyboard focus, and distinguishes loading, empty
+sets and retryable errors. Opening Slideshow retains its existing automatic
+playback; fullscreen still requires an explicit button action. See
+[slideshow](docs/slideshow.md) for the full page.
 
 ## Run it
 

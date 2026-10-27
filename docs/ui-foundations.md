@@ -218,3 +218,15 @@ semantic table each, with local keyboard-accessible scrolling on small screens.
 Result focus respects active modals and inert ancestors, with a sticky-header
 margin. Technical report details wrap without hiding long identities. Import
 helpers, API contracts, runtime room consumers and shared styles remain unchanged.
+
+
+### Slideshow
+
+`Slideshow.css` is scoped under `.slideshow-view`, reusing studio colors, fields,
+buttons and notices. The native full-window dialog separates its complete-image
+area from the header and responsive control grid, rather than covering the photo
+with controls. Safe-area padding, wrapped session names and 44px controls support
+mobile use. Loading, empty, failed-list and unavailable-image states retain rating,
+interval and exit controls. Native modal focus isolation replaces background tab
+stops; timed photo changes do not move focus. The shuffle/transition module,
+global styles and Library/SessionView consumers remain unchanged.
