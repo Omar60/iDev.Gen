@@ -647,13 +647,18 @@ path (`/api/resources/...`). Give it the folder holding the source JSON and the
 path to the translation map beside it; nothing is guessed and no example path is
 shipped, because both are paths on your own machine.
 
-The import is all or nothing and translation-first. Refused libraries, refused
-entries and the translation lookup all run over the whole upload before a single
-seed file is touched, so an upload carrying one string the map does not cover
-writes nothing and comes back with every uncovered string listed by entry and
-field — a worklist for the translation map, not a warning. A successful import
-writes each seed file and registers it in `room_libraries` in the same operation:
-either half alone is the state the registry check refuses.
+The Rooms screen separates the two source paths, the import effects and the
+result report. Paths stay in the form after a failure; pending imports lock the
+form and block duplicate submissions. Opening Rooms never starts an import.
+The report keeps the submitted paths alongside the ordered counts, refusals,
+outlying weights and retained verdicts. Full destination details remain available.
+
+Translation coverage is checked before seed writes. An upload with one string
+missing from the map writes nothing and lists every uncovered entry, field and
+source string. A successful import writes the declared seed files and registers
+their libraries in `room_libraries`. Other failures may occur after files or
+registry entries have changed: inspect them before explicitly retrying. Retries
+are new imports, never automatic replay. See [Rooms](docs/rooms.md).
 
 A **fused** library — one whose entries name a camera position, an act and a
 room in a single string — is refused by Rooms and imported by

@@ -206,3 +206,15 @@ scroll region. Heading focus has a sticky-header margin, and exiting during a
 pending request returns focus to the available configuration heading. Judge does
 not reuse the session viewer, which would expose information excluded from a
 blind pass. Deck construction, reading order and agreement helpers are unchanged.
+
+
+### Rooms
+
+`RoomImport.css` scopes the existing studio tokens and controls to
+`.room-import-view`. The source form and operation explanation sit side by side
+on desktop and stack at tablet/mobile widths. Result counts keep their original
+order in a responsive definition list. Refusal and translation worklists use one
+semantic table each, with local keyboard-accessible scrolling on small screens.
+Result focus respects active modals and inert ancestors, with a sticky-header
+margin. Technical report details wrap without hiding long identities. Import
+helpers, API contracts, runtime room consumers and shared styles remain unchanged.
