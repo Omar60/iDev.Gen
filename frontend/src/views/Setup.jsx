@@ -77,6 +77,8 @@ export default function Setup() {
   const [detecting, setDetecting] = useState(false)
   const errorNotice = useRef(null)
   const discoveryRequest = useRef(0)
+  const detectionRequest = useRef(0)
+  const detectionFieldEdits = useRef({ comfy_output_dir: 0, lora_dir: 0 })
 
   useEffect(() => { if (error) errorNotice.current?.focus() }, [error])
 
@@ -153,6 +155,7 @@ export default function Setup() {
     : found
   const visionModels = found.filter((m) => m.vision)
   const set = (k, v) => {
+    if (k in detectionFieldEdits.current) detectionFieldEdits.current[k] += 1
     if (['llm_url', 'llm_model', 'llm_vision_model', 'llm_key'].includes(k)) {
       discoveryRequest.current += 1
       setProbing(false)
@@ -191,18 +194,25 @@ export default function Setup() {
   }
 
   const detect = async () => {
+    const request = ++detectionRequest.current
+    const edits = { ...detectionFieldEdits.current }
     setError(''); setMsg('')
     setDetecting(true)
     try {
       const d = await api.post('/api/config/detect')
+      if (request !== detectionRequest.current) return
       setDetected(d)
-      setCfg({
-        ...cfg,
-        comfy_output_dir: d.comfy_output_dir.exists ? d.comfy_output_dir.path : cfg.comfy_output_dir,
-        lora_dir: d.lora_dir.exists ? d.lora_dir.path : cfg.lora_dir,
-      })
-    } catch (e) { setError(e.message) }
-    finally { setDetecting(false) }
+      setCfg((cur) => ({
+        ...cur,
+        comfy_output_dir: d.comfy_output_dir.exists && detectionFieldEdits.current.comfy_output_dir === edits.comfy_output_dir
+          ? d.comfy_output_dir.path : cur.comfy_output_dir,
+        lora_dir: d.lora_dir.exists && detectionFieldEdits.current.lora_dir === edits.lora_dir
+          ? d.lora_dir.path : cur.lora_dir,
+      }))
+    } catch (e) {
+      if (request === detectionRequest.current) setError(e.message)
+    }
+    finally { if (request === detectionRequest.current) setDetecting(false) }
   }
 
   const save = async () => {

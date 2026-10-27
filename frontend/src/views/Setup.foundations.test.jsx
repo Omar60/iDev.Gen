@@ -54,10 +54,11 @@ beforeEach(() => {
     calls.push({ path, method, body })
     if (method === 'GET' && path === '/api/config') return loadResult || response(stored)
     if (method === 'POST' && path === '/api/llm/models') return response({ url: stored.llm_url, models: [] })
-    if (method === 'POST' && path === '/api/config/detect') return detectResult || response({
-      comfy_root: 'studio/comfy', comfy_output_dir: { exists: true, path: 'detected/output' },
-      lora_dir: { exists: false, path: 'detected/loras' },
-    })
+    if (method === 'POST' && path === '/api/config/detect') return Array.isArray(detectResult)
+      ? detectResult.shift() : detectResult || response({
+        comfy_root: 'studio/comfy', comfy_output_dir: { exists: true, path: 'detected/output' },
+        lora_dir: { exists: false, path: 'detected/loras' },
+      })
     if (method === 'PATCH' && path === '/api/config') {
       if (saveResult) return saveResult
       stored = { ...stored, ...body }
@@ -219,5 +220,96 @@ it('keeps detection as an explicit action and fills only folders that exist', as
   expect(field('lora_dir').value).toBe('studio/loras')
   expect(field('llm_key').value).toBe(originalKey)
   expect(document.activeElement).toBe(button('Detect from ComfyUI'))
+  expect(calls.some(call => call.method === 'PATCH')).toBe(false)
+})
+
+it('preserves fields edited while Detect is pending and applies untouched detected folders', async () => {
+  const pending = deferred()
+  detectResult = pending.promise
+  await mount()
+  await click(button('Detect from ComfyUI'))
+
+  await edit('comfy_output_dir', 'manual/output')
+  await edit('comfy_url', 'http://manual-comfy.example:8190')
+  await edit('data_dir', 'manual/data')
+  await act(async () => pending.resolve(response({
+    comfy_root: 'studio/comfy', comfy_output_dir: { exists: true, path: 'detected/output' },
+    lora_dir: { exists: true, path: 'detected/loras' },
+  })))
+  await drain()
+
+  expect(field('comfy_output_dir').value).toBe('manual/output')
+  expect(field('lora_dir').value).toBe('detected/loras')
+  expect(field('comfy_url').value).toBe('http://manual-comfy.example:8190')
+  expect(field('data_dir').value).toBe('manual/data')
+  expect(calls.some(call => call.method === 'PATCH')).toBe(false)
+})
+
+it('ignores an older Detect response when consecutive requests resolve out of order', async () => {
+  const first = deferred()
+  const second = deferred()
+  const third = deferred()
+  detectResult = [first.promise, second.promise, third.promise]
+  await mount()
+  const detectButton = button('Detect from ComfyUI')
+
+  await act(async () => {
+    detectButton.click()
+    detectButton.click()
+  })
+  expect(calls.filter(call => call.path === '/api/config/detect')).toHaveLength(2)
+
+  await act(async () => second.resolve(response({
+    comfy_root: 'studio/new-comfy', comfy_output_dir: { exists: true, path: 'detected/new-output' },
+    lora_dir: { exists: true, path: 'detected/new-loras' },
+  })))
+  await drain()
+  expect(field('comfy_output_dir').value).toBe('detected/new-output')
+  expect(field('lora_dir').value).toBe('detected/new-loras')
+  expect(button('Detect from ComfyUI')).toBeTruthy()
+
+  await click(button('Detect from ComfyUI'))
+  expect(calls.filter(call => call.path === '/api/config/detect')).toHaveLength(3)
+  expect(button('Detecting…').getAttribute('aria-disabled')).toBe('true')
+  await act(async () => first.resolve(response({
+    comfy_root: 'studio/old-comfy', comfy_output_dir: { exists: true, path: 'detected/old-output' },
+    lora_dir: { exists: true, path: 'detected/old-loras' },
+  })))
+  await drain()
+  expect(field('comfy_output_dir').value).toBe('detected/new-output')
+  expect(field('lora_dir').value).toBe('detected/new-loras')
+  expect(button('Detecting…').getAttribute('aria-disabled')).toBe('true')
+  expect(container.textContent).toContain('studio/new-comfy')
+
+  await act(async () => third.resolve(response({
+    comfy_root: 'studio/final-comfy', comfy_output_dir: { exists: true, path: 'detected/final-output' },
+    lora_dir: { exists: true, path: 'detected/final-loras' },
+  })))
+  await drain()
+  expect(field('comfy_output_dir').value).toBe('detected/final-output')
+  expect(field('lora_dir').value).toBe('detected/final-loras')
+  expect(container.textContent).toContain('studio/final-comfy')
+  expect(container.textContent).not.toContain('studio/old-comfy')
+  expect(container.textContent).not.toContain('studio/new-comfy')
+  expect(calls.some(call => call.method === 'PATCH')).toBe(false)
+})
+
+it('clears a Detect error on explicit retry without losing edits or saving automatically', async () => {
+  await mount()
+  detectResult = response({ detail: 'Fixture: detection unavailable.' }, 503)
+  await click(button('Detect from ComfyUI'))
+  expect(container.querySelector('[role="alert"]').textContent).toContain('detection unavailable')
+
+  await edit('data_dir', 'manual/retry-data')
+  detectResult = response({
+    comfy_root: 'studio/recovered-comfy', comfy_output_dir: { exists: true, path: 'detected/recovered-output' },
+    lora_dir: { exists: false, path: 'detected/loras' },
+  })
+  await click(button('Detect from ComfyUI'))
+
+  expect(container.querySelector('[role="alert"]')).toBeNull()
+  expect(field('data_dir').value).toBe('manual/retry-data')
+  expect(field('comfy_output_dir').value).toBe('detected/recovered-output')
+  expect(button('Detect from ComfyUI')).toBeTruthy()
   expect(calls.some(call => call.method === 'PATCH')).toBe(false)
 })
