@@ -622,6 +622,7 @@ describe('Task 8.5 independent acceptance probes', () => {
   it('shows the backend missing-plan diagnostic on session detail without substituting legacy constants', async () => {
     const session = {
       ...brokenResourceSession,
+      id: sessionId,
       look: null,
       wardrobe: null,
     }

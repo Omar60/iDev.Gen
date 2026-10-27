@@ -438,6 +438,9 @@ export default function SessionView({
 }) {
   const [s, setS] = useState(initialSession)
   const [error, setError] = useState(initialError)
+  const [sessionLoadError, setSessionLoadError] = useState(
+    () => initialError ? { sessionId: String(id), message: initialError } : null,
+  )
   const [fullAutoRun, setFullAutoRun] = useState(null)
   const [fullAutoSessionId, setFullAutoSessionId] = useState('')
   const [fullAutoStatusResolved, setFullAutoStatusResolved] = useState(false)
@@ -489,7 +492,9 @@ export default function SessionView({
   // The tag editor's draft input. A PATCH fires on submit so the network
   // round-trip is one per tag, not one per keystroke, and on remove so each
   // click is its own action with its own undo.
-  const [tagDraft, setTagDraft] = useState('')
+  const [tagDrafts, setTagDrafts] = useState({})
+  const tagDraft = tagDrafts[String(id)] ?? ''
+  const setTagDraft = (value) => setTagDrafts((drafts) => ({ ...drafts, [String(id)]: value }))
   // The rooms this planned run would be refused in, asked for before it is
   // sent. Null until asked: an empty report and no report are different
   // answers, and only one of them is worth a line on the screen.
@@ -630,6 +635,7 @@ export default function SessionView({
   const sessionViewEpochRef = useRef(0)
   const sessionViewIdRef = useRef(id)
   sessionViewIdRef.current = id
+  const previousSessionIdRef = useRef(String(id))
   const fullAutoReadSequenceRef = useRef(0)
   const fullAutoReadQueueRef = useRef(Promise.resolve())
   const fullAutoComparisonSequenceRef = useRef(0)
@@ -779,10 +785,18 @@ export default function SessionView({
     const requestEpoch = sessionViewEpochRef.current
     return api.get(`/api/sessions/${sessionId}`).then((data) => {
     if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+    if (!data || String(data.id) !== String(sessionId)) {
+      const message = 'The session response did not match the requested session.'
+      setSessionLoadError({ sessionId: String(sessionId), message })
+      setError(message)
+      return
+    }
+    setSessionLoadError(null)
     setS(data)
     if (isResourceSession(data)) {
       loadSessionPlan(sessionId, api).then((res) => {
         if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+        if (planDirtyRef.current && planSessionId !== String(sessionId)) return
         if (res.ok) {
           if (typeof res.planRevision !== 'number' || res.planRevision < 0) {
             setPlanSessionId('')
@@ -856,13 +870,15 @@ export default function SessionView({
         setPlanReviewStatus('idle')
         setError(e?.message || 'Failed to load plan')
       })
-    } else {
+    } else if (!planDirtyRef.current) {
       setPlanSessionId('')
     }
     }).catch((e) => {
       if (isCurrentSessionRequest(sessionId, requestEpoch)) {
-        setPlanSessionId('')
-        setError(e.message)
+        if (!planDirtyRef.current) setPlanSessionId('')
+        const message = e?.message || 'Failed to load session'
+        setSessionLoadError({ sessionId: String(sessionId), message })
+        setError(message)
       }
     })
   }
@@ -1536,6 +1552,11 @@ export default function SessionView({
   }
 
   useEffect(() => {
+    if (previousSessionIdRef.current !== String(id)) {
+      previousSessionIdRef.current = String(id)
+      setError('')
+      setSessionLoadError(null)
+    }
     sessionViewEpochRef.current += 1
     setSessionRequestEpoch(sessionViewEpochRef.current)
     sessionViewMountedRef.current = true
@@ -2475,7 +2496,15 @@ export default function SessionView({
     }
   }, [s?.status])
 
-  if (!s) return <p className="muted">{error || 'Loading…'}</p>
+  if (!s || String(s.id) !== String(id)) {
+    const message = sessionLoadError?.sessionId === String(id) ? sessionLoadError.message : 'Loading…'
+    return <p className="muted">{message}</p>
+  }
+  if (isResourceSession(s) && !planSessionCurrent && (plan || planDirty)) {
+    return planDirty && planSessionId
+      ? <p className="muted">Unsaved changes belong to Session {planSessionId}. <a href={`#/session/${planSessionId}`}>Return to that session</a> to continue editing.</p>
+      : <p className="muted">{error || `Loading the saved plan for Session ${id}…`}</p>
+  }
 
   const automaticIncompleteTakeIds = incompleteAuthoringTakeIds()
   const incompleteTakeIds = incompletePlanTakeIds()
@@ -2501,13 +2530,24 @@ export default function SessionView({
         : true))
 
   const call = async (fn) => {
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
     if (fullAutoMutationLocked || hasPendingFullAutoControl()) {
       setFullAutoActionError('Full Auto still owns this session. Wait for verified settlement before changing its inputs.')
       return
     }
-    try { await fn(); reload() } catch (e) { setError(e.message) }
+    try {
+      await fn()
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) reload()
+    } catch (e) {
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) setError(e.message)
+    }
   }
   const manualDispatch = async (fn) => {
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
     if (fullAutoManualDispatchLocked || hasPendingFullAutoControl()) {
       setFullAutoActionError('This session has a Full Auto run. Continue or settle it through Full Auto controls before using manual generation.')
       return
