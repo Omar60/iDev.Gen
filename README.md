@@ -898,6 +898,12 @@ and creating legacy sessions refuse until it holds something. `resource-v1`
 session drafts do not require the measured catalogue and are not subject to this
 refusal or to catalogue cell uniqueness.
 
+Judge separates pass configuration, blind photographs and the final control-agreement
+report. Full-frame images, labelled reading controls and keyboard shortcuts work
+on desktop and mobile; failed requests retain the current photograph and never
+retry a verdict automatically. Session reading removal requires confirmation.
+See [Judging](docs/judging.md) for keyboard controls and recovery limits.
+
 Catalogue separates prompt components, base readings and wardrobe imports.
 Search narrows the current slot/manner selection without changing stored order;
 retired rows stay available through Show retired components. Edits use an

@@ -93,3 +93,38 @@ refuse it, all before any deck is served:
   interspersed as controls. A re-judged answer agrees with a stored verdict if
   both reduce to the same family. Two empty ("cannot tell") answers agree on
   nothing.
+
+## Judge Screen
+
+The studio interface separates three existing steps: configure a pass, answer
+blind photographs, and inspect control agreement after completion. Configuration
+shows the selected session, manner, checkpoint and reading count alongside the
+slot. A vocabulary with multiple axes requires an explicit question selection.
+The `session_id` and `slot` Judge deep links support camera, act and framing.
+
+During the pass, complete photographs retain their aspect ratio with
+`object-fit: contain`. Prompts, references, catalogue keys, stored answers and
+control identities remain hidden. Choices are unavailable while an image loads
+or fails; Reload photograph retries only the image. It does not send a verdict.
+Use keys 1–9 for the first nine readings, 0 for None or cannot tell, C for
+Contradiction, and Escape to exit. Additional readings remain available as
+buttons. Modified, held-repeat and text-entry keystrokes do not submit answers.
+
+Each answer is an explicit request. Pending requests block duplicate submissions.
+A failure retains the current photograph and does not retry automatically.
+A network or server failure may leave the outcome uncertain: inspect the session before
+explicitly repeating an operation. Exiting does not undo recorded answers or
+cancel a request already sent. A response arriving after exit cannot reopen or
+advance that pass. Pass progress counts confirmed responses, not correctness.
+
+The final report uses the existing control-only agreement calculation and shows
+stored and answered values for disagreements. An empty answer is displayed as
+None or cannot tell. With no controls, no agreement score is available. This is
+a report for the completed pass, not a new persistent history or approval.
+
+Session reading fields have associated labels. Failed additions retain the draft;
+removal uses explicit confirmation and preserves the server's reference checks.
+Late session, vocabulary and pass responses cannot replace the active context.
+On narrow screens, sections stack and tables scroll in named keyboard-accessible
+regions rather than overflowing the page. Focus follows photographs, errors and
+the final report, then returns to configuration on exit.

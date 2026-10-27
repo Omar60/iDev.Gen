@@ -1,0 +1,40 @@
+.studio-ui.judge-view.ui-stack { display: grid; gap: var(--ui-gap-section); }
+.studio-ui.judge-view { max-width: 1120px; margin-inline: auto; overflow-wrap: anywhere; }
+.judge-view .judge-eyebrow { margin: 0 0 8px; color: var(--ui-color-accent); font-size: var(--ui-text-help); letter-spacing: .08em; text-transform: uppercase; }
+.judge-view .judge-setup-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(240px, 1fr); gap: var(--ui-gap-grid); align-items: start; }
+.judge-view .judge-fieldset { min-width: 0; padding: 0; margin: 0; border: 0; }
+.judge-view .judge-fieldset legend { margin-bottom: 8px; }
+.judge-view .judge-fieldset .ui-help { margin-top: 8px; }
+.judge-view .judge-table { max-width: 100%; overflow-x: auto; border: 1px solid var(--ui-color-border); border-radius: 6px; }
+.judge-view table { width: 100%; margin: 0; font-size: 13px; }
+.judge-view caption { padding: 12px; text-align: left; color: var(--ui-color-muted); }
+.judge-view th { color: var(--ui-color-muted); font-weight: 600; text-align: left; }
+.judge-view :is(td, th) { padding: 12px; vertical-align: top; }
+.judge-view td code { white-space: normal; overflow-wrap: anywhere; }
+.judge-view .judge-remove { color: var(--ui-color-error); }
+.judge-view .judge-reading-form { display: grid; grid-template-columns: minmax(100px, .6fr) minmax(0, 1fr) minmax(0, 1.5fr) auto; gap: 12px; align-items: end; }
+.judge-view .judge-reading-form > p { grid-column: 1 / -1; }
+.judge-view .judge-pass-header { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+.judge-view progress { width: 100%; height: 6px; accent-color: var(--ui-color-accent); }
+.judge-view .judge-photo { position: relative; display: grid; place-items: center; min-height: 240px; height: min(58vh, 620px); background: #090c12; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-surface); }
+.judge-view .judge-photo img { display: block; width: 100%; height: 100%; min-height: 0; object-fit: contain; border-radius: inherit; }
+.judge-view .judge-photo-state { position: absolute; max-width: calc(100% - 32px); padding: 16px; background: var(--ui-color-surface); }
+.judge-view .judge-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.judge-view .judge-choices .ui-button { justify-content: start; text-align: left; }
+.judge-view kbd { flex: 0 0 auto; min-width: 24px; padding: 2px 5px; border: 1px solid var(--ui-color-control-border); border-radius: 4px; color: var(--ui-color-accent); font: 12px monospace; text-align: center; }
+.judge-view .judge-defect { padding-block: 16px; }
+.judge-view .judge-result { margin: 0; color: var(--ui-color-accent); font-size: 40px; font-weight: 650; }
+.judge-view .judge-result span { display: block; color: var(--ui-color-muted); font-size: var(--ui-text-body); font-weight: 400; }
+.judge-view :is(h2, h3) { scroll-margin-top: 110px; }
+.judge-view :is(h2, h3):focus { outline: 2px solid var(--ui-color-accent); outline-offset: 5px; }
+.judge-view .judge-table:focus-visible { outline: 2px solid var(--ui-color-accent); outline-offset: 3px; }
+@media (max-width: 1000px) {
+  .judge-view .judge-reading-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .judge-view .judge-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 699px) {
+  .judge-view .judge-setup-grid, .judge-view .judge-reading-form, .judge-view .judge-choices { grid-template-columns: minmax(0, 1fr); }
+  .judge-view .judge-table table { min-width: 520px; }
+  .judge-view .judge-photo { height: 48vh; }
+  .judge-view .judge-pass-header .ui-page-title { font-size: 23px; }
+}

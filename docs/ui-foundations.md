@@ -192,3 +192,17 @@ explicit Tab wrapping, error focus and focus restoration support component editi
 Section jumps move focus without changing the Catalogue route or unmounting forms.
 The shared foundation styles, catalogue/wardrobe stores and their consumers remain
 unchanged; existing store refreshes still run after explicit imports complete.
+
+
+### Judge
+
+`Judge.css` is scoped under `.judge-view`; studio tokens, surfaces, buttons,
+fields and notices are reused without changing shared styles. Configuration uses
+a contextual two-column layout on desktop and a stacked layout on mobile. The
+blind pass has a reserved full-image area, explicit response buttons and progress
+for confirmed answers. The completion report separates control agreement from
+individual disagreements. Tables retain one DOM representation and a named local
+scroll region. Heading focus has a sticky-header margin, and exiting during a
+pending request returns focus to the available configuration heading. Judge does
+not reuse the session viewer, which would expose information excluded from a
+blind pass. Deck construction, reading order and agreement helpers are unchanged.
