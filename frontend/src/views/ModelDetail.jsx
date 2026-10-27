@@ -70,9 +70,16 @@ export default function ModelDetail({ id }) {
   const llm = !!config.llm_ok
   const [writing, setWriting] = useState('')
   const [errors, setErrors] = useState({})
+  const [uncertainSessionCreates, setUncertainSessionCreates] = useState({})
   const error = errors[modelId] || ''
-  const setError = (message) => setErrors((current) => ({ ...current, [modelId]: message }))
+  const setError = (message) => {
+    setErrors((current) => ({ ...current, [modelId]: message }))
+    setUncertainSessionCreates((current) => ({ ...current, [modelId]: false }))
+  }
+  const sessionCreateUncertain = uncertainSessionCreates[modelId] === true
   const [saving, setSaving] = useState(false)
+  const [creatingSession, setCreatingSession] = useState(false)
+  const createSessionPendingRef = useRef(false)
   const modelLoadSequenceRef = useRef(0)
   const currentModelIdRef = useRef(modelId)
   currentModelIdRef.current = modelId
@@ -239,6 +246,10 @@ export default function ModelDetail({ id }) {
   }
 
   const createSession = async () => {
+    if (createSessionPendingRef.current || !newSession) return
+    createSessionPendingRef.current = true
+    setCreatingSession(true)
+    setError('')
     try {
       // The blank shot the editor opens with is not a shot. Dropping it here
       // rather than refusing to create is what lets a session start empty and
@@ -250,13 +261,25 @@ export default function ModelDetail({ id }) {
         ...newSession, room_key: roomKey,
         shots: newSession.shots.filter((s) => s.prompt.trim()) })
       go(`/session/${sid}`)
-    } catch (e) { setError(e.message) }
+    } catch (e) {
+      const confirmedRejection = Number.isInteger(e?.status) && e.status >= 400 && e.status < 500
+      const message = e?.message || 'Session creation did not return a result.'
+      setError(message)
+      // The Legacy route validates before INSERT; a 5xx or transport failure may follow it.
+      setUncertainSessionCreates((current) => ({ ...current, [modelId]: !confirmedRejection }))
+    }
+    finally {
+      createSessionPendingRef.current = false
+      setCreatingSession(false)
+    }
   }
 
   return (
     <div className="studio-ui ui-page model-detail-page ui-stack">
       {error && <div className="ui-notice" data-tone="error" role="alert" tabIndex={-1} ref={errorRef}>
-        <p>{error}</p><p className="ui-help">Your entries are kept. Review the settings and try again.</p>
+        <p>{error}</p><p className="ui-help">{sessionCreateUncertain
+          ? 'The server may already have created this session. Check the Sessions list before trying again. Your entries are kept. No retry was sent automatically.'
+          : 'Your entries are kept. Review the settings and try again.'}</p>
       </div>}
       <header className="ui-page-header model-page-header">
         <div><a className="model-back" href="#/models">Models</a>
@@ -601,10 +624,12 @@ export default function ModelDetail({ id }) {
                        onChange={(shots) => setNewSession((cur) => ({ ...cur, shots }))} />
 
           <div className="row" style={{ marginTop: 12 }}>
-            <button className="ui-button ui-button--primary" onClick={createSession}>
-              Create session ({newSession.shots.reduce((n, s) => n + (s.prompt.trim() ? Math.max(1, s.count) : 0), 0)} photos)
+            <button className="ui-button ui-button--primary" disabled={creatingSession} aria-busy={creatingSession}
+                    onClick={createSession}>
+              {creatingSession ? 'Creating session…' : sessionCreateUncertain ? 'Retry session creation'
+                : `Create session (${newSession.shots.reduce((n, s) => n + (s.prompt.trim() ? Math.max(1, s.count) : 0), 0)} photos)`}
             </button>
-            <button className="ui-button" type="button" onClick={cancelSession}>Cancel</button>
+            <button className="ui-button" type="button" disabled={creatingSession} onClick={cancelSession}>Cancel</button>
           </div>
         </section>
       )}

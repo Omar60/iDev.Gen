@@ -19,6 +19,11 @@ const workflows = [{ id: 12, name: 'Studio', kind: 't2i' }, { id: 13, name: 'Edi
 const response = (data, status = 200) => ({ ok: status < 400, status, json: async () => structuredClone(data) })
 let container, root, fetchMock, records, detail, failure, calls, config
 const drain = () => act(async () => { for (let i = 0; i < 20; i++) await Promise.resolve() })
+const deferred = () => {
+  let resolve
+  const promise = new Promise(done => { resolve = done })
+  return { promise, resolve }
+}
 async function render(element = <Models />) { await act(async () => root.render(element)); await drain() }
 const button = (name) => [...container.querySelectorAll('button')].find(b => b.textContent.trim() === name)
 const field = (name, scope = container) => [...scope.querySelectorAll('input,select,textarea')].find(el =>
@@ -242,6 +247,143 @@ it('keeps edit and legacy IDs unique and preserves the original empty legacy ses
     seed_mode: 'random', seed: 0, manner: 'directed', room_key: expect.any(String) })
   expect(go).toHaveBeenCalledWith('/session/41')
   await click(button('Cancel')); expect(document.activeElement).toBe(button('Legacy session'))
+})
+
+it('submits one Legacy session across rapid clicks, repeated Enter, and rerenders', async () => {
+  const originalFetch = fetchMock.getMockImplementation()
+  const created = deferred()
+  fetchMock.mockImplementation((url, options = {}) => {
+    if (url === '/api/sessions' && options.method === 'POST') {
+      calls.push({ url, method: 'POST', body: JSON.parse(options.body) })
+      return created.promise
+    }
+    return originalFetch(url, options)
+  })
+  await render(<ModelDetail id={7} />)
+  await click(button('Legacy session'))
+  const createButton = button('Create session (0 photos)')
+  const pressEnter = () => {
+    createButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    createButton.click()
+    createButton.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+  }
+  await act(async () => {
+    createButton.click()
+    createButton.click()
+    pressEnter()
+    pressEnter()
+  })
+
+  expect(calls.filter(request => request.method === 'POST')).toHaveLength(1)
+  expect(calls[0]).toEqual({ url: '/api/sessions', method: 'POST', body: {
+    model_id: 7, name: 'Session 2', look: expect.any(String), wardrobe: '', shots: [],
+    workflow_id: 12, reference_workflow_id: null,
+    settings: { ...detail.settings, lora_strength: 0.9, kind: 'shoot' },
+    seed_mode: 'random', seed: 0, manner: 'directed', room_key: expect.any(String),
+  } })
+  expect(createButton.disabled).toBe(true)
+
+  await render(<ModelDetail id={7} />)
+  expect(container.querySelector('#legacy-session-form button.ui-button--primary').disabled).toBe(true)
+  created.resolve(response({ id: 41 }))
+  await drain()
+  expect(calls.filter(request => request.method === 'POST')).toHaveLength(1)
+  expect(go).toHaveBeenCalledTimes(1)
+  expect(go).toHaveBeenCalledWith('/session/41')
+})
+
+it('keeps the Legacy draft after an uncertain create result and retries only on explicit action', async () => {
+  const originalFetch = fetchMock.getMockImplementation()
+  let firstPost = true
+  fetchMock.mockImplementation((url, options = {}) => {
+    if (url === '/api/sessions' && options.method === 'POST' && firstPost) {
+      firstPost = false
+      calls.push({ url, method: 'POST', body: JSON.parse(options.body) })
+      return Promise.reject(new Error('Connection lost after submit'))
+    }
+    return originalFetch(url, options)
+  })
+  await render(<ModelDetail id={7} />)
+  await click(button('Legacy session'))
+  await change(field('Look description'), 'Keep this Legacy draft')
+  await click(button('Create session (0 photos)'))
+
+  expect(calls.filter(request => request.method === 'POST')).toHaveLength(1)
+  expect(container.textContent).toContain('Connection lost after submit')
+  expect(container.textContent).toContain('The server may already have created this session.')
+  expect(container.textContent).toContain('Check the Sessions list before trying again.')
+  expect(container.textContent).toContain('No retry was sent automatically.')
+  expect(field('Look description').value).toBe('Keep this Legacy draft')
+  expect(button('Retry session creation').disabled).toBe(false)
+  expect(go).not.toHaveBeenCalled()
+
+  await click(button('Retry session creation'))
+  expect(calls.filter(request => request.method === 'POST')).toHaveLength(2)
+  expect(calls[0].body.look).toBe('Keep this Legacy draft')
+  expect(calls[1].body.look).toBe('Keep this Legacy draft')
+  expect(go).toHaveBeenCalledTimes(1)
+  expect(go).toHaveBeenCalledWith('/session/41')
+})
+
+it('treats a timeout as uncertain and does not submit another POST automatically', async () => {
+  const originalFetch = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url, options = {}) => {
+    if (url === '/api/sessions' && options.method === 'POST') {
+      calls.push({ url, method: 'POST', body: JSON.parse(options.body) })
+      return Promise.reject(Object.assign(new Error('Request timed out'), { name: 'TimeoutError' }))
+    }
+    return originalFetch(url, options)
+  })
+  await render(<ModelDetail id={7} />)
+  await click(button('Legacy session'))
+  await click(button('Create session (0 photos)'))
+
+  expect(container.textContent).toContain('Request timed out')
+  expect(container.textContent).toContain('The server may already have created this session.')
+  expect(button('Retry session creation').disabled).toBe(false)
+  expect(calls.filter(request => request.method === 'POST')).toHaveLength(1)
+  expect(go).not.toHaveBeenCalled()
+})
+
+it('treats a server error response as uncertain and does not repeat the POST', async () => {
+  const originalFetch = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url, options = {}) => {
+    if (url === '/api/sessions' && options.method === 'POST') {
+      calls.push({ url, method: 'POST', body: JSON.parse(options.body) })
+      return Promise.resolve(response({ detail: 'server failed after receiving request' }, 500))
+    }
+    return originalFetch(url, options)
+  })
+  await render(<ModelDetail id={7} />)
+  await click(button('Legacy session'))
+  await click(button('Create session (0 photos)'))
+
+  expect(container.textContent).toContain('server failed after receiving request')
+  expect(container.textContent).toContain('The server may already have created this session.')
+  expect(button('Retry session creation').disabled).toBe(false)
+  expect(calls.filter(request => request.method === 'POST')).toHaveLength(1)
+  expect(go).not.toHaveBeenCalled()
+})
+
+it('treats a validation rejection as confirmed and keeps the ordinary create action', async () => {
+  const originalFetch = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url, options = {}) => {
+    if (url === '/api/sessions' && options.method === 'POST') {
+      calls.push({ url, method: 'POST', body: JSON.parse(options.body) })
+      return Promise.resolve(response({ detail: 'session validation rejected' }, 422))
+    }
+    return originalFetch(url, options)
+  })
+  await render(<ModelDetail id={7} />)
+  await click(button('Legacy session'))
+  await click(button('Create session (0 photos)'))
+
+  expect(container.textContent).toContain('session validation rejected')
+  expect(container.textContent).not.toContain('The server may already have created this session.')
+  expect(button('Create session (0 photos)').disabled).toBe(false)
+  expect(button('Retry session creation')).toBeUndefined()
+  expect(calls.filter(request => request.method === 'POST')).toHaveLength(1)
+  expect(go).not.toHaveBeenCalled()
 })
 
 it('keeps legacy kind switching, edited prompts, fixed seed and reference workflow semantics', async () => {
