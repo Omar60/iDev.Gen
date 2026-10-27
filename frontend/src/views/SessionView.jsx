@@ -633,6 +633,7 @@ export default function SessionView({
   const restoredOperationKeyRef = useRef(null)
   const sessionViewMountedRef = useRef(false)
   const sessionViewEpochRef = useRef(0)
+  const sessionReloadSequenceRef = useRef(0)
   const sessionViewIdRef = useRef(id)
   sessionViewIdRef.current = id
   const previousSessionIdRef = useRef(String(id))
@@ -649,6 +650,7 @@ export default function SessionView({
   const fullAutoDeferredRemedyRef = useRef(null)
   const [sessionRequestEpoch, setSessionRequestEpoch] = useState(0)
   const [planNotice, setPlanNotice] = useState('')
+  const [planRefreshError, setPlanRefreshError] = useState(null)
   const [planSaveImpact, setPlanSaveImpact] = useState(null)
   const [planReviewFailure, setPlanReviewFailure] = useState(null)
   const [resourceRefreshBusy, setResourceRefreshBusy] = useState(false)
@@ -780,11 +782,34 @@ export default function SessionView({
   const canRefreshResourceDependencies = isResource && !planDirty && planRevision !== null
     && (isAuthoringEvidenceInvalid(planReviewFailure) || hasKnownStaleAdaptations)
 
+  const handlePlanRefreshFailure = (sessionId, message) => {
+    const requestedSessionId = String(sessionId)
+    if (planDirtyRef.current && planSessionId === requestedSessionId) {
+      setPlanRefreshError({ sessionId: requestedSessionId, message })
+      return
+    }
+    setPlanRefreshError((previous) => previous?.sessionId === requestedSessionId ? null : previous)
+    setPlanSessionId('')
+    setPlan(null)
+    setSavedPlan(null)
+    setPlanRevision(null)
+    setPlanConflicts([])
+    setPlanPreparation(null)
+    setSharedSummary(null)
+    setReviewedRevision(null)
+    setSelectedTakeIds(new Set())
+    setTakeReviewData({})
+    setPlanReviewStatus('idle')
+    setError(message)
+  }
+
   const reload = () => {
     const sessionId = id
     const requestEpoch = sessionViewEpochRef.current
+    const requestSequence = ++sessionReloadSequenceRef.current
     return api.get(`/api/sessions/${sessionId}`).then((data) => {
-    if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+    if (!isCurrentSessionRequest(sessionId, requestEpoch)
+        || requestSequence !== sessionReloadSequenceRef.current) return
     if (!data || String(data.id) !== String(sessionId)) {
       const message = 'The session response did not match the requested session.'
       setSessionLoadError({ sessionId: String(sessionId), message })
@@ -795,23 +820,15 @@ export default function SessionView({
     setS(data)
     if (isResourceSession(data)) {
       loadSessionPlan(sessionId, api).then((res) => {
-        if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+        if (!isCurrentSessionRequest(sessionId, requestEpoch)
+            || requestSequence !== sessionReloadSequenceRef.current) return
         if (planDirtyRef.current && planSessionId !== String(sessionId)) return
         if (res.ok) {
           if (typeof res.planRevision !== 'number' || res.planRevision < 0) {
-            setPlanSessionId('')
-            setPlan(null)
-            setSavedPlan(null)
-            setPlanRevision(null)
-            setPlanConflicts([])
-            setPlanPreparation(null)
-            setSharedSummary(null)
-            setReviewedRevision(null)
-            setSelectedTakeIds(new Set())
-            setTakeReviewData({})
-            setError('Loaded draft missing valid plan_revision from backend')
+            handlePlanRefreshFailure(sessionId, 'Loaded draft missing valid plan_revision from backend')
             return
           }
+          setPlanRefreshError((previous) => previous?.sessionId === String(sessionId) ? null : previous)
           if (!planDirtyRef.current && planRevisionRef.current !== res.planRevision) {
             if (sharedOperationRef.current) {
               setPreparationActionCode('plan_revision_stale')
@@ -842,39 +859,19 @@ export default function SessionView({
             })
           }
         } else {
-          setPlanSessionId('')
-          setPlan(null)
-          setSavedPlan(null)
-          setPlanRevision(null)
-          setPlanConflicts([])
-          setPlanPreparation(null)
-          setSharedSummary(null)
-          setReviewedRevision(null)
-          setSelectedTakeIds(new Set())
-          setTakeReviewData({})
-          setPlanReviewStatus('idle')
-          setError(res.error)
+          handlePlanRefreshFailure(sessionId, res.error)
         }
       }).catch((e) => {
-        if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
-        setPlanSessionId('')
-        setPlan(null)
-        setSavedPlan(null)
-        setPlanRevision(null)
-        setPlanConflicts([])
-        setPlanPreparation(null)
-        setSharedSummary(null)
-        setReviewedRevision(null)
-        setSelectedTakeIds(new Set())
-        setTakeReviewData({})
-        setPlanReviewStatus('idle')
-        setError(e?.message || 'Failed to load plan')
+        if (!isCurrentSessionRequest(sessionId, requestEpoch)
+            || requestSequence !== sessionReloadSequenceRef.current) return
+        handlePlanRefreshFailure(sessionId, e?.message || 'Failed to load plan')
       })
     } else if (!planDirtyRef.current) {
       setPlanSessionId('')
     }
     }).catch((e) => {
-      if (isCurrentSessionRequest(sessionId, requestEpoch)) {
+      if (isCurrentSessionRequest(sessionId, requestEpoch)
+          && requestSequence === sessionReloadSequenceRef.current) {
         if (!planDirtyRef.current) setPlanSessionId('')
         const message = e?.message || 'Failed to load session'
         setSessionLoadError({ sessionId: String(sessionId), message })
@@ -2529,7 +2526,7 @@ export default function SessionView({
       : filter === 'keep' ? !x.rejected
         : true))
 
-  const call = async (fn) => {
+  const call = async (fn, onSuccess = null) => {
     const sessionId = id
     const requestEpoch = sessionViewEpochRef.current
     if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
@@ -2539,9 +2536,14 @@ export default function SessionView({
     }
     try {
       await fn()
-      if (isCurrentSessionRequest(sessionId, requestEpoch)) reload()
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) {
+        onSuccess?.()
+        reload()
+      }
+      return true
     } catch (e) {
       if (isCurrentSessionRequest(sessionId, requestEpoch)) setError(e.message)
+      return false
     }
   }
   const manualDispatch = async (fn) => {
@@ -2812,7 +2814,7 @@ export default function SessionView({
   }
 
   const tags = s.tags || []
-  const addTag = (raw) => {
+  const addTag = async (raw) => {
     const v = (raw || '').trim()
     if (!v) return
     if (tags.some((t) => t.toLowerCase() === v.toLowerCase())) {
@@ -2821,11 +2823,18 @@ export default function SessionView({
       setTagDraft('')
       return
     }
-    call(() => api.patch(`/api/sessions/${id}`, { tags: [...tags, v] })).then(() => setTagDraft(''))
+    const saved = await call(() => api.patch(`/api/sessions/${id}`, { tags: [...tags, v] }), () => {
+      setPlanNotice('Tag saved.')
+      setTimeout(() => setPlanNotice(''), 4000)
+    })
+    if (saved) setTagDraft('')
   }
   const removeTag = (t) => call(() => api.patch(`/api/sessions/${id}`, {
     tags: tags.filter((x) => x !== t),
-  }))
+  }), () => {
+    setPlanNotice('Tag removed.')
+    setTimeout(() => setPlanNotice(''), 4000)
+  })
 
   const renderSavedSharedSummary = () => sharedSummary && (
     <section
@@ -2867,6 +2876,12 @@ export default function SessionView({
   return (
     <>
       {error && !(isResource && canPreparePlan({ plan, planRevision }) && ['character', 'constants', 'takes'].includes(activeStep)) && <div className="error" onClick={() => setError('')}>{error}</div>}
+      {planRefreshError?.sessionId === String(id) && (
+        <div className="ui-notice" data-tone="error" role="alert">
+          <p>The plan refresh failed. Your unsaved take edits and order were preserved. {planRefreshError.message}</p>
+          <button className="ui-button" type="button" onClick={() => reload()}>Retry plan refresh</button>
+        </div>
+      )}
       {planSaveImpact && (
         <div style={{
           position: 'fixed', inset: 0, zIndex: 1000, display: 'grid', placeItems: 'center',
