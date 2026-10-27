@@ -35,8 +35,11 @@ import { sessionCreationActions } from '../resources.js'
 const BUILT_IN = [...candidRooms, ...directedLooks]
 
 export default function ModelDetail({ id }) {
+  const modelId = String(id)
   const [model, setModel] = useState(null)
-  const [edit, setEdit] = useState(null)
+  const [edits, setEdits] = useState({})
+  const edit = edits[modelId] ?? null
+  const setEdit = (value) => setEdits((current) => ({ ...current, [modelId]: value }))
   const [loras, setLoras] = useState([])
   const [baseModels, setBaseModels] = useState({})
   const [workflows, setWorkflows] = useState([])
@@ -66,8 +69,13 @@ export default function ModelDetail({ id }) {
   const [roomKey, setRoomKey] = useState('')
   const llm = !!config.llm_ok
   const [writing, setWriting] = useState('')
-  const [error, setError] = useState('')
+  const [errors, setErrors] = useState({})
+  const error = errors[modelId] || ''
+  const setError = (message) => setErrors((current) => ({ ...current, [modelId]: message }))
   const [saving, setSaving] = useState(false)
+  const modelLoadSequenceRef = useRef(0)
+  const currentModelIdRef = useRef(modelId)
+  currentModelIdRef.current = modelId
   const errorRef = useRef(null)
   const editRef = useRef(null)
   const editTrigger = useRef(null)
@@ -77,7 +85,24 @@ export default function ModelDetail({ id }) {
   const formId = useId()
   const fieldId = (name) => `${formId}-${name}`
 
-  const reload = () => api.get(`/api/models/${id}`).then(setModel).catch((e) => setError(e.message))
+  const reload = () => {
+    const requestedModelId = modelId
+    if (currentModelIdRef.current !== requestedModelId) return Promise.resolve()
+    const requestSequence = ++modelLoadSequenceRef.current
+    return api.get(`/api/models/${requestedModelId}`).then((data) => {
+      if (currentModelIdRef.current !== requestedModelId || requestSequence !== modelLoadSequenceRef.current) return
+      if (!data || String(data.id) !== requestedModelId) {
+        setError('The model response did not match the requested model.')
+        return
+      }
+      setModel(data)
+      setError('')
+    }).catch((e) => {
+      if (currentModelIdRef.current === requestedModelId && requestSequence === modelLoadSequenceRef.current) {
+        setError(e.message)
+      }
+    })
+  }
   useEffect(() => {
     reload()
     api.get('/api/workflows').then(setWorkflows).catch(() => {})
@@ -119,15 +144,25 @@ export default function ModelDetail({ id }) {
           </a></li>
         )), [model?.sessions])
 
-  if (!model) return <div className="studio-ui ui-page model-detail-page">
+  if (!model || String(model.id) !== modelId) return <div className="studio-ui ui-page model-detail-page">
     {error ? <div className="ui-notice" data-tone="error" role="alert" tabIndex={-1} ref={errorRef}>
       <p>{error}</p><button className="ui-button" type="button" onClick={() => { setError(''); reload() }}>Retry loading model</button>
     </div> : <p className="ui-help" role="status">Loading model…</p>}
   </div>
 
   const saveModel = async () => {
+    const requestedModelId = modelId
+    if (currentModelIdRef.current !== requestedModelId
+        || String(model?.id) !== requestedModelId || String(edit?.id) !== requestedModelId) return
     setSaving(true); setError('')
-    try { await api.patch(`/api/models/${id}`, edit); returnFocus.current = editTrigger.current; setEdit(null); reload() }
+    try {
+      await api.patch(`/api/models/${requestedModelId}`, edit)
+      setEdit(null)
+      if (currentModelIdRef.current === requestedModelId) {
+        returnFocus.current = editTrigger.current
+        reload()
+      }
+    }
     catch (e) { setError(e.message) }
     finally { setSaving(false) }
   }
