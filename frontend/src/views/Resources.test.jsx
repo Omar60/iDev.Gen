@@ -4389,13 +4389,20 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     const canvas = form.querySelector('[aria-label="Canvas override size"]')
     expect(Array.from(canvas.querySelectorAll('input[type="number"]')).map((input) => input.value))
       .toEqual(['768', '1360'])
+    const canvasLabels = Array.from(canvas.querySelectorAll('label'))
+    expect(canvasLabels.map((label) => label.textContent.trim())).toEqual(['Canvas', 'Width', 'Height'])
+    for (const label of canvasLabels) {
+      expect(label.htmlFor).toBeTruthy()
+      expect(canvas.querySelector(`#${label.htmlFor}`)).toBe(label.control)
+    }
     expect(canvas.textContent).toContain('Character defaults are unchanged.')
+    typeInputValue(canvas.querySelector('#guided-canvas-width'), '776')
     await act(async () => {
       Array.from(form.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
     })
 
     expect(postCalls).toHaveLength(1)
-    expect(postCalls[0][1]).toMatchObject({ width: 768, height: 1360 })
+    expect(postCalls[0][1]).toMatchObject({ width: 776, height: 1360 })
   })
 
   it('8.1 refuses an invalid custom canvas before making a request', async () => {

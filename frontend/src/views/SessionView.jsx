@@ -2778,6 +2778,7 @@ export default function SessionView({
   // Null for a session created before kinds existed: no badge, no filtering and
   // no guidance beats a wrong guess about what that session was for.
   const kind = sessionKind(s)
+  const settingsFieldId = (field) => `session-${id}-settings-${field}`
   const anchors = s.anchor_shot_ids || []
   // The same two counts the run preflight uses: takes that need a photo to edit,
   // and takes that would produce one.
@@ -5485,10 +5486,11 @@ export default function SessionView({
               different graph. Wait for it to finish, or Cancel.
             </p>
           )}
-          <div className="row" style={{ marginBottom: 10 }}>
-            <label style={{ width: 'auto', margin: 0 }}>Kind</label>
+          <div className="row" role="group" aria-label="Kind" style={{ marginBottom: 10 }}>
+            <span aria-hidden="true" style={{ display: 'block', width: 'auto', margin: 0, fontSize: 12, color: 'var(--muted)' }}>Kind</span>
             {Object.entries(KINDS).map(([k, spec]) => (
               <button key={k} className={'chip' + (kind === k ? ' on' : '')} title={spec.blurb}
+                      aria-pressed={kind === k}
                       disabled={sessionSettingsLocked}
                       onClick={() => call(() => api.patch(`/api/sessions/${id}`, { settings: { kind: k } }))}>
                 {spec.label}
@@ -5497,10 +5499,10 @@ export default function SessionView({
           </div>
           <div className="grid-form">
             <div>
-              <label title="The graph for takes with ref unticked — the ones painted from noise. An editing or camera-angle graph does not go here.">
+              <label htmlFor={settingsFieldId('workflow')} title="The graph for takes with ref unticked — the ones painted from noise. An editing or camera-angle graph does not go here.">
                 Workflow (new photos)
               </label>
-              <select value={s.workflow_id ?? ''} disabled={sessionSettingsLocked}
+              <select id={settingsFieldId('workflow')} value={s.workflow_id ?? ''} disabled={sessionSettingsLocked}
                       onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                         { workflow_id: Number(e.target.value) || 0 }))}>
                 <option value="">— the model's —</option>
@@ -5508,10 +5510,10 @@ export default function SessionView({
               </select>
             </div>
             <div>
-              <label title="The graph for takes marked ref — the ones that edit the reference photo.">
+              <label htmlFor={settingsFieldId('reference-workflow')} title="The graph for takes marked ref — the ones that edit the reference photo.">
                 Reference workflow (edits)
               </label>
-              <select value={s.reference_workflow_id ?? ''} disabled={sessionSettingsLocked}
+              <select id={settingsFieldId('reference-workflow')} value={s.reference_workflow_id ?? ''} disabled={sessionSettingsLocked}
                       onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                         { reference_workflow_id: Number(e.target.value) || 0 }))}>
                 <option value="">— none, text to image only —</option>
@@ -5521,7 +5523,7 @@ export default function SessionView({
               </select>
             </div>
             <div style={{ gridColumn: 'span 2' }}>
-              <label title="Only applied to the workflow above, and only if it maps the slot. An editing graph loads its own model.">
+              <label htmlFor={settingsFieldId('base-model')} title="Only applied to the workflow above, and only if it maps the slot. An editing graph loads its own model.">
                 Base model
               </label>
               {/* The profile rides along with the choice. Overwriting rather than
@@ -5530,7 +5532,7 @@ export default function SessionView({
                   would keep shooting it at the last model's settings. What makes
                   it safe is that it is not silent — the line below says what
                   arrived, and every value stays editable. */}
-              <BaseModelSelect value={s.settings.checkpoint} models={baseModels} disabled={sessionSettingsLocked}
+              <BaseModelSelect id={settingsFieldId('base-model')} value={s.settings.checkpoint} models={baseModels} disabled={sessionSettingsLocked}
                                onChange={(v) => call(() => api.patch(`/api/sessions/${id}`,
                                  { settings: { checkpoint: v, ...(checkpointProfile(config, v) || {}) } }))} />
               {profile && (
@@ -5544,44 +5546,44 @@ export default function SessionView({
                 were only settable when the session was created, which is before
                 you have the photo whose face drifted. */}
             <div>
-              <label title="How far an img2img edit may travel from the reference. Low keeps the frame and repaints detail — 0.2 to 0.35 is an identity pass. High repaints the outfit and moves the pose.">
+              <label htmlFor={settingsFieldId('denoise')} title="How far an img2img edit may travel from the reference. Low keeps the frame and repaints detail — 0.2 to 0.35 is an identity pass. High repaints the outfit and moves the pose.">
                 Denoise
               </label>
-              <input type="number" step="0.05" min="0" max="1" disabled={sessionSettingsLocked}
+              <input id={settingsFieldId('denoise')} type="number" step="0.05" min="0" max="1" disabled={sessionSettingsLocked}
                      value={s.settings.denoise ?? ''} placeholder="workflow's own"
                      onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                        { settings: { denoise: e.target.value === '' ? null : parseFloat(e.target.value) } }))} />
             </div>
             <div>
-              <label title="Only applied if the workflow maps it.">LoRA strength</label>
-              <input type="number" step="0.05" min="0" disabled={sessionSettingsLocked}
+              <label htmlFor={settingsFieldId('lora-strength')} title="Only applied if the workflow maps it.">LoRA strength</label>
+              <input id={settingsFieldId('lora-strength')} type="number" step="0.05" min="0" disabled={sessionSettingsLocked}
                      value={s.settings.lora_strength ?? ''} placeholder="workflow's own"
                      onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                        { settings: { lora_strength: e.target.value === '' ? null : parseFloat(e.target.value) } }))} />
             </div>
             <div>
-              <label title="Steps">Steps</label>
-              <input type="number" min="1" disabled={sessionSettingsLocked}
+              <label htmlFor={settingsFieldId('steps')} title="Steps">Steps</label>
+              <input id={settingsFieldId('steps')} type="number" min="1" disabled={sessionSettingsLocked}
                      value={s.settings.steps ?? ''} placeholder="8"
                      onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                        { settings: { steps: e.target.value === '' ? null : parseInt(e.target.value, 10) } }))} />
             </div>
             <div>
-              <label title="CFG Scale">CFG</label>
-              <input type="number" step="0.1" min="0" disabled={sessionSettingsLocked}
+              <label htmlFor={settingsFieldId('cfg')} title="CFG Scale">CFG</label>
+              <input id={settingsFieldId('cfg')} type="number" step="0.1" min="0" disabled={sessionSettingsLocked}
                      value={s.settings.cfg ?? ''} placeholder="1.0"
                      onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                        { settings: { cfg: e.target.value === '' ? null : parseFloat(e.target.value) } }))} />
             </div>
             <div>
-              <label title="Sampler">Sampler</label>
-              <SamplerSelect value={s.settings.sampler} options={baseModels.samplers} disabled={sessionSettingsLocked}
+              <label htmlFor={settingsFieldId('sampler')} title="Sampler">Sampler</label>
+              <SamplerSelect id={settingsFieldId('sampler')} value={s.settings.sampler} options={baseModels.samplers} disabled={sessionSettingsLocked}
                              onChange={(v) => call(() => api.patch(`/api/sessions/${id}`,
                                { settings: { sampler: v } }))} />
             </div>
             <div>
-              <label title="Scheduler">Scheduler</label>
-              <SamplerSelect value={s.settings.scheduler} options={baseModels.schedulers} disabled={sessionSettingsLocked}
+              <label htmlFor={settingsFieldId('scheduler')} title="Scheduler">Scheduler</label>
+              <SamplerSelect id={settingsFieldId('scheduler')} value={s.settings.scheduler} options={baseModels.schedulers} disabled={sessionSettingsLocked}
                              onChange={(v) => call(() => api.patch(`/api/sessions/${id}`,
                                { settings: { scheduler: v } }))} />
             </div>
@@ -5627,10 +5629,10 @@ export default function SessionView({
                   `session.wardrobe`, so leaving that pointing at an older outfit
                   would put two shoots in one session and file them under one cell. */}
               <div style={{ marginTop: 10 }}>
-                <label title="An outfit from the wardrobe catalogue. Its garments come off in the order the outfit lists them, one per state, and the last state is bare.">
+                <label htmlFor={settingsFieldId('outfit')} title="An outfit from the wardrobe catalogue. Its garments come off in the order the outfit lists them, one per state, and the last state is bare.">
                   Outfit
                 </label>
-                <select value={s.settings?.outfit || ''} disabled={sessionSettingsLocked}
+                <select id={settingsFieldId('outfit')} value={s.settings?.outfit || ''} disabled={sessionSettingsLocked}
                         onChange={(e) => call(() => api.patch(`/api/sessions/${id}`, {
                           settings: { outfit: e.target.value },
                           wardrobe: statesFor(e.target.value)[0] || s.wardrobe,
@@ -5642,11 +5644,11 @@ export default function SessionView({
                 </select>
               </div>
               <div style={{ marginTop: 10 }}>
-                <label title="One wardrobe per line, in order. A composed run spreads them over its photographs, so the shoot undresses without a writer. Empty: the session's wardrobe in every photograph.">
+                <label htmlFor={settingsFieldId('wardrobe-states')} title="One wardrobe per line, in order. A composed run spreads them over its photographs, so the shoot undresses without a writer. Empty: the session's wardrobe in every photograph.">
                   Wardrobe states ({wardrobeStates(s).length || "the session's"}
                   {!s.settings?.wardrobe_states?.length && s.settings?.outfit ? ', from the outfit' : ''})
                 </label>
-                <textarea rows={4} disabled={sessionSettingsLocked} defaultValue={wardrobeStates(s).join('\n')}
+                <textarea id={settingsFieldId('wardrobe-states')} rows={4} disabled={sessionSettingsLocked} defaultValue={wardrobeStates(s).join('\n')}
                           key={wardrobeStates(s).join('\n')}
                           placeholder="She wears a black wool coat, and a grey jumper.&#10;She wears a grey jumper.&#10;She wears nothing at all."
                           onBlur={(e) => call(() => api.patch(`/api/sessions/${id}`, {

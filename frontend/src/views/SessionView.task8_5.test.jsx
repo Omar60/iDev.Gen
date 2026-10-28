@@ -399,4 +399,85 @@ describe('Task 8.5 resource review presentation', () => {
     expect(container.textContent).not.toContain('Resource drift is not confirmed')
     expect([...container.querySelectorAll('button')].some((button) => button.textContent.includes('Refresh Resources'))).toBe(false)
   })
+
+  it('names Session Settings controls and preserves focus, values, and save errors', async () => {
+    const settingsSession = {
+      ...session,
+      settings: { ...session.settings, composition_mode: 'legacy', kind: 'shoot', steps: 20 },
+    }
+    vi.mocked(api.getVersioned).mockImplementation(async (path) => {
+      if (path === `/api/sessions/${settingsSession.id}/full-auto`) return { current_run: null }
+      if (path === `/api/sessions/${settingsSession.id}/plan`) return { plan_revision: 3, plan }
+      return {}
+    })
+    vi.spyOn(api, 'get').mockImplementation(async (path) => {
+      if (path === `/api/sessions/${settingsSession.id}`) return settingsSession
+      if (path === '/api/config' || path === '/api/comfy/models') return {}
+      if (path === '/api/wardrobe') return { garments: [], outfits: [] }
+      return []
+    })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () => {
+      root.render(React.createElement(SessionView, {
+        id: settingsSession.id,
+        initialSession: settingsSession,
+      }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const settingsToggle = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('Settings'))
+    settingsToggle.focus()
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    await act(async () => {
+      settingsToggle.dispatchEvent(enter)
+      // happy-dom does not synthesize native button activation from keydown.
+      if (!enter.defaultPrevented) settingsToggle.click()
+      await Promise.resolve()
+    })
+    expect(enter.defaultPrevented).toBe(false)
+    expect(document.activeElement).toBe(settingsToggle)
+
+    const settings = [...container.querySelectorAll('.panel')]
+      .find((panel) => panel.querySelector('h3')?.textContent === 'Settings')
+    expect(settings).toBeTruthy()
+    const controls = [...settings.querySelectorAll('input, select, textarea')]
+    const labels = [...settings.querySelectorAll('label')]
+    const controlNames = controls.map((control) => {
+      const associated = labels.filter((label) => label.htmlFor === control.id)
+      expect(associated).toHaveLength(1)
+      return associated[0].textContent.trim()
+    })
+    expect(controlNames).toEqual([
+      'Workflow (new photos)', 'Reference workflow (edits)', 'Base model',
+      'Denoise', 'LoRA strength', 'Steps', 'CFG', 'Sampler', 'Scheduler',
+      'Outfit', "Wardrobe states (the session's)",
+    ])
+
+    const kindGroup = settings.querySelector('[role="group"][aria-label="Kind"]')
+    expect(kindGroup).toBeTruthy()
+    const kindButtons = [...kindGroup.querySelectorAll('button')]
+    expect(kindButtons.every((button) => button.textContent.trim())).toBe(true)
+    expect(kindButtons.filter((button) => button.getAttribute('aria-pressed') === 'true')).toHaveLength(1)
+    expect(kindButtons.every((button) => ['true', 'false'].includes(button.getAttribute('aria-pressed')))).toBe(true)
+
+    const steps = controls.find((control) => labels.find((label) => label.htmlFor === control.id)?.textContent.trim() === 'Steps')
+    const patch = vi.spyOn(api, 'patch').mockRejectedValueOnce(new Error('Fixture: settings save failed.'))
+    steps.focus()
+    expect(document.activeElement).toBe(steps)
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(steps, '24')
+      steps.dispatchEvent(new Event('input', { bubbles: true }))
+      steps.dispatchEvent(new Event('change', { bubbles: true }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith(`/api/sessions/${settingsSession.id}`, { settings: { steps: 24 } })
+    expect([...container.querySelectorAll('[role="alert"]')].some((alert) => (
+      alert.textContent === 'Fixture: settings save failed.'
+    ))).toBe(true)
+    expect(document.activeElement).toBe(steps)
+  })
 })

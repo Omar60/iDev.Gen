@@ -2037,6 +2037,7 @@ export default function Resources({ requestedModelId = '' }) {
               >
                 <div className="ui-form-grid">
                   <CanvasSize
+                    idPrefix="guided-canvas"
                     width={guidedCanvasSize.width}
                     height={guidedCanvasSize.height}
                     onChange={(width, height) => setGuidedCanvasSize({ width, height })}
