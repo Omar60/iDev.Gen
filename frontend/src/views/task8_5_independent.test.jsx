@@ -374,6 +374,13 @@ async function click(button) {
   await drain()
 }
 
+async function pressKey(target, key, options = {}) {
+  const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options })
+  await act(async () => { target.dispatchEvent(event) })
+  await drain()
+  return event
+}
+
 function buttonMatching(pattern, scope = container) {
   return Array.from(scope.querySelectorAll('button'))
     .find((button) => pattern.test(button.textContent.trim()))
@@ -668,6 +675,105 @@ describe('Task 8.5 independent acceptance probes', () => {
     expect(state.requests[0][1].expected_revision).toBe(revision)
     expect(state.requests[0][1].plan.takes[0].camera).toBe('90mm at eye level')
     expect(state.requests.some(([url]) => /authoring\/operations|review\/approve|submit-selected|\/run$/.test(url))).toBe(false)
+  })
+
+  it('names the impact dialog, moves focus inside it, traps Tab, and makes the background inert', async () => {
+    const plan = makePlan()
+    const state = createHarness({ plan, preparation: makePreparation(plan) })
+    await renderSession('takes')
+    await click(container.querySelector('summary'))
+
+    const camera = Array.from(container.querySelectorAll('input')).find((input) => input.value === '85mm at eye level')
+    await act(async () => {
+      changeValue(camera, '90mm at eye level')
+      await Promise.resolve()
+    })
+    await drain()
+
+    const trigger = buttonMatching(/^Save Draft$/)
+    trigger.focus()
+    await click(trigger)
+    const dialog = container.querySelector('[role="dialog"]')
+    expect(dialog).toBeTruthy()
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog.open).toBe(true)
+    expect(dialog.getAttribute('aria-modal')).toBe('true')
+    const titleId = dialog.getAttribute('aria-labelledby')
+    expect(dialog.querySelector(`#${titleId}`)?.textContent).toBe('Review downstream impact before saving')
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    expect(trigger.closest('[inert]')).toBeTruthy()
+
+    const [cancel, confirm] = dialog.querySelectorAll('button:not(:disabled)')
+    confirm.focus()
+    expect((await pressKey(confirm, 'Tab')).defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(cancel)
+    cancel.focus()
+    expect((await pressKey(cancel, 'Tab', { shiftKey: true })).defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(confirm)
+
+    trigger.focus()
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    expect(state.requests).toEqual([])
+
+    await click(cancel)
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+    expect(trigger.closest('[inert]')).toBeNull()
+    expect(state.requests).toEqual([])
+  })
+
+  it('cancels the impact dialog with Escape and restores focus without saving', async () => {
+    const plan = makePlan()
+    const state = createHarness({ plan, preparation: makePreparation(plan) })
+    await renderSession('takes')
+    await click(container.querySelector('summary'))
+
+    const camera = Array.from(container.querySelectorAll('input')).find((input) => input.value === '85mm at eye level')
+    await act(async () => {
+      changeValue(camera, '90mm at eye level')
+      await Promise.resolve()
+    })
+    await drain()
+
+    const trigger = buttonMatching(/^Save Draft$/)
+    trigger.focus()
+    await click(trigger)
+    const dialog = container.querySelector('[role="dialog"]')
+    expect(dialog).toBeTruthy()
+
+    expect((await pressKey(document.activeElement, 'Escape')).defaultPrevented).toBe(true)
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+    expect(trigger.closest('[inert]')).toBeNull()
+    expect(state.requests).toEqual([])
+  })
+
+  it('restores background interaction when the impact dialog is unmounted', async () => {
+    const plan = makePlan()
+    createHarness({ plan, preparation: makePreparation(plan) })
+    const background = document.createElement('button')
+    document.body.appendChild(background)
+    await renderSession('takes')
+    await click(container.querySelector('summary'))
+
+    const camera = Array.from(container.querySelectorAll('input')).find((input) => input.value === '85mm at eye level')
+    await act(async () => {
+      changeValue(camera, '90mm at eye level')
+      await Promise.resolve()
+    })
+    await drain()
+
+    const trigger = buttonMatching(/^Save Draft$/)
+    await click(trigger)
+    expect(background.inert).toBe(true)
+    expect(document.body.style.overflow).toBe('hidden')
+
+    await act(async () => root.unmount())
+    root = null
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+    expect(background.inert).toBe(false)
+    expect(document.body.style.overflow).toBe('')
+    background.remove()
   })
 
   it.each(['edit', 'remove', 'reorder', 'global'])(

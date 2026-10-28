@@ -652,6 +652,67 @@ export default function SessionView({
   const [planNotice, setPlanNotice] = useState('')
   const [planRefreshError, setPlanRefreshError] = useState(null)
   const [planSaveImpact, setPlanSaveImpact] = useState(null)
+  const planSaveImpactDialogRef = useRef(null)
+  const planSaveImpactTriggerRef = useRef(null)
+  const planSaveImpactOpen = Boolean(planSaveImpact)
+  useEffect(() => {
+    if (!planSaveImpactOpen) return
+    const dialog = planSaveImpactDialogRef.current
+    const trigger = planSaveImpactTriggerRef.current
+    const overflow = document.body.style.overflow
+    const inerted = []
+    let branch = dialog
+    while (branch?.parentElement) {
+      const parent = branch.parentElement
+      for (const sibling of parent.children) {
+        if (sibling === branch) continue
+        inerted.push([sibling, sibling.inert])
+        sibling.inert = true
+      }
+      if (parent === document.body) break
+      branch = parent
+    }
+    document.body.style.overflow = 'hidden'
+    dialog.showModal()
+    const first = dialog.querySelector('button:not(:disabled)')
+    first?.focus()
+
+    const containFocus = (event) => {
+      if (dialog.contains(event.target)) return
+      event.stopPropagation()
+      first?.focus()
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        setPlanSaveImpact(null)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const controls = [...dialog.querySelectorAll('button:not(:disabled)')]
+      const firstControl = controls[0]
+      const lastControl = controls[controls.length - 1]
+      if (event.shiftKey && (document.activeElement === firstControl || !dialog.contains(document.activeElement))) {
+        event.preventDefault()
+        lastControl?.focus()
+      } else if (!event.shiftKey && (document.activeElement === lastControl || !dialog.contains(document.activeElement))) {
+        event.preventDefault()
+        firstControl?.focus()
+      }
+    }
+    document.addEventListener('focusin', containFocus, true)
+    document.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      document.removeEventListener('focusin', containFocus, true)
+      document.removeEventListener('keydown', handleKeyDown, true)
+      if (dialog.open) dialog.close()
+      for (const [element, wasInert] of inerted) element.inert = wasInert
+      document.body.style.overflow = overflow
+      if (trigger?.isConnected) trigger.focus()
+      planSaveImpactTriggerRef.current = null
+    }
+  }, [planSaveImpactOpen])
   const [planReviewFailure, setPlanReviewFailure] = useState(null)
   const [resourceRefreshBusy, setResourceRefreshBusy] = useState(false)
   const [resourceRefreshOutcome, setResourceRefreshOutcome] = useState(null)
@@ -1045,7 +1106,7 @@ export default function SessionView({
     }
   }
 
-  const savePlan = async ({ sharedDecisions = null, impactConfirmed = false, confirmedPlan = null } = {}) => {
+  const savePlan = async ({ sharedDecisions = null, impactConfirmed = false, confirmedPlan = null, trigger = null } = {}) => {
     const sessionId = id
     const requestEpoch = sessionViewEpochRef.current
     const explicitDecision = Boolean(sharedDecisions?.length)
@@ -1064,6 +1125,7 @@ export default function SessionView({
     }
     if (!explicitDecision && planDirtyRef.current) {
       if (!impactConfirmed || confirmedPlan !== plan) {
+        if (!planSaveImpactOpen) planSaveImpactTriggerRef.current = trigger || document.activeElement
         setPlanSaveImpact({ ...computePlanChangeImpact(savedPlan, plan, planPreparation), draft: plan })
         return
       }
@@ -2883,17 +2945,20 @@ export default function SessionView({
         </div>
       )}
       {planSaveImpact && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 1000, display: 'grid', placeItems: 'center',
-          padding: 16, background: 'rgba(0, 0, 0, 0.72)',
-        }}>
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="plan-save-impact-title"
-            className="panel"
-            style={{ width: 'min(680px, 100%)', maxHeight: '90vh', overflowY: 'auto' }}
-          >
+        <dialog
+          ref={planSaveImpactDialogRef}
+          className="session-plan-impact-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="plan-save-impact-title"
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000, placeItems: 'center',
+            boxSizing: 'border-box', width: '100vw', maxWidth: 'none', height: '100vh', maxHeight: 'none',
+            margin: 0, padding: 16, border: 0, background: 'rgba(0, 0, 0, 0.72)', color: 'inherit',
+          }}
+          onCancel={(event) => { event.preventDefault(); setPlanSaveImpact(null) }}
+        >
+          <section className="panel" style={{ width: 'min(680px, 100%)', maxHeight: '90vh', overflowY: 'auto' }}>
             <h3 id="plan-save-impact-title" style={{ marginTop: 0 }}>Review downstream impact before saving</h3>
             <p className="muted" style={{ fontSize: 13 }}>
               {planSaveImpact.reason === 'plan-wide'
@@ -2931,7 +2996,7 @@ export default function SessionView({
               </button>
             </div>
           </section>
-        </div>
+        </dialog>
       )}
       {roomReport && (
         <div className="muted" onClick={() => setRoomReport(null)}>
@@ -3902,7 +3967,7 @@ export default function SessionView({
               </div>
               <div className="row session-editor-actions">
                 <button className="ui-button" onClick={() => navigateStep('character')}>← Back: Character</button>
-                <button className="ui-button" onClick={savePlan} disabled={!planDirty || planEditLocked}>Save Draft</button>
+                <button className="ui-button" onClick={(event) => savePlan({ trigger: event.currentTarget })} disabled={!planDirty || planEditLocked}>Save Draft</button>
                 <span className="spacer" style={{ flex: 1 }} />
                 <button className="ui-button ui-button--primary" onClick={() => navigateStep('takes')}>Next: Takes →</button>
               </div>
@@ -4319,7 +4384,7 @@ export default function SessionView({
 
                 <div className="row session-editor-actions">
                   <button className="ui-button" onClick={() => navigateStep('constants')}>← Back: Scene / Constants</button>
-                  <button className="ui-button" onClick={savePlan} disabled={!planDirty || planEditLocked}>Save Draft</button>
+                  <button className="ui-button" onClick={(event) => savePlan({ trigger: event.currentTarget })} disabled={!planDirty || planEditLocked}>Save Draft</button>
                   <span className="spacer" style={{ flex: 1 }} />
                   <button className="ui-button ui-button--primary" onClick={() => navigateStep('review')}>Next: Review →</button>
                 </div>
@@ -5251,7 +5316,7 @@ export default function SessionView({
 
                 <div className="row" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
                   <button onClick={() => navigateStep('takes')}>← Back: Takes</button>
-                  <button className={planDirty ? 'primary' : ''} onClick={savePlan} disabled={!planDirty || planEditLocked}>
+                  <button className={planDirty ? 'primary' : ''} onClick={(event) => savePlan({ trigger: event.currentTarget })} disabled={!planDirty || planEditLocked}>
                     Save Plan
                   </button>
                   <span className="spacer" style={{ flex: 1 }} />

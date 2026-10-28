@@ -4,6 +4,8 @@
 }
 .session-execution .row { flex-wrap: wrap; }
 .session-execution h3 { margin-bottom: 8px; }
+.session-plan-impact-dialog[open] { display: grid; }
+.session-plan-impact-dialog::backdrop { background: transparent; }
 .session-execution button { min-height: 44px; max-width: 100%; white-space: normal; }
 .session-execution :is(button, input, textarea, select, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--ui-color-accent);
