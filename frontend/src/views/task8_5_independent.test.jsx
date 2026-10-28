@@ -323,6 +323,7 @@ function createHarness({
 
 let container = null
 let root = null
+let focusTarget = null
 
 beforeEach(() => {
   const values = new Map()
@@ -350,6 +351,8 @@ afterEach(() => {
   root = null
   container?.remove()
   container = null
+  focusTarget?.remove()
+  focusTarget = null
   window.localStorage.clear()
   delete window.localStorage
   vi.restoreAllMocks()
@@ -366,6 +369,32 @@ async function renderSession(step = 'review') {
     root.render(<SessionView id={sessionId} initialActiveStep={step} />)
   })
   await drain()
+}
+
+async function openReviewApprovalError() {
+  const plan = makePlan()
+  const state = createHarness({ plan, preparation: makePreparation(plan) })
+  focusTarget = document.createElement('main')
+  focusTarget.id = 'main-content'
+  focusTarget.tabIndex = -1
+  container.remove()
+  focusTarget.appendChild(container)
+  document.body.appendChild(focusTarget)
+  await renderSession('review')
+  const post = api.post.getMockImplementation()
+  vi.mocked(api.post).mockImplementation(async (url, body) => {
+    if (url === `/api/sessions/${sessionId}/plan/review/approve`) {
+      state.requests.push([url, structuredClone(body)])
+      throw new Error('Review approval failed in fixture.')
+    }
+    return post(url, body)
+  })
+  const approve = buttonMatching(/Approve Review/)
+  expect(approve).toBeTruthy()
+  expect(approve.disabled).toBe(false)
+  approve.focus()
+  await click(approve)
+  return { state, approve }
 }
 
 async function click(button) {
@@ -675,6 +704,48 @@ describe('Task 8.5 independent acceptance probes', () => {
     expect(state.requests[0][1].expected_revision).toBe(revision)
     expect(state.requests[0][1].plan.takes[0].camera).toBe('90mm at eye level')
     expect(state.requests.some(([url]) => /authoring\/operations|review\/approve|submit-selected|\/run$/.test(url))).toBe(false)
+  })
+
+  it('announces each new general SessionView error once without moving focus', async () => {
+    const { state, approve } = await openReviewApprovalError()
+    const alert = container.querySelector('.session-general-error [role="alert"]')
+    expect(alert).toBeTruthy()
+    expect(alert.textContent).toBe('Review approval failed in fixture.')
+    expect(container.querySelectorAll('.session-general-error [role="alert"]')).toHaveLength(1)
+    expect(document.activeElement).toBe(approve)
+
+    await click(buttonMatching(/^3\. Takes/))
+    expect(container.querySelector('.session-general-error [role="alert"]')).toBeNull()
+    await click(buttonMatching(/^4\. Review/))
+    await click(buttonMatching(/Approve Review/))
+    expect(container.querySelectorAll('.session-general-error [role="alert"]')).toHaveLength(1)
+    expect(container.querySelector('.session-general-error [role="alert"]').textContent)
+      .toBe('Review approval failed in fixture.')
+    expect(state.requests).toHaveLength(2)
+  })
+
+  it('dismisses the general error from the keyboard without repeating the operation or hiding blockers', async () => {
+    const { state } = await openReviewApprovalError()
+    const dismiss = container.querySelector('.session-general-error button')
+    expect(dismiss).toBeTruthy()
+    expect(dismiss.tagName).toBe('BUTTON')
+
+    dismiss.focus()
+    const enter = await pressKey(dismiss, 'Enter')
+    expect(enter.defaultPrevented).toBe(false)
+    // happy-dom does not synthesize the native button activation from keydown.
+    await click(dismiss)
+    expect(container.querySelector('.session-general-error')).toBeNull()
+    expect(document.activeElement).toBe(focusTarget)
+    expect(container.querySelector('.session-navigation').textContent).toContain('Generation blocked:')
+    expect(buttonMatching(/^5\. Generation/).disabled).toBe(true)
+    expect(state.requests).toHaveLength(1)
+
+    await click(buttonMatching(/^3\. Takes/))
+    await click(buttonMatching(/^4\. Review/))
+    await click(buttonMatching(/Approve Review/))
+    expect(container.querySelector('.session-general-error [role="alert"]')).toBeTruthy()
+    expect(state.requests).toHaveLength(2)
   })
 
   it('names the impact dialog, moves focus inside it, traps Tab, and makes the background inert', async () => {

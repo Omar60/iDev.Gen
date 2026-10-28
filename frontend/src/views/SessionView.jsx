@@ -437,7 +437,14 @@ export default function SessionView({
   initialTakeReviewData = {},
 }) {
   const [s, setS] = useState(initialSession)
-  const [error, setError] = useState(initialError)
+  const [error, setErrorState] = useState(initialError)
+  const errorRef = useRef(initialError)
+  const [dismissedError, setDismissedError] = useState(null)
+  const setError = (nextError) => {
+    if (nextError !== errorRef.current) setDismissedError(null)
+    errorRef.current = nextError
+    setErrorState(nextError)
+  }
   const [sessionLoadError, setSessionLoadError] = useState(
     () => initialError ? { sessionId: String(id), message: initialError } : null,
   )
@@ -2937,7 +2944,15 @@ export default function SessionView({
 
   return (
     <>
-      {error && !(isResource && canPreparePlan({ plan, planRevision }) && ['character', 'constants', 'takes'].includes(activeStep)) && <div className="error" onClick={() => setError('')}>{error}</div>}
+      {error && dismissedError !== error && !(isResource && canPreparePlan({ plan, planRevision }) && ['character', 'constants', 'takes'].includes(activeStep)) && (
+        <div className="error session-general-error">
+          <span role="alert">{error}</span>
+          <button type="button" className="ui-button" onClick={() => {
+            setDismissedError(error)
+            document.getElementById('main-content')?.focus()
+          }}>Dismiss error</button>
+        </div>
+      )}
       {planRefreshError?.sessionId === String(id) && (
         <div className="ui-notice" data-tone="error" role="alert">
           <p>The plan refresh failed. Your unsaved take edits and order were preserved. {planRefreshError.message}</p>
