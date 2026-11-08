@@ -605,6 +605,8 @@ export default function SessionView({
   const [planSessionId, setPlanSessionId] = useState(() => (
     initialPlan && String(initialSession?.id) === String(id) ? String(id) : ''
   ))
+  const planSessionIdRef = useRef(planSessionId)
+  planSessionIdRef.current = planSessionId
   const [planRevision, setPlanRevision] = useState(initialRevision)
   const planRevisionRef = useRef(initialRevision)
   planRevisionRef.current = planRevision
@@ -641,6 +643,9 @@ export default function SessionView({
   const sessionViewMountedRef = useRef(false)
   const sessionViewEpochRef = useRef(0)
   const sessionReloadSequenceRef = useRef(0)
+  const takeReviewRequestSequenceRef = useRef(new Map())
+  const approvalRequestSequenceRef = useRef(new Map())
+  const approvalOutcomeBySessionRef = useRef(new Map())
   const sessionViewIdRef = useRef(id)
   sessionViewIdRef.current = id
   const previousSessionIdRef = useRef(String(id))
@@ -867,6 +872,8 @@ export default function SessionView({
     setReviewedRevision(null)
     setSelectedTakeIds(new Set())
     setTakeReviewData({})
+    setTakeReviewLoading({})
+    setTakeReviewError({})
     setPlanReviewStatus('idle')
     setError(message)
   }
@@ -915,6 +922,8 @@ export default function SessionView({
           if (!planDirtyRef.current) setSharedSummary(res.sharedSummary || null)
           setSelectedTakeIds(new Set())
           setTakeReviewData({})
+          setTakeReviewLoading({})
+          setTakeReviewError({})
           setPlanReviewStatus('idle')
           setReviewRefreshCounter((count) => count + 1)
           if (!planDirtyRef.current) {
@@ -981,6 +990,8 @@ export default function SessionView({
     setReviewedRevision(loaded.reviewedRevision ?? null)
     setSelectedTakeIds(new Set())
     setTakeReviewData({})
+    setTakeReviewLoading({})
+    setTakeReviewError({})
     setPlanReviewStatus('idle')
     if (session) setS(session)
     return true
@@ -1154,6 +1165,8 @@ export default function SessionView({
         setReviewedRevision(null)
         setSelectedTakeIds(new Set())
         setTakeReviewData({})
+        setTakeReviewLoading({})
+        setTakeReviewError({})
         setPlanReviewStatus('idle')
         setPlanNotice(`Plan saved (revision ${res.planRevision})`)
         setError('')
@@ -1623,6 +1636,10 @@ export default function SessionView({
       setError('')
       setSessionLoadError(null)
     }
+    setPlanNotice('')
+    setTakeReviewLoading({})
+    setTakeReviewError({})
+    takeReviewRequestSequenceRef.current.clear()
     sessionViewEpochRef.current += 1
     setSessionRequestEpoch(sessionViewEpochRef.current)
     sessionViewMountedRef.current = true
@@ -1673,6 +1690,15 @@ export default function SessionView({
       sharedOperationEpochRef.current += 1
     }
   }, [id])
+
+  useEffect(() => {
+    const sessionId = String(id)
+    const outcome = approvalOutcomeBySessionRef.current.get(sessionId)
+    if (!outcome || planDirty || planSessionId !== sessionId || planRevision !== outcome.planRevision) return
+    if (approvalRequestSequenceRef.current.get(sessionId) !== outcome.requestSequence) return
+    if (outcome.approved) setReviewedRevision(outcome.planRevision)
+    else if (outcome.error) setError(outcome.error)
+  }, [id, planSessionId, planRevision, planDirty])
 
   useEffect(() => {
     let current = true
@@ -1870,19 +1896,39 @@ export default function SessionView({
   }
 
   const fetchTakeReview = async (takeId) => {
+    const sessionId = String(id)
+    const requestEpoch = sessionViewEpochRef.current
+    const requestRevision = planRevision
+    const requestKey = `${sessionId}:${requestRevision}:${takeId}`
+    const requestSequence = (takeReviewRequestSequenceRef.current.get(requestKey) || 0) + 1
+    takeReviewRequestSequenceRef.current.set(requestKey, requestSequence)
+    const isCurrentTakeReviewRequest = () => (
+      isCurrentSessionRequest(sessionId, requestEpoch)
+      && planRevisionRef.current === requestRevision
+      && takeReviewRequestSequenceRef.current.get(requestKey) === requestSequence
+    )
     setTakeReviewLoading((prev) => ({ ...prev, [takeId]: true }))
     setTakeReviewError((prev) => ({ ...prev, [takeId]: '' }))
     try {
-      const res = await loadTakeReview(id, takeId, api)
+      const res = await loadTakeReview(sessionId, takeId, requestRevision, api)
+      if (!isCurrentTakeReviewRequest()) return
       if (res.ok) {
-        setTakeReviewData((prev) => ({ ...prev, [takeId]: res }))
+        if ((res.take_id != null && res.take_id !== takeId)
+            || (res.plan_revision != null && res.plan_revision !== requestRevision)) {
+          setTakeReviewError((prev) => ({ ...prev, [takeId]: 'Take review response identity or revision did not match the request.' }))
+        } else {
+          setTakeReviewData((prev) => ({ ...prev, [takeId]: res }))
+        }
       } else {
         setTakeReviewError((prev) => ({ ...prev, [takeId]: res.error || 'Failed to load take review' }))
       }
     } catch (e) {
+      if (!isCurrentTakeReviewRequest()) return
       setTakeReviewError((prev) => ({ ...prev, [takeId]: e?.message || 'Failed to load take review' }))
     } finally {
-      setTakeReviewLoading((prev) => ({ ...prev, [takeId]: false }))
+      if (isCurrentTakeReviewRequest()) {
+        setTakeReviewLoading((prev) => ({ ...prev, [takeId]: false }))
+      }
     }
   }
 
@@ -1975,18 +2021,52 @@ export default function SessionView({
 
   const handleApproveReview = async () => {
     if (planDirty || planEditLocked || planRevision === null || reviewBlocksFinalization) return
+    const sessionId = String(id)
+    const requestRevision = planRevision
+    const requestSequence = (approvalRequestSequenceRef.current.get(sessionId) || 0) + 1
+    approvalRequestSequenceRef.current.set(sessionId, requestSequence)
+    approvalOutcomeBySessionRef.current.delete(sessionId)
+    const isLatestApproval = () => (
+      approvalRequestSequenceRef.current.get(sessionId) === requestSequence
+    )
     setError('')
     try {
-      const res = await approvePlanReview(id, planRevision, api)
+      const res = await approvePlanReview(sessionId, requestRevision, api)
+      if (!sessionViewMountedRef.current || !isLatestApproval()) return
+      const outcome = res.ok
+        ? { planRevision: requestRevision, approved: true, requestSequence }
+        : { planRevision: requestRevision, error: res.error || 'Failed to approve review', requestSequence }
+      approvalOutcomeBySessionRef.current.set(sessionId, outcome)
+      if (String(sessionViewIdRef.current) !== sessionId
+          || planSessionIdRef.current !== sessionId
+          || planRevisionRef.current !== requestRevision
+          || planDirtyRef.current) return
       if (res.ok) {
-        setReviewedRevision(planRevision)
-        setPlanNotice(`Review approved for revision ${planRevision}`)
-        setTimeout(() => setPlanNotice(''), 3000)
+        setReviewedRevision(requestRevision)
+        setPlanNotice(`Review approved for revision ${requestRevision}`)
+        setTimeout(() => {
+          if (sessionViewMountedRef.current
+              && String(sessionViewIdRef.current) === sessionId
+              && planSessionIdRef.current === sessionId
+              && planRevisionRef.current === requestRevision
+              && !planDirtyRef.current
+              && isLatestApproval()) setPlanNotice('')
+        }, 3000)
       } else {
-        setError(res.error || 'Failed to approve review')
+        setError(outcome.error)
       }
     } catch (e) {
-      setError(e?.message || 'Failed to approve review')
+      if (!sessionViewMountedRef.current || !isLatestApproval()) return
+      const outcome = {
+        planRevision: requestRevision,
+        error: e?.message || 'Failed to approve review',
+        requestSequence,
+      }
+      approvalOutcomeBySessionRef.current.set(sessionId, outcome)
+      if (String(sessionViewIdRef.current) === sessionId
+          && planSessionIdRef.current === sessionId
+          && planRevisionRef.current === requestRevision
+          && !planDirtyRef.current) setError(outcome.error)
     }
   }
 
@@ -2506,13 +2586,22 @@ export default function SessionView({
       return undefined
     }
     let current = true
+    const sessionId = String(id)
+    const requestEpoch = sessionViewEpochRef.current
+    const requestRevision = planRevision
+    const isCurrentReviewLoad = () => (
+      current
+      && isCurrentSessionRequest(sessionId, requestEpoch)
+      && planRevisionRef.current === requestRevision
+    )
     setPlanReviewStatus('loading')
     setPlanReviewFailure(null)
-    loadPlanReviews(id, planRevision, api).then((result) => {
-      if (!current) return
-      if (!result.ok || result.planRevision !== planRevision) {
+    loadPlanReviews(sessionId, requestRevision, api).then((result) => {
+      if (!isCurrentReviewLoad()) return
+      if (!result.ok || result.planRevision !== requestRevision
+          || result.session_id != null && String(result.session_id) !== sessionId) {
         setPlanReviewFailure({
-          error: result.error || `Review response revision ${result.planRevision ?? 'unknown'} does not match ${planRevision}.`,
+          error: result.error || `Review response identity or revision does not match Session ${sessionId}, revision ${requestRevision}.`,
           status: result.status,
           detail: result.detail,
         })
@@ -2528,9 +2617,11 @@ export default function SessionView({
       const duplicateReview = result.full_auto_duplicate_review || null
       fullAutoDuplicateReviewRef.current = duplicateReview
       setFullAutoDuplicateReview(duplicateReview)
+      setTakeReviewLoading({})
+      setTakeReviewError({})
       setPlanReviewStatus('ready')
     }).catch(() => {
-      if (current) {
+      if (isCurrentReviewLoad()) {
         setPlanReviewFailure({ error: 'Failed to load plan reviews.' })
         setPlanReviewStatus('error')
       }
