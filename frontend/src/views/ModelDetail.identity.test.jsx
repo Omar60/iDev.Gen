@@ -38,6 +38,7 @@ const render = async (id) => act(async () => {
 })
 const nameField = () => [...container.querySelectorAll('input')]
   .find((input) => [...input.labels].some((label) => label.textContent.trim() === 'Name'))
+const legacyNameField = () => container.querySelector('input[name="session_name"]')
 const editModel = async (name) => {
   await click('Edit model')
   await change(nameField(), name)
@@ -207,4 +208,105 @@ it('keeps a late A save error and its draft out of B', async () => {
 
   await render(7)
   expect(nameField().value).toBe('A pending draft')
+})
+
+it('keeps Legacy drafts and creation payloads bound to each model across A→B→A', async () => {
+  const pendingCreate = deferred()
+  const post = vi.spyOn(api, 'post').mockReturnValue(pendingCreate.promise)
+  await render(7)
+  await click('Legacy session')
+  await change(legacyNameField(), 'A draft')
+
+  await render(8)
+  expect(legacyNameField()).toBeNull()
+  expect(container.textContent).not.toContain('A draft')
+  await click('Legacy session')
+  expect(legacyNameField().value).toBe('Session 1')
+  await change(legacyNameField(), 'B draft')
+
+  await render(7)
+  expect(legacyNameField().value).toBe('A draft')
+  await click('Create session (0 photos)')
+  expect(post).toHaveBeenCalledTimes(1)
+  expect(post).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({ model_id: 7, name: 'A draft' }))
+
+  await act(async () => { pendingCreate.reject(Object.assign(new Error('Create rejected'), { status: 422 })); await drain() })
+})
+
+it('keeps a late successful A creation and newer edits out of B', async () => {
+  const pendingCreate = deferred()
+  const post = vi.spyOn(api, 'post').mockReturnValue(pendingCreate.promise)
+  await render(7)
+  await click('Legacy session')
+  await change(legacyNameField(), 'Submitted A draft')
+  await click('Create session (0 photos)')
+  expect(post).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({ model_id: 7, name: 'Submitted A draft' }))
+  await change(legacyNameField(), 'Newer A draft')
+
+  await render(8)
+  expect(container.querySelector('h1').textContent).toBe('Model B')
+  expect(legacyNameField()).toBeNull()
+  expect(container.textContent).not.toContain('Submitted A draft')
+  expect(container.textContent).not.toContain('Newer A draft')
+
+  await act(async () => { pendingCreate.resolve({ id: 701 }); await drain() })
+  expect(container.querySelector('h1').textContent).toBe('Model B')
+  expect(container.querySelector('a[href="#/session/701"]')).toBeNull()
+  expect(container.textContent).not.toContain('701')
+
+  await render(7)
+  expect(container.querySelector('h1').textContent).toBe('Model A')
+  expect(legacyNameField().value).toBe('Newer A draft')
+  expect(container.querySelector('a[href="#/session/701"]')).toBeTruthy()
+  expect(container.textContent).toContain('Session #701 was created for this model.')
+})
+
+it('does not navigate after an A→B→A route cycle during a pending A creation', async () => {
+  const pendingCreate = deferred()
+  const post = vi.spyOn(api, 'post').mockReturnValue(pendingCreate.promise)
+  await render(7)
+  await click('Legacy session')
+  await click('Create session (0 photos)')
+  expect(post).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({ model_id: 7 }))
+
+  await render(8)
+  await render(7)
+  const initialHash = window.location.hash
+  await act(async () => { pendingCreate.resolve({ id: 702 }); await drain() })
+
+  expect(container.querySelector('h1').textContent).toBe('Model A')
+  expect(container.querySelector('a[href="#/session/702"]')).toBeTruthy()
+  expect(window.location.hash).toBe(initialHash)
+})
+
+it('keeps an uncertain A creation on A and requires an explicit retry', async () => {
+  const pendingCreate = deferred()
+  const retry = deferred()
+  const post = vi.spyOn(api, 'post')
+    .mockReturnValueOnce(pendingCreate.promise)
+    .mockReturnValueOnce(retry.promise)
+  await render(7)
+  await click('Legacy session')
+  await change(legacyNameField(), 'A uncertain draft')
+  await click('Create session (0 photos)')
+
+  await render(8)
+  expect(legacyNameField()).toBeNull()
+  expect(container.textContent).not.toContain('A uncertain draft')
+  expect(container.textContent).not.toContain('The server may already have created this session.')
+  expect([...container.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Legacy session').disabled).toBe(true)
+
+  await act(async () => { pendingCreate.reject(Object.assign(new Error('A response was lost'), { status: 500 })); await drain() })
+  expect(legacyNameField()).toBeNull()
+  expect(container.textContent).not.toContain('The server may already have created this session.')
+  expect(post).toHaveBeenCalledTimes(1)
+
+  await render(7)
+  expect(legacyNameField().value).toBe('A uncertain draft')
+  expect(container.textContent).toContain('The server may already have created this session.')
+  await click('Retry session creation')
+  expect(post).toHaveBeenCalledTimes(2)
+  expect(post).toHaveBeenLastCalledWith('/api/sessions', expect.objectContaining({ model_id: 7, name: 'A uncertain draft' }))
+
+  await act(async () => { retry.reject(Object.assign(new Error('Retry rejected'), { status: 422 })); await drain() })
 })

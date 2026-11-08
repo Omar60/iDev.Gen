@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, loraPreview, shotImage } from '../api'
 import ModelPreview from '../components/ModelPreview.jsx'
 import { go } from '../App.jsx'
@@ -43,7 +43,22 @@ export default function ModelDetail({ id }) {
   const [loras, setLoras] = useState([])
   const [baseModels, setBaseModels] = useState({})
   const [workflows, setWorkflows] = useState([])
-  const [newSession, setNewSession] = useState(null)
+  const [legacyForms, setLegacyForms] = useState({})
+  const legacyFormsRef = useRef(legacyForms)
+  useLayoutEffect(() => { legacyFormsRef.current = legacyForms }, [legacyForms])
+  const legacyForm = legacyForms[modelId] || {}
+  const newSession = legacyForm.draft || null
+  const updateLegacyForm = (update) => {
+    const current = legacyFormsRef.current
+    const form = current[modelId] || {}
+    const next = typeof update === 'function' ? update(form) : { ...form, ...update }
+    const updated = { ...current, [modelId]: next }
+    legacyFormsRef.current = updated
+    setLegacyForms(updated)
+  }
+  const setNewSession = (draft) => updateLegacyForm((form) => ({
+    ...form, draft: typeof draft === 'function' ? draft(form.draft ?? null) : draft,
+  }))
   // The whole config: it also carries the per-checkpoint profiles.
   const [config, setConfig] = useState({})
   // Empty until the route answers, and empty forever if it cannot: an
@@ -57,32 +72,45 @@ export default function ModelDetail({ id }) {
   // The tag the room list is narrowed to, empty for all of them. The
   // options come from the rooms themselves - 239 tags belong to the
   // source, and a list written here would go stale on the next import.
-  const [roomTag, setRoomTag] = useState('')
+  const roomTag = legacyForm.roomTag || ''
+  const setRoomTag = (roomTag) => updateLegacyForm((form) => ({ ...form, roomTag }))
   // What was typed into the room filter. Matched against the label and the
   // room's own prose, so "mirror" finds the room with a mirror in it whatever
   // its label says.
-  const [roomText, setRoomText] = useState('')
+  const roomText = legacyForm.roomText || ''
+  const setRoomText = (roomText) => updateLegacyForm((form) => ({ ...form, roomText }))
   // The room the session is using - dealt at creation or picked since. Kept as
   // a KEY and not as a row: it is what the select's value has to be, it is
   // what keeps that room in the list whatever the filter says, and the look
   // itself is the session's from the moment it is filled.
-  const [roomKey, setRoomKey] = useState('')
+  const roomKey = legacyForm.roomKey || ''
+  const setRoomKey = (roomKey) => updateLegacyForm((form) => ({ ...form, roomKey }))
   const llm = !!config.llm_ok
-  const [writing, setWriting] = useState('')
+  const writing = legacyForm.writing || ''
+  const setWriting = (writing) => updateLegacyForm((form) => ({ ...form, writing }))
   const [errors, setErrors] = useState({})
+  const [sessionCreateErrors, setSessionCreateErrors] = useState({})
   const [uncertainSessionCreates, setUncertainSessionCreates] = useState({})
+  const [createdSessions, setCreatedSessions] = useState({})
   const error = errors[modelId] || ''
+  const sessionCreateError = sessionCreateErrors[modelId] || ''
   const setError = (message) => {
     setErrors((current) => ({ ...current, [modelId]: message }))
-    setUncertainSessionCreates((current) => ({ ...current, [modelId]: false }))
   }
   const sessionCreateUncertain = uncertainSessionCreates[modelId] === true
+  const createdSession = createdSessions[modelId] || null
   const [saving, setSaving] = useState(false)
   const [creatingSession, setCreatingSession] = useState(false)
   const createSessionPendingRef = useRef(false)
   const modelLoadSequenceRef = useRef(0)
   const currentModelIdRef = useRef(modelId)
   currentModelIdRef.current = modelId
+  const modelRouteRef = useRef({ id: modelId, epoch: 0 })
+  useLayoutEffect(() => {
+    if (modelRouteRef.current.id !== modelId) {
+      modelRouteRef.current = { id: modelId, epoch: modelRouteRef.current.epoch + 1 }
+    }
+  }, [modelId])
   const errorRef = useRef(null)
   const editRef = useRef(null)
   const editTrigger = useRef(null)
@@ -123,9 +151,9 @@ export default function ModelDetail({ id }) {
       setServedLibraries(d.libraries || [])
     }).catch(() => {})
   }, [id])
-  useEffect(() => { if (error) errorRef.current?.focus() }, [error, saving])
+  useEffect(() => { if (error || sessionCreateError) errorRef.current?.focus() }, [error, sessionCreateError, saving])
   useEffect(() => { if (edit) editRef.current?.querySelector('input')?.focus() }, [!!edit])
-  useEffect(() => { if (newSession) legacyRef.current?.focus() }, [!!newSession])
+  useEffect(() => { if (newSession) legacyRef.current?.focus() }, [modelId, !!newSession])
   useEffect(() => {
     if (!saving && returnFocus.current) {
       returnFocus.current.focus()
@@ -177,6 +205,7 @@ export default function ModelDetail({ id }) {
   const cancelSession = () => { returnFocus.current = legacyTrigger.current; setNewSession(null) }
 
   const startSession = () => {
+    if (createSessionPendingRef.current || !model || String(model.id) !== modelId) return
     const draft = newSessionDraft()
     // Dealt once, here, in the handler that makes the draft - never in render,
     // where every keystroke in the form would deal another room. A drawn room
@@ -240,16 +269,23 @@ export default function ModelDetail({ id }) {
       const written = await fn()
       const fields = typeof written === 'string' ? { look: written } : written
       if (Object.values(fields).some((v) => (v || '').trim())) {
-        setNewSession((cur) => ({ ...cur, ...fields }))
+        setNewSession((cur) => cur ? ({ ...cur, ...fields }) : cur)
       } else setError('the assistant answered nothing usable')
     } catch (e) { setError(e.message) } finally { setWriting('') }
   }
 
   const createSession = async () => {
-    if (createSessionPendingRef.current || !newSession) return
+    const requestedModelId = modelId
+    const requestedRouteEpoch = modelRouteRef.current.epoch
+    const draft = newSession
+    const requestedRoomKey = roomKey
+    if (createSessionPendingRef.current || !draft || currentModelIdRef.current !== requestedModelId
+        || String(model?.id) !== requestedModelId || String(draft.model_id) !== requestedModelId) return
     createSessionPendingRef.current = true
     setCreatingSession(true)
     setError('')
+    setSessionCreateErrors((current) => ({ ...current, [requestedModelId]: '' }))
+    setUncertainSessionCreates((current) => ({ ...current, [requestedModelId]: false }))
     try {
       // The blank shot the editor opens with is not a shot. Dropping it here
       // rather than refusing to create is what lets a session start empty and
@@ -258,15 +294,25 @@ export default function ModelDetail({ id }) {
         // The room the look was filled from rides along as provenance. It is
         // state of its own and not part of the draft, because it is the
         // select's value first and the session's record second.
-        ...newSession, room_key: roomKey,
-        shots: newSession.shots.filter((s) => s.prompt.trim()) })
-      go(`/session/${sid}`)
+        ...draft, room_key: requestedRoomKey,
+        shots: draft.shots.filter((s) => s.prompt.trim()) })
+      const currentDraft = legacyFormsRef.current[requestedModelId]?.draft ?? null
+      const currentRoomKey = legacyFormsRef.current[requestedModelId]?.roomKey || ''
+      const unchanged = currentDraft === draft && currentRoomKey === requestedRoomKey
+      const sameRoute = currentModelIdRef.current === requestedModelId
+        && modelRouteRef.current.epoch === requestedRouteEpoch
+      if (unchanged && sameRoute) {
+        go(`/session/${sid}`)
+      } else {
+        if (unchanged) setNewSession(null)
+        setCreatedSessions((current) => ({ ...current, [requestedModelId]: sid }))
+      }
     } catch (e) {
       const confirmedRejection = Number.isInteger(e?.status) && e.status >= 400 && e.status < 500
       const message = e?.message || 'Session creation did not return a result.'
-      setError(message)
       // The Legacy route validates before INSERT; a 5xx or transport failure may follow it.
-      setUncertainSessionCreates((current) => ({ ...current, [modelId]: !confirmedRejection }))
+      setSessionCreateErrors((current) => ({ ...current, [requestedModelId]: message }))
+      setUncertainSessionCreates((current) => ({ ...current, [requestedModelId]: !confirmedRejection }))
     }
     finally {
       createSessionPendingRef.current = false
@@ -277,9 +323,16 @@ export default function ModelDetail({ id }) {
   return (
     <div className="studio-ui ui-page model-detail-page ui-stack">
       {error && <div className="ui-notice" data-tone="error" role="alert" tabIndex={-1} ref={errorRef}>
-        <p>{error}</p><p className="ui-help">{sessionCreateUncertain
+        <p>{error}</p><p className="ui-help">Your entries are kept. Review the settings and try again.</p>
+      </div>}
+      {sessionCreateError && <div className="ui-notice" data-tone="error" role="alert" tabIndex={-1} ref={errorRef}>
+        <p>{sessionCreateError}</p><p className="ui-help">{sessionCreateUncertain
           ? 'The server may already have created this session. Check the Sessions list before trying again. Your entries are kept. No retry was sent automatically.'
           : 'Your entries are kept. Review the settings and try again.'}</p>
+      </div>}
+      {createdSession && <div className="ui-notice" data-tone="success" role="status">
+        <p>Session #{createdSession} was created for this model.</p>
+        <a href={`#/session/${createdSession}`}>Open session</a>
       </div>}
       <header className="ui-page-header model-page-header">
         <div><a className="model-back" href="#/models">Models</a>
@@ -290,7 +343,7 @@ export default function ModelDetail({ id }) {
           <button className="ui-button" type="button" ref={editTrigger} aria-expanded={!!edit} aria-controls="edit-model-form"
             disabled={saving} onClick={() => { if (edit) cancelEdit(); else { setError(''); setEdit({ ...model }) } }}>{edit ? 'Cancel editing' : 'Edit model'}</button>
           <button className="ui-button" type="button" ref={legacyTrigger} aria-expanded={!!newSession} aria-controls="legacy-session-form"
-            onClick={startSession} disabled={!!newSession}>Legacy session</button>
+            onClick={startSession} disabled={!!newSession || creatingSession}>Legacy session</button>
           <button className="ui-button model-delete" type="button" onClick={async () => {
             if (confirm(`Delete the model "${model.name}" and all its sessions?`)) {
               try { await api.del(`/api/models/${id}`); go('/models') }
