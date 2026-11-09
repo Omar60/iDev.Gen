@@ -732,7 +732,9 @@ export default function SessionView({
   const [reviewedRevision, setReviewedRevision] = useState(initialReviewedRevision)
   const [selectedTakeIds, setSelectedTakeIds] = useState(() => new Set())
   const [submittingTakeSessionIds, setSubmittingTakeSessionIds] = useState(() => new Set())
+  const [postingTakeSessionIds, setPostingTakeSessionIds] = useState(() => new Set())
   const submittingTakes = submittingTakeSessionIds.has(String(id))
+  const postingTakes = postingTakeSessionIds.has(String(id))
   const [expandedTakeId, setExpandedTakeId] = useState(initialExpandedTakeId)
   const [takeReviewData, setTakeReviewData] = useState(initialTakeReviewData)
   const hasKnownStaleAdaptations = Object.values(takeReviewData || {}).some(
@@ -879,30 +881,31 @@ export default function SessionView({
     setError(message)
   }
 
-  const reload = () => {
+  const reload = ({ reconcileSelection = false } = {}) => {
     const sessionId = id
     const requestEpoch = sessionViewEpochRef.current
     const requestSequence = ++sessionReloadSequenceRef.current
+    const selectedTakeIdsAtReload = selectedTakeIds
     return api.get(`/api/sessions/${sessionId}`).then((data) => {
     if (!isCurrentSessionRequest(sessionId, requestEpoch)
-        || requestSequence !== sessionReloadSequenceRef.current) return
+        || requestSequence !== sessionReloadSequenceRef.current) return false
     if (!data || String(data.id) !== String(sessionId)) {
       const message = 'The session response did not match the requested session.'
       setSessionLoadError({ sessionId: String(sessionId), message })
       setError(message)
-      return
+      return false
     }
     setSessionLoadError(null)
     setS(data)
     if (isResourceSession(data)) {
-      loadSessionPlan(sessionId, api).then((res) => {
+      const planReload = loadSessionPlan(sessionId, api).then((res) => {
         if (!isCurrentSessionRequest(sessionId, requestEpoch)
-            || requestSequence !== sessionReloadSequenceRef.current) return
-        if (planDirtyRef.current && planSessionId !== String(sessionId)) return
+            || requestSequence !== sessionReloadSequenceRef.current) return false
+        if (planDirtyRef.current && planSessionId !== String(sessionId)) return false
         if (res.ok) {
           if (typeof res.planRevision !== 'number' || res.planRevision < 0) {
             handlePlanRefreshFailure(sessionId, 'Loaded draft missing valid plan_revision from backend')
-            return
+            return false
           }
           setPlanRefreshError((previous) => previous?.sessionId === String(sessionId) ? null : previous)
           if (!planDirtyRef.current && planRevisionRef.current !== res.planRevision) {
@@ -921,7 +924,13 @@ export default function SessionView({
           setPlanConflicts(res.conflicts)
           setPlanPreparation(res.preparation || null)
           if (!planDirtyRef.current) setSharedSummary(res.sharedSummary || null)
-          setSelectedTakeIds(new Set())
+          setSelectedTakeIds((current) => {
+            if (!reconcileSelection || current === selectedTakeIdsAtReload) return new Set()
+            const readyTakeIds = new Set((res.plan?.takes || [])
+              .filter((take) => getTakePreparationState(take.take_id, res.preparation) === 'ready')
+              .map((take) => take.take_id))
+            return new Set([...current].filter((takeId) => readyTakeIds.has(takeId)))
+          })
           setTakeReviewData({})
           setTakeReviewLoading({})
           setTakeReviewError({})
@@ -938,15 +947,20 @@ export default function SessionView({
           }
         } else {
           handlePlanRefreshFailure(sessionId, res.error)
+          return false
         }
+        return true
       }).catch((e) => {
         if (!isCurrentSessionRequest(sessionId, requestEpoch)
-            || requestSequence !== sessionReloadSequenceRef.current) return
+            || requestSequence !== sessionReloadSequenceRef.current) return false
         handlePlanRefreshFailure(sessionId, e?.message || 'Failed to load plan')
+        return false
       })
+      if (reconcileSelection) return planReload
     } else if (!planDirtyRef.current) {
       setPlanSessionId('')
     }
+    return reconcileSelection ? true : undefined
     }).catch((e) => {
       if (isCurrentSessionRequest(sessionId, requestEpoch)
           && requestSequence === sessionReloadSequenceRef.current) {
@@ -955,6 +969,7 @@ export default function SessionView({
         setSessionLoadError({ sessionId: String(sessionId), message })
         setError(message)
       }
+      return false
     })
   }
 
@@ -2104,19 +2119,30 @@ export default function SessionView({
       && !planDirtyRef.current
     )
     setSubmittingTakeSessionIds((current) => new Set(current).add(submittedSessionKey))
+    setPostingTakeSessionIds((current) => new Set(current).add(submittedSessionKey))
     setError('')
     try {
-      const res = await submitSelectedTakes(submittedSessionId, toSubmit, submittedRevision, api)
+      let res
+      try {
+        res = await submitSelectedTakes(submittedSessionId, toSubmit, submittedRevision, api)
+      } finally {
+        setPostingTakeSessionIds((current) => {
+          const next = new Set(current)
+          next.delete(submittedSessionKey)
+          return next
+        })
+      }
       if (!isCurrentSubmitContext()) {
-        if (res.ok && isCurrentPlanContext()) reload()
+        if (res.ok && isCurrentPlanContext()) await reload({ reconcileSelection: true })
         return
       }
       if (res.ok) {
-        setSelectedTakeIds(new Set())
+        const submittedTakeIds = new Set(toSubmit)
+        setSelectedTakeIds((current) => new Set([...current].filter((takeId) => !submittedTakeIds.has(takeId))))
         setPlanNotice(`Submitted ${res.submitted_count || toSubmit.length} take(s) to queue`)
         setTimeout(() => { if (isCurrentSubmitContext()) setPlanNotice('') }, 4000)
-        await reload()
-        if (isCurrentSubmitContext()) navigateStep('generation')
+        const reconciled = await reload({ reconcileSelection: true })
+        if (reconciled && isCurrentSubmitContext()) navigateStep('generation')
       } else {
         setError(res.error || 'Failed to submit selected takes')
       }
@@ -4955,7 +4981,7 @@ export default function SessionView({
                               type="checkbox"
                               checked={allReadySelected}
                               onChange={() => handleSelectAllReady(readyTakeIds)}
-                              disabled={readyTakeIds.length === 0 || planDirty || submittingTakes}
+                              disabled={readyTakeIds.length === 0 || planDirty || postingTakes}
                               aria-label="Select all ready takes"
                               title={readyTakeIds.length === 0 ? 'No ready takes available to select' : 'Select all ready takes'}
                             />
@@ -4981,7 +5007,7 @@ export default function SessionView({
                             : (planPreparation?.history || []).find((item) => (
                               item.take_id === t.take_id && (item.status === 'generated' || item.linked_shot_id != null)
                             ))
-                          const isSelectable = !planDirty && prepState === 'ready' && !submittingTakes
+                          const isSelectable = !planDirty && prepState === 'ready' && !postingTakes
                           const isExpanded = expandedTakeId === t.take_id
                           const rev = takeReviewData[t.take_id]
                           const snap = rev?.snapshot || generatedItem || completedItem

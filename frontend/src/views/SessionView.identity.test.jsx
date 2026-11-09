@@ -58,7 +58,7 @@ const mount = async (getSession) => {
   root = createRoot(container)
   await act(async () => { root.render(<App />); await drain() })
 }
-const submitTakeIds = { 41: ['take-41'], 42: ['take-42', 'take-43'] }
+const submitTakeIds = { 41: ['take-41', 'take-44'], 42: ['take-42', 'take-43'] }
 const submitRevision = (id) => id === 41 ? 3 : 7
 const submittedFixtureTakes = new Set()
 const submitSession = (id) => ({
@@ -82,6 +82,13 @@ const submitPreparation = (id) => ({
     return { take_id, status: submitted ? 'generated' : 'ready', linked_shot_id: submitted ? id + 900 : null }
   }),
   incomplete: [], history: [],
+})
+const submitPlanResponse = (id) => ({
+  plan_revision: submitRevision(id),
+  reviewed_revision: submitRevision(id),
+  plan: submitPlan(id),
+  preparation: submitPreparation(id),
+  conflicts: [],
 })
 const mountSubmitFixtures = async () => {
   submittedFixtureTakes.clear()
@@ -112,16 +119,7 @@ const mountSubmitFixtures = async () => {
     const fullAutoMatch = path.match(/^\/api\/sessions\/(\d+)\/full-auto$/)
     if (fullAutoMatch) return { current_run: null }
     const planMatch = path.match(/^\/api\/sessions\/(\d+)\/plan$/)
-    if (planMatch) {
-      const id = Number(planMatch[1])
-      return {
-        plan_revision: submitRevision(id),
-        reviewed_revision: submitRevision(id),
-        plan: submitPlan(id),
-        preparation: submitPreparation(id),
-        conflicts: [],
-      }
-    }
+    if (planMatch) return submitPlanResponse(Number(planMatch[1]))
     return {}
   })
   container = document.createElement('div')
@@ -144,6 +142,48 @@ const selectTake = async (takeId) => {
   expect(checkbox).toBeTruthy()
   await act(async () => { checkbox.click(); await drain() })
   return checkbox
+}
+const deferNextPlanReload = (sessionId) => {
+  const started = deferred()
+  const pending = deferred()
+  let held = false
+  vi.mocked(api.getVersioned).mockImplementation(async (path) => {
+    const fullAutoMatch = path.match(/^\/api\/sessions\/(\d+)\/full-auto$/)
+    if (fullAutoMatch) return { current_run: null }
+    const planMatch = path.match(/^\/api\/sessions\/(\d+)\/plan$/)
+    if (planMatch) {
+      const id = Number(planMatch[1])
+      if (id === sessionId && !held) {
+        held = true
+        started.resolve()
+        return pending.promise
+      }
+      return submitPlanResponse(id)
+    }
+    return {}
+  })
+  return { started, pending }
+}
+const startAtoBtoAWithPendingSubmitReload = async () => {
+  await mountSubmitFixtures()
+  const pendingSubmit = deferred()
+  const post = vi.spyOn(api, 'post')
+    .mockReturnValueOnce(pendingSubmit.promise)
+    .mockResolvedValue({ submitted_count: 1 })
+  await selectTake('take-41')
+  await clickButton('Submit Test Selection (1)')
+  await changeHash('#/session/42?step=review')
+  await changeHash('#/session/41?step=review')
+  expect(container.querySelector('.session-header h1').textContent).toBe('Submit session 41')
+
+  submittedFixtureTakes.add('41:take-41')
+  const planReload = deferNextPlanReload(41)
+  await act(async () => {
+    pendingSubmit.resolve({ submitted_count: 1 })
+    await planReload.started.promise
+    await drain()
+  })
+  return { post, planReload }
 }
 
 afterEach(async () => {
@@ -350,5 +390,77 @@ it('ignores an A submission response after A→B→A creates a new session conte
   expect(container.querySelector('.session-stage-heading h2').textContent).toBe('Current stage: Review')
   expect(container.textContent).not.toContain('Submitted 1 take(s) to queue')
   expect(container.querySelector('tbody').textContent).toContain('Generated [Shot #941]')
+  expect(post).toHaveBeenCalledTimes(1)
+})
+
+it('preserves a new take selection made while A→B→A Submit is reconciling the plan', async () => {
+  const { post, planReload } = await startAtoBtoAWithPendingSubmitReload()
+
+  expect((await selectTake('take-44')).checked).toBe(true)
+  await act(async () => { planReload.pending.resolve(submitPlanResponse(41)); await drain() })
+
+  expect(takeCheckbox('take-44').checked).toBe(true)
+  expect(post).toHaveBeenCalledTimes(1)
+})
+
+it('blocks another Submit for the same take until A→B→A plan reconciliation finishes', async () => {
+  const { post, planReload } = await startAtoBtoAWithPendingSubmitReload()
+
+  await selectTake('take-41')
+  const submit = buttonNamed('Submitting…') || buttonNamed('Submit Test Selection (1)')
+  expect(submit).toBeTruthy()
+  await act(async () => { submit.click(); await drain() })
+
+  expect(post).toHaveBeenCalledTimes(1)
+  await act(async () => { planReload.pending.resolve(submitPlanResponse(41)); await drain() })
+})
+
+it('releases the Submit lock after an A→B→A plan reload fails', async () => {
+  const { post, planReload } = await startAtoBtoAWithPendingSubmitReload()
+
+  expect(buttonNamed('Submitting…')).toBeTruthy()
+  await act(async () => { planReload.pending.reject(new Error('A plan refresh failed')); await drain() })
+
+  expect(container.textContent).not.toContain('Submitting…')
+  expect(container.textContent).toContain('A plan refresh failed')
+  expect(post).toHaveBeenCalledTimes(1)
+})
+
+it('releases the Submit lock after a current-session submission error', async () => {
+  await mountSubmitFixtures()
+  const pendingSubmit = deferred()
+  const post = vi.spyOn(api, 'post').mockReturnValue(pendingSubmit.promise)
+  await selectTake('take-41')
+  await clickButton('Submit Test Selection (1)')
+
+  await act(async () => { pendingSubmit.reject(new Error('A submission failed')); await drain() })
+
+  expect(container.querySelector('[role=alert]').textContent).toContain('A submission failed')
+  expect(buttonNamed('Submit Test Selection (1)').disabled).toBe(false)
+  expect(post).toHaveBeenCalledTimes(1)
+})
+
+it('preserves a failed session reload outcome and releases the Submit lock', async () => {
+  await mountSubmitFixtures()
+  const get = vi.mocked(api.get)
+  const getImplementation = get.getMockImplementation()
+  let failReload = true
+  get.mockImplementation(async (path) => {
+    if (path === '/api/sessions/41' && failReload) {
+      failReload = false
+      throw new Error('A session reload failed')
+    }
+    return getImplementation(path)
+  })
+  const pendingSubmit = deferred()
+  const post = vi.spyOn(api, 'post').mockReturnValue(pendingSubmit.promise)
+  await selectTake('take-41')
+  await clickButton('Submit Test Selection (1)')
+
+  submittedFixtureTakes.add('41:take-41')
+  await act(async () => { pendingSubmit.resolve({ submitted_count: 1 }); await drain() })
+
+  expect(container.textContent).toContain('A session reload failed')
+  expect(container.textContent).not.toContain('Submitting…')
   expect(post).toHaveBeenCalledTimes(1)
 })
