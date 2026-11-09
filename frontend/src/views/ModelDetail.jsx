@@ -38,6 +38,8 @@ export default function ModelDetail({ id }) {
   const modelId = String(id)
   const [model, setModel] = useState(null)
   const [edits, setEdits] = useState({})
+  const editsRef = useRef(edits)
+  useLayoutEffect(() => { editsRef.current = edits }, [edits])
   const edit = edits[modelId] ?? null
   const setEdit = (value) => setEdits((current) => ({ ...current, [modelId]: value }))
   const [loras, setLoras] = useState([])
@@ -187,14 +189,17 @@ export default function ModelDetail({ id }) {
 
   const saveModel = async () => {
     const requestedModelId = modelId
+    const submittedEdit = edit
     if (currentModelIdRef.current !== requestedModelId
-        || String(model?.id) !== requestedModelId || String(edit?.id) !== requestedModelId) return
+        || String(model?.id) !== requestedModelId || String(submittedEdit?.id) !== requestedModelId) return
     setSaving(true); setError('')
     try {
-      await api.patch(`/api/models/${requestedModelId}`, edit)
-      setEdit(null)
+      await api.patch(`/api/models/${requestedModelId}`, submittedEdit)
+      if (editsRef.current[requestedModelId] === submittedEdit) {
+        setEdit(null)
+        if (currentModelIdRef.current === requestedModelId) returnFocus.current = editTrigger.current
+      }
       if (currentModelIdRef.current === requestedModelId) {
-        returnFocus.current = editTrigger.current
         reload()
       }
     }

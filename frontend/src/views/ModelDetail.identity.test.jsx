@@ -192,12 +192,48 @@ it('keeps a save started on A bound to A while the route changes to B', async ()
   expect(container.textContent).not.toContain('A saved draft')
 })
 
+it('keeps model edits made after an explicit save was sent', async () => {
+  await render(7)
+  await editModel('Submitted A name')
+  const pendingSave = deferred()
+  const patch = vi.spyOn(api, 'patch').mockReturnValueOnce(pendingSave.promise).mockResolvedValueOnce({})
+
+  await submit()
+  expect(patch).toHaveBeenCalledWith('/api/models/7', { ...models[7], name: 'Submitted A name' })
+  await change(nameField(), 'Newer A name')
+
+  await act(async () => { pendingSave.resolve({}); await drain() })
+  expect(nameField()?.value).toBe('Newer A name')
+
+  await submit()
+  expect(patch).toHaveBeenCalledTimes(2)
+  expect(patch).toHaveBeenLastCalledWith('/api/models/7', { ...models[7], name: 'Newer A name' })
+})
+
+it('keeps a newer A draft when a save response arrives after A→B→A navigation', async () => {
+  await render(7)
+  await editModel('Submitted A name')
+  const pendingSave = deferred()
+  const patch = vi.spyOn(api, 'patch').mockReturnValue(pendingSave.promise)
+
+  await submit()
+  await render(8)
+  await render(7)
+  expect(nameField().value).toBe('Submitted A name')
+  await change(nameField(), 'Newer A name')
+
+  await act(async () => { pendingSave.resolve({}); await drain() })
+  expect(nameField()?.value).toBe('Newer A name')
+  expect(patch).toHaveBeenCalledWith('/api/models/7', { ...models[7], name: 'Submitted A name' })
+})
+
 it('keeps a late A save error and its draft out of B', async () => {
   await render(7)
   await editModel('A pending draft')
   const pendingSave = deferred()
   vi.spyOn(api, 'patch').mockReturnValue(pendingSave.promise)
   await submit()
+  await change(nameField(), 'A newer pending draft')
   await render(8)
   expect(container.querySelector('h1').textContent).toBe('Model B')
 
@@ -207,7 +243,21 @@ it('keeps a late A save error and its draft out of B', async () => {
   expect(container.textContent).not.toContain('A pending draft')
 
   await render(7)
-  expect(nameField().value).toBe('A pending draft')
+  expect(nameField().value).toBe('A newer pending draft')
+})
+
+it('keeps newer model edits and shows the error when their pending save fails', async () => {
+  await render(7)
+  await editModel('Submitted A name')
+  const pendingSave = deferred()
+  vi.spyOn(api, 'patch').mockReturnValue(pendingSave.promise)
+
+  await submit()
+  await change(nameField(), 'Newer A name')
+  await act(async () => { pendingSave.reject(new Error('A save failed')); await drain() })
+
+  expect(container.querySelector('[role=alert]').textContent).toContain('A save failed')
+  expect(nameField().value).toBe('Newer A name')
 })
 
 it('keeps Legacy drafts and creation payloads bound to each model across A→B→A', async () => {
