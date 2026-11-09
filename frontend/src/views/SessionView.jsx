@@ -731,7 +731,8 @@ export default function SessionView({
   const [activeStep, setActiveStep] = useState(initialActiveStep)
   const [reviewedRevision, setReviewedRevision] = useState(initialReviewedRevision)
   const [selectedTakeIds, setSelectedTakeIds] = useState(() => new Set())
-  const [submittingTakes, setSubmittingTakes] = useState(false)
+  const [submittingTakeSessionIds, setSubmittingTakeSessionIds] = useState(() => new Set())
+  const submittingTakes = submittingTakeSessionIds.has(String(id))
   const [expandedTakeId, setExpandedTakeId] = useState(initialExpandedTakeId)
   const [takeReviewData, setTakeReviewData] = useState(initialTakeReviewData)
   const hasKnownStaleAdaptations = Object.values(takeReviewData || {}).some(
@@ -2085,23 +2086,48 @@ export default function SessionView({
       setError('No takes selected for submission')
       return
     }
-    setSubmittingTakes(true)
+    const submittedSessionId = id
+    const submittedSessionKey = String(id)
+    const submittedRevision = planRevision
+    const requestEpoch = sessionViewEpochRef.current
+    const isCurrentSubmitContext = () => (
+      isCurrentSessionRequest(submittedSessionKey, requestEpoch)
+      && planSessionIdRef.current === submittedSessionKey
+      && planRevisionRef.current === submittedRevision
+      && !planDirtyRef.current
+    )
+    const isCurrentPlanContext = () => (
+      sessionViewMountedRef.current
+      && String(sessionViewIdRef.current) === submittedSessionKey
+      && planSessionIdRef.current === submittedSessionKey
+      && planRevisionRef.current === submittedRevision
+      && !planDirtyRef.current
+    )
+    setSubmittingTakeSessionIds((current) => new Set(current).add(submittedSessionKey))
     setError('')
     try {
-      const res = await submitSelectedTakes(id, toSubmit, planRevision, api)
+      const res = await submitSelectedTakes(submittedSessionId, toSubmit, submittedRevision, api)
+      if (!isCurrentSubmitContext()) {
+        if (res.ok && isCurrentPlanContext()) reload()
+        return
+      }
       if (res.ok) {
         setSelectedTakeIds(new Set())
         setPlanNotice(`Submitted ${res.submitted_count || toSubmit.length} take(s) to queue`)
-        setTimeout(() => setPlanNotice(''), 4000)
+        setTimeout(() => { if (isCurrentSubmitContext()) setPlanNotice('') }, 4000)
         await reload()
-        navigateStep('generation')
+        if (isCurrentSubmitContext()) navigateStep('generation')
       } else {
         setError(res.error || 'Failed to submit selected takes')
       }
     } catch (e) {
-      setError(e?.message || 'Failed to submit selected takes')
+      if (isCurrentSubmitContext()) setError(e?.message || 'Failed to submit selected takes')
     } finally {
-      setSubmittingTakes(false)
+      setSubmittingTakeSessionIds((current) => {
+        const next = new Set(current)
+        next.delete(submittedSessionKey)
+        return next
+      })
     }
   }
 

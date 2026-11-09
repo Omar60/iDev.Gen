@@ -11,9 +11,9 @@ import SessionView from './SessionView.jsx'
 let container, root
 const drain = () => new Promise((resolve) => setTimeout(resolve, 0))
 const deferred = () => {
-  let resolve
-  const promise = new Promise((done) => { resolve = done })
-  return { promise, resolve }
+  let resolve, reject
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
 }
 const session = (id, tags) => ({
   id, name: `Session ${id}`, status: 'draft', model_id: 4, workflow_id: 12,
@@ -57,6 +57,93 @@ const mount = async (getSession) => {
   document.body.append(container)
   root = createRoot(container)
   await act(async () => { root.render(<App />); await drain() })
+}
+const submitTakeIds = { 41: ['take-41'], 42: ['take-42', 'take-43'] }
+const submitRevision = (id) => id === 41 ? 3 : 7
+const submittedFixtureTakes = new Set()
+const submitSession = (id) => ({
+  ...session(id, []),
+  name: `Submit session ${id}`,
+  settings: { composition_mode: 'resource-v1' },
+  shots: submitTakeIds[id].some((takeId) => submittedFixtureTakes.has(`${id}:${takeId}`))
+    ? [{ id: id + 900, status: 'pending' }]
+    : [],
+})
+const submitPlan = (id) => ({
+  version: 'resource-v1', look: '', initial_wardrobe: '', selected_resources: [], wardrobe_changes: [],
+  takes: submitTakeIds[id].map((takeId) => ({
+    take_id: takeId, label: `Take ${takeId}`, camera: '50mm', framing: 'portrait',
+    pose: 'standing', expression: 'neutral',
+  })),
+})
+const submitPreparation = (id) => ({
+  completed: submitTakeIds[id].map((take_id) => {
+    const submitted = submittedFixtureTakes.has(`${id}:${take_id}`)
+    return { take_id, status: submitted ? 'generated' : 'ready', linked_shot_id: submitted ? id + 900 : null }
+  }),
+  incomplete: [], history: [],
+})
+const mountSubmitFixtures = async () => {
+  submittedFixtureTakes.clear()
+  window.history.replaceState(null, '', '#/session/41?step=review')
+  vi.spyOn(window, 'matchMedia').mockReturnValue({ addEventListener() {}, removeEventListener() {} })
+  vi.spyOn(api, 'get').mockImplementation(async (path) => {
+    const sessionMatch = path.match(/^\/api\/sessions\/(\d+)$/)
+    if (sessionMatch) return submitSession(Number(sessionMatch[1]))
+    const reviewMatch = path.match(/^\/api\/sessions\/(\d+)\/plan\/review\?plan_revision=(\d+)$/)
+    if (reviewMatch) {
+      const id = Number(reviewMatch[1])
+      const revision = Number(reviewMatch[2])
+      return {
+        session_id: id,
+        plan_revision: revision,
+        reviewed_revision: submitRevision(id),
+        takes: submitTakeIds[id].map((take_id) => ({ take_id, session_id: id, plan_revision: revision })),
+      }
+    }
+    if (path === '/api/config') return { llm_ok: false }
+    if (path === '/api/comfy/status') return { online: false }
+    if (path === '/api/comfy/models') return {}
+    if (path === '/api/wardrobe') return { garments: [], outfits: [] }
+    if (path === '/api/rooms') return { rooms: [], libraries: [] }
+    return []
+  })
+  vi.spyOn(api, 'getVersioned').mockImplementation(async (path) => {
+    const fullAutoMatch = path.match(/^\/api\/sessions\/(\d+)\/full-auto$/)
+    if (fullAutoMatch) return { current_run: null }
+    const planMatch = path.match(/^\/api\/sessions\/(\d+)\/plan$/)
+    if (planMatch) {
+      const id = Number(planMatch[1])
+      return {
+        plan_revision: submitRevision(id),
+        reviewed_revision: submitRevision(id),
+        plan: submitPlan(id),
+        preparation: submitPreparation(id),
+        conflicts: [],
+      }
+    }
+    return {}
+  })
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => { root.render(<App />); await drain() })
+}
+const buttonNamed = (label) => [...container.querySelectorAll('button')]
+  .find((button) => button.textContent.trim() === label)
+const clickButton = async (label) => {
+  const button = buttonNamed(label)
+  expect(button).toBeTruthy()
+  await act(async () => { button.click(); await drain() })
+  return button
+}
+const takeCheckbox = (takeId) => [...container.querySelectorAll('tbody tr')]
+  .find((row) => row.textContent.includes(takeId))?.querySelector('input[type="checkbox"]')
+const selectTake = async (takeId) => {
+  const checkbox = takeCheckbox(takeId)
+  expect(checkbox).toBeTruthy()
+  await act(async () => { checkbox.click(); await drain() })
+  return checkbox
 }
 
 afterEach(async () => {
@@ -168,4 +255,100 @@ it('keeps a dirty resource-v1 plan with A and blocks displaying it under B', asy
     await drain()
   })
   expect(container.querySelector('#session-41-look').value).toBe('Unsaved A look')
+})
+
+it('keeps B selection and Review stage when A submission succeeds after navigation', async () => {
+  await mountSubmitFixtures()
+  const pendingA = deferred()
+  const post = vi.spyOn(api, 'post').mockReturnValue(pendingA.promise)
+  await selectTake('take-41')
+  await clickButton('Submit Test Selection (1)')
+  expect(post).toHaveBeenCalledWith('/api/sessions/41/plan/preparations/submit-selected', {
+    plan_revision: 3, take_ids: ['take-41'],
+  })
+
+  await changeHash('#/session/42?step=review')
+  expect(container.querySelector('.session-header h1').textContent).toBe('Submit session 42')
+  await selectTake('take-42')
+
+  submittedFixtureTakes.add('41:take-41')
+  await act(async () => { pendingA.resolve({ submitted_count: 1 }); await drain() })
+  expect(container.querySelector('.session-stage-heading h2').textContent).toBe('Current stage: Review')
+  expect(takeCheckbox('take-42').checked).toBe(true)
+  expect(container.textContent).not.toContain('Submitted 1 take(s) to queue')
+
+  await changeHash('#/session/41?step=review')
+  expect(container.querySelector('tbody').textContent).toContain('Generated [Shot #941]')
+})
+
+it('keeps each session POST bound to its selection and handles responses out of order without duplicates', async () => {
+  await mountSubmitFixtures()
+  const pendingA = deferred()
+  const pendingB = deferred()
+  const post = vi.spyOn(api, 'post').mockImplementation((path) => (
+    path.startsWith('/api/sessions/41/') ? pendingA.promise : pendingB.promise
+  ))
+  await selectTake('take-41')
+  const submitA = await clickButton('Submit Test Selection (1)')
+  await act(async () => { submitA.click(); await drain() })
+  expect(post).toHaveBeenCalledTimes(1)
+
+  await changeHash('#/session/42?step=review')
+  await selectTake('take-42')
+  await selectTake('take-43')
+  const submitB = await clickButton('Submit Test Selection (2)')
+  await act(async () => { submitB.click(); await drain() })
+  expect(post).toHaveBeenCalledTimes(2)
+  expect(post).toHaveBeenNthCalledWith(1, '/api/sessions/41/plan/preparations/submit-selected', {
+    plan_revision: 3, take_ids: ['take-41'],
+  })
+  expect(post).toHaveBeenNthCalledWith(2, '/api/sessions/42/plan/preparations/submit-selected', {
+    plan_revision: 7, take_ids: ['take-42', 'take-43'],
+  })
+
+  submittedFixtureTakes.add('42:take-42')
+  submittedFixtureTakes.add('42:take-43')
+  await act(async () => { pendingB.resolve({ submitted_count: 2 }); await drain() })
+  expect(container.querySelector('.session-stage-heading h2').textContent).toBe('Current stage: Generation')
+  expect(container.textContent).toContain('Submitted 2 take(s) to queue')
+  submittedFixtureTakes.add('41:take-41')
+  await act(async () => { pendingA.resolve({ submitted_count: 1 }); await drain() })
+  expect(container.querySelector('.session-stage-heading h2').textContent).toBe('Current stage: Generation')
+  expect(container.textContent).toContain('Submitted 2 take(s) to queue')
+  expect(container.textContent).not.toContain('Submitted 1 take(s) to queue')
+  expect(post).toHaveBeenCalledTimes(2)
+})
+
+it('does not display a late A submission failure in B', async () => {
+  await mountSubmitFixtures()
+  const pendingA = deferred()
+  const post = vi.spyOn(api, 'post').mockReturnValue(pendingA.promise)
+  await selectTake('take-41')
+  await clickButton('Submit Test Selection (1)')
+
+  await changeHash('#/session/42?step=review')
+  await act(async () => { pendingA.reject(new Error('A submission failed')); await drain() })
+  expect(container.querySelector('.session-header h1').textContent).toBe('Submit session 42')
+  expect(container.textContent).not.toContain('A submission failed')
+  expect(container.querySelector('.session-stage-heading h2').textContent).toBe('Current stage: Review')
+  expect(post).toHaveBeenCalledTimes(1)
+})
+
+it('ignores an A submission response after A→B→A creates a new session context', async () => {
+  await mountSubmitFixtures()
+  const pendingA = deferred()
+  const post = vi.spyOn(api, 'post').mockReturnValue(pendingA.promise)
+  await selectTake('take-41')
+  await clickButton('Submit Test Selection (1)')
+
+  await changeHash('#/session/42?step=review')
+  await changeHash('#/session/41?step=review')
+  expect(container.querySelector('.session-header h1').textContent).toBe('Submit session 41')
+
+  submittedFixtureTakes.add('41:take-41')
+  await act(async () => { pendingA.resolve({ submitted_count: 1 }); await drain() })
+  expect(container.querySelector('.session-stage-heading h2').textContent).toBe('Current stage: Review')
+  expect(container.textContent).not.toContain('Submitted 1 take(s) to queue')
+  expect(container.querySelector('tbody').textContent).toContain('Generated [Shot #941]')
+  expect(post).toHaveBeenCalledTimes(1)
 })
