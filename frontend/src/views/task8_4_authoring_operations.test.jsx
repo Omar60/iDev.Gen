@@ -167,9 +167,9 @@ async function drain() {
   })
 }
 
-async function renderSession() {
+async function renderSession(initialActiveStep = 'review') {
   await act(async () => {
-    root.render(<SessionView id={sessionId} initialActiveStep="review" />)
+    root.render(<SessionView id={sessionId} initialActiveStep={initialActiveStep} />)
   })
   await drain()
 }
@@ -406,6 +406,181 @@ describe('Task 8.4 authoring operation UI', () => {
     expect(JSON.parse(window.localStorage.getItem(operationKey)).request).toEqual(posts[0][1])
     await click(buttonMatching(/^2\. Scene \/ Constants$/))
     expect(buttonMatching(/^Retry suggestion request$/)).toBeTruthy()
+  })
+
+  it.each(['success', 'conflict'])('rejects a stale suggestion %s without replacing its recovery request', async (responseKind) => {
+    const state = installApi(makePlan())
+    const requests = []
+    let finishStart
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      if (url === operationPath) {
+        requests.push(structuredClone(body))
+        if (requests.length > 1) {
+          const error = new Error('The saved plan revision changed.')
+          error.status = 409
+          error.detail = { code: 'plan_revision_stale', message: error.message }
+          error.hasStableErrorBody = true
+          throw error
+        }
+        return new Promise((resolve, reject) => {
+          finishStart = () => {
+            const view = operationView({
+              kind: 'shared_suggestions',
+              state: responseKind === 'success' ? 'succeeded' : 'active',
+              requested: ['look'],
+              completed: responseKind === 'success' ? ['look'] : [],
+              remaining: responseKind === 'success' ? [] : ['look'],
+            })
+            if (responseKind === 'success') {
+              resolve({ ...view, result: { items: [{ target: 'look', result: 'Stale proposal.' }] } })
+            } else {
+              const error = new Error('Another operation is active.')
+              error.status = 409
+              error.detail = { code: 'authoring_active', operation: view }
+              error.hasStableErrorBody = true
+              reject(error)
+            }
+          }
+        })
+      }
+      if (url === `/api/sessions/${sessionId}/plan`) {
+        state.plan = structuredClone(body.plan)
+        state.plan.authoring.shared_state.look = { origin: 'user', evidence_id: null }
+        state.revision += 1
+        return { plan_revision: state.revision, conflicts: [] }
+      }
+      throw new Error(`Unexpected POST ${url}`)
+    })
+    await renderSession('constants')
+    await click(buttonMatching(/^Generate shared suggestions$/))
+    await click(buttonMatching(/^Choose no additional look constraint$/))
+    const recovery = window.localStorage.getItem(operationKey)
+    const writes = api.post.mock.calls.length
+    await act(async () => { finishStart() })
+    await drain()
+
+    expect(container.querySelector('#shared-proposal-look')).toBeFalsy()
+    expect(container.querySelector('[aria-label="Authoring operation"]')).toBeFalsy()
+    expect(window.localStorage.getItem(operationKey)).toBe(recovery)
+    expect(api.post).toHaveBeenCalledTimes(writes)
+    expect(container.textContent).toContain('older plan revision')
+    const reads = state.planGets
+    await click(buttonMatching(/^Reload saved plan$/))
+    expect(state.planGets).toBeGreaterThan(reads)
+    expect(api.post).toHaveBeenCalledTimes(writes)
+    await click(buttonMatching(/^Retry suggestion request$/))
+    expect(requests).toHaveLength(2)
+    expect(requests[1]).toEqual(requests[0])
+    expect(window.localStorage.getItem(operationKey)).toBeNull()
+  })
+
+  it('keeps a suggestion request recoverable when a successful response has the wrong operation kind', async () => {
+    installApi(makePlan())
+    vi.spyOn(api, 'post').mockResolvedValue(operationView())
+    await renderSession('constants')
+    await click(buttonMatching(/^Generate shared suggestions$/))
+    expect(container.querySelector('[aria-label="Authoring operation"]')).toBeFalsy()
+    expect(container.querySelector('#shared-proposal-look')).toBeFalsy()
+    expect(buttonMatching(/^Retry suggestion request$/)).toBeTruthy()
+    expect(JSON.parse(window.localStorage.getItem(operationKey)).request).toEqual(api.post.mock.calls[0][1])
+    expect(api.post).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['revision', 'operation'])('rejects a restored suggestion with the wrong %s', async (mismatch) => {
+    const state = installApi(makePlan())
+    const operationId = 'remembered-suggestion'
+    const recovery = JSON.stringify({ operation_id: operationId })
+    window.localStorage.setItem(operationKey, recovery)
+    window.localStorage.setItem(`idevgen:authoring-operation:${sessionId}:latest`, String(planRevision))
+    if (mismatch === 'revision') state.revision += 1
+    const get = api.get.getMockImplementation()
+    api.get.mockImplementation(async (url) => url === `${operationPath}/${operationId}` ? {
+      ...operationView({ operationId: mismatch === 'operation' ? 'foreign-suggestion' : operationId,
+        kind: 'shared_suggestions', state: 'succeeded', requested: ['look'], completed: ['look'], remaining: [] }),
+      result: { items: [{ target: 'look', result: 'Stale proposal.' }] },
+    } : get(url))
+    vi.spyOn(api, 'post')
+    await renderSession('constants')
+
+    expect(container.querySelector('#shared-proposal-look')).toBeFalsy()
+    expect(container.querySelector('[aria-label="Authoring operation"]')).toBeFalsy()
+    expect(window.localStorage.getItem(operationKey)).toBe(recovery)
+    expect(buttonMatching(/^Reload saved plan$/)).toBeTruthy()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it.each(['revision', 'operation'])('rejects a polled suggestion with the wrong %s', async (mismatch) => {
+    installApi(makePlan())
+    const operationId = 'polled-suggestion'
+    const recovery = JSON.stringify({ operation_id: operationId })
+    window.localStorage.setItem(operationKey, recovery)
+    const get = api.get.getMockImplementation()
+    let reads = 0
+    api.get.mockImplementation(async (url) => {
+      if (url !== `${operationPath}/${operationId}`) return get(url)
+      reads += 1
+      if (reads === 1) return operationView({ operationId, kind: 'shared_suggestions', requested: ['look'] })
+      return {
+        ...operationView({ operationId: mismatch === 'operation' ? 'foreign-suggestion' : operationId,
+          kind: 'shared_suggestions', state: 'succeeded', requested: ['look'], completed: ['look'], remaining: [] }),
+        plan_revision: mismatch === 'revision' ? planRevision - 1 : planRevision,
+        result: { items: [{ target: 'look', result: 'Stale proposal.' }] },
+      }
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      expect(url).toBe(`${operationPath}/${operationId}/cancel`)
+      expect(body).toEqual({ expected_revision: planRevision })
+      return operationView({ operationId, kind: 'shared_suggestions', state: 'cancelled', requested: ['look'] })
+    })
+    vi.useFakeTimers()
+    try {
+      await renderSession('constants')
+      await act(async () => { await vi.advanceTimersByTimeAsync(900) })
+      await drain()
+      expect(reads).toBe(2)
+      expect(container.querySelector('#shared-proposal-look')).toBeFalsy()
+      expect(container.querySelector('[aria-label="Authoring operation"]').textContent).toContain(operationId)
+      expect(container.textContent).not.toContain('foreign-suggestion')
+      expect(window.localStorage.getItem(operationKey)).toBe(recovery)
+      expect(window.localStorage.getItem(`idevgen:authoring-operation:${sessionId}:${planRevision - 1}`)).toBeNull()
+      expect(api.post).not.toHaveBeenCalled()
+      await click(buttonMatching(/^Cancel operation$/))
+      expect(api.post).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects a suggestion from an earlier A-to-B-to-A session epoch', async () => {
+    installApi(makePlan())
+    const otherId = sessionId + 1
+    const get = api.get.getMockImplementation()
+    api.get.mockImplementation(async (url) => {
+      if (url === `/api/sessions/${otherId}`) return { ...session, id: otherId }
+      if (url === `/api/sessions/${otherId}/plan`) return {
+        plan_revision: planRevision, plan: makePlan(), conflicts: [], preparation: null, reviewed_revision: null,
+      }
+      return get(url)
+    })
+    let finishStart
+    vi.spyOn(api, 'post').mockImplementation(() => new Promise((resolve) => { finishStart = resolve }))
+    await renderSession('constants')
+    await click(buttonMatching(/^Generate shared suggestions$/))
+    await act(async () => { root.render(<SessionView id={otherId} initialActiveStep="constants" />) })
+    await drain()
+    await renderSession('constants')
+    const recovery = window.localStorage.getItem(operationKey)
+    await act(async () => {
+      finishStart({
+        ...operationView({ kind: 'shared_suggestions', state: 'succeeded', requested: ['look'], completed: ['look'], remaining: [] }),
+        result: { items: [{ target: 'look', result: 'Stale proposal.' }] },
+      })
+    })
+    await drain()
+    expect(container.querySelector('#shared-proposal-look')).toBeFalsy()
+    expect(container.querySelector('[aria-label="Authoring operation"]')).toBeFalsy()
+    expect(window.localStorage.getItem(operationKey)).toBe(recovery)
+    expect(api.post).toHaveBeenCalledTimes(1)
   })
 
   it('restores status through GET and refreshes preparation again after resuming the same operation ID', async () => {

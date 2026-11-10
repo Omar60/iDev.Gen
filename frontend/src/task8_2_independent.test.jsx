@@ -191,6 +191,7 @@ let container = null
 let root = null
 
 beforeEach(() => {
+  window.localStorage.clear()
   vi.spyOn(api, 'getVersioned').mockImplementation(async (path) => (
     path.endsWith('/full-auto') ? { current_run: null } : api.get(path, { losslessVersions: true })
   ))
@@ -205,6 +206,7 @@ afterEach(() => {
   root = null
   container?.remove()
   container = null
+  window.localStorage.clear()
   vi.restoreAllMocks()
 })
 
@@ -608,15 +610,9 @@ describe('Task 8.2 independent UI acceptance', () => {
     await clickButton('Choose no additional look constraint', container.querySelector('[aria-label="Shared choices"]'))
     await flush()
     await act(async () => {
-      resolveStart({
-        operation_id: 'stale-operation',
-        session_id: sessionId,
-        plan_revision: 1,
-        kind: 'shared_suggestions',
-        state: 'succeeded',
-        progress: { requested: ['look'] },
-        result: { items: [{ target: 'look', result: 'Stale proposal.' }] },
-      })
+      resolveStart(suggestionOperationView('stale-operation', ['look'], [
+        { target: 'look', result: 'Stale proposal.' },
+      ]))
       await Promise.resolve()
     })
     await flush()

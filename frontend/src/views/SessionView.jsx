@@ -1151,6 +1151,11 @@ export default function SessionView({
   }
 
   const applySharedOperationView = (view) => {
+    if (view?.kind === 'shared_suggestions' && view.plan_revision !== planRevisionRef.current) {
+      setPreparationActionCode('plan_revision_stale')
+      setPreparationActionError('The suggestion operation belongs to an older plan revision. Reload the current plan before continuing.')
+      return false
+    }
     sharedOperationRef.current = view
     setSharedOperation(view)
     if (
@@ -1193,6 +1198,7 @@ export default function SessionView({
     if (view?.kind === 'prepare_takes' && !['active', 'cancel_requested'].includes(view.state)) {
       void refreshAfterAuthoringOperation(view)
     }
+    return true
   }
 
   const savePlan = async ({ sharedDecisions = null, impactConfirmed = false, confirmedPlan = null, trigger = null } = {}) => {
@@ -1335,18 +1341,15 @@ export default function SessionView({
         !isCurrentSessionRequest(sessionId, requestEpoch)
         || operationEpoch !== sharedOperationEpochRef.current
       ) return
-      if (!isAuthoringOperationView(view, sessionId) || view.plan_revision !== request.expected_revision) {
+      if (!isAuthoringOperationView(view, sessionId) || view.kind !== 'shared_suggestions'
+          || view.plan_revision !== request.expected_revision) {
         setSharedStartUnknown(true)
         setSharedActionError('The suggestion start result is unknown. Retry to check the same operation.')
         return
       }
+      if (!applySharedOperationView(view)) return
       sharedStartRequestRef.current = null
       setSharedStartUnknown(false)
-      applySharedOperationView(view)
-      if (planRevisionRef.current !== request.expected_revision) {
-        setPreparationActionCode('plan_revision_stale')
-        setSharedActionError('The suggestion operation belongs to an older plan revision. Reload the current plan before continuing.')
-      }
     } catch (e) {
       if (
         !isCurrentSessionRequest(sessionId, requestEpoch)
@@ -1358,9 +1361,9 @@ export default function SessionView({
         ? e.detail.operation
         : null
       if (activeOperation) {
+        if (!applySharedOperationView(activeOperation)) return
         sharedStartRequestRef.current = null
         setSharedStartUnknown(false)
-        applySharedOperationView(activeOperation)
         setSharedActionError('Another authoring operation is active. Its saved progress is shown above.')
         return
       }
@@ -1383,7 +1386,7 @@ export default function SessionView({
         setSharedActionError(e?.message || 'Shared suggestions could not be started.')
       }
     } finally {
-      if (isCurrentSessionRequest(sessionId, requestEpoch)) {
+      if (isCurrentSessionRequest(sessionId, requestEpoch) && operationEpoch === sharedOperationEpochRef.current) {
         authoringActionInFlightRef.current = false
         setSharedStartBusy(false)
       }
@@ -1875,7 +1878,7 @@ export default function SessionView({
         !current || !isCurrentSessionRequest(sessionId, requestEpoch)
         || operationEpoch !== sharedOperationEpochRef.current
       ) return
-      if (!isAuthoringOperationView(view, sessionId)) {
+      if (!isAuthoringOperationView(view, sessionId) || view.operation_id !== operationId) {
         setPreparationActionCode('operation_status_invalid')
         setPreparationActionError('The saved operation status could not be verified. Reload the plan before continuing.')
         return
@@ -1898,6 +1901,7 @@ export default function SessionView({
     if (!operation || !['active', 'cancel_requested'].includes(operation.state)) return undefined
     const sessionId = id
     const operationId = operation.operation_id
+    const requestEpoch = sessionViewEpochRef.current
     const operationEpoch = sharedOperationEpochRef.current
     let current = true
     let timer = null
@@ -1907,10 +1911,10 @@ export default function SessionView({
           `/api/sessions/${sessionId}/plan/authoring/operations/${encodeURIComponent(operationId)}`,
         )
         if (
-          !current || !sessionViewMountedRef.current || String(id) !== String(sessionId)
+          !current || !isCurrentSessionRequest(sessionId, requestEpoch)
           || operationEpoch !== sharedOperationEpochRef.current
         ) return
-        if (!isAuthoringOperationView(view, sessionId)) {
+        if (!isAuthoringOperationView(view, sessionId) || view.operation_id !== operationId) {
           setPreparationActionCode('operation_status_invalid')
           setPreparationActionError('The authoring operation returned an invalid status view. Reload the plan before continuing.')
           return
@@ -1927,7 +1931,7 @@ export default function SessionView({
         applySharedOperationView(view)
         if (['active', 'cancel_requested'].includes(view.state)) timer = window.setTimeout(poll, 1200)
       } catch (e) {
-        if (!current || !sessionViewMountedRef.current || operationEpoch !== sharedOperationEpochRef.current) return
+        if (!current || !isCurrentSessionRequest(sessionId, requestEpoch) || operationEpoch !== sharedOperationEpochRef.current) return
         if (e?.detail?.code === 'operation_not_found') {
           setPreparationActionCode('operation_not_found')
           setPreparationActionError('The saved operation status is unavailable. Reload the saved plan before starting new preparation.')
