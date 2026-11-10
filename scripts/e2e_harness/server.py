@@ -1,4 +1,4 @@
-"""Run a read-only, synthetic FastAPI process for the Playwright E2E smoke."""
+"""Run an isolated synthetic FastAPI process for Playwright E2E tests."""
 from __future__ import annotations
 
 import argparse
@@ -190,10 +190,11 @@ def isolated_sync_client_factory(handler, original):
 
 
 class HarnessIsolationMiddleware:
-    def __init__(self, app, root: Path, denials: list[dict[str, str]]):
+    def __init__(self, app, root: Path, denials: list[dict[str, str]], model_fixture=None):
         self.app = app
         self.root = root
         self.denials = denials
+        self.model_fixture = model_fixture
 
     @staticmethod
     def _query_allowed(path: str, query: bytes) -> bool:
@@ -236,6 +237,8 @@ class HarnessIsolationMiddleware:
         method = scope.get("method", "GET").upper()
         query = scope.get("query_string", b"")
         allowed = (
+            self.model_fixture is not None and self.model_fixture.allows(method, path, query)
+        ) or (
             path == IDENTITY_PATH and method == "GET" and not query
         ) or (
             path == REDIRECT_PATH and method == "GET" and self._redirect_target(query) is not None
@@ -247,6 +250,9 @@ class HarnessIsolationMiddleware:
             method in SAFE_METHODS and self._safe_static_path(path) and not query
         )
         if allowed:
+            if method == "PATCH" and self.model_fixture is not None:
+                await self.model_fixture.record_patch(self.app, scope, receive, send)
+                return
             if path == REDIRECT_PATH:
                 response = JSONResponse({}, status_code=302, headers={"Location": self._redirect_target(query)})
                 await response(scope, receive, send)
@@ -255,7 +261,7 @@ class HarnessIsolationMiddleware:
             return
 
         self.denials.append({"method": method, "path": path})
-        response = JSONResponse({"detail": "Blocked by the read-only E2E harness."}, status_code=403)
+        response = JSONResponse({"detail": "Blocked by the isolated E2E harness."}, status_code=403)
         await response(scope, receive, send)
 
 
@@ -400,7 +406,10 @@ def main(argv=None) -> int:
         raise RuntimeError("A backend data, session, LoRA, or output path escaped the owned E2E root.")
 
     request_denials: list[dict[str, str]] = []
-    backend_main.app.add_middleware(HarnessIsolationMiddleware, root=root, denials=request_denials)
+    from scripts.e2e_harness.model_detail import FIXTURE_PATH, ModelDetailFixture
+
+    model_fixture = ModelDetailFixture(backend_main, root)
+    backend_main.app.add_middleware(HarnessIsolationMiddleware, root=root, denials=request_denials, model_fixture=model_fixture)
     identity = lambda: _identity(root, args.root_token, args.nonce, listener.getsockname()[1], backend_main, egress, providers, request_denials)
 
     async def read_identity(request):
@@ -410,6 +419,7 @@ def main(argv=None) -> int:
         return JSONResponse(result)
 
     from starlette.routing import Route
+    backend_main.app.router.routes.insert(0, Route(FIXTURE_PATH, model_fixture.control, methods=["GET", "POST", "DELETE"]))
     backend_main.app.router.routes.insert(0, Route(IDENTITY_PATH, read_identity, methods=["GET"]))
 
     original_lifespan = backend_main.app.router.lifespan_context

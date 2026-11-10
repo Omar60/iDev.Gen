@@ -7,9 +7,9 @@ Verified baseline from the repository layout and application entry points.
 - `backend/` contains the Python application and domain modules.
 - `frontend/src/` contains the React UI, hash-based routing, views, helpers,
   and frontend tests. `frontend/dist/` is generated build output.
-- `frontend/e2e/` contains the Playwright smoke, sanitized build, and owned-root
-  safeguards. `scripts/e2e_harness/` serves the isolated synthetic FastAPI
-  process.
+- `frontend/e2e/` contains the Playwright smoke and ModelDetail cases, sanitized
+  build, and owned-root safeguards. `scripts/e2e_harness/` serves the isolated
+  synthetic FastAPI process and scoped model fixture.
 - `tests/` contains the backend pytest suite and ComfyUI test doubles.
 - `scripts/` contains import, backup, mining, analysis, and operational tools.
 - `docs/` contains user-facing guidance; `README.md` is the short project

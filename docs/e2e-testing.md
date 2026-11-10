@@ -1,10 +1,11 @@
-# Browser E2E smoke
+# Browser E2E harness
 
-The opt-in Playwright smoke builds the production React bundle, serves it from a
-fresh FastAPI process with one synthetic model and session, and checks that the
-browser can render the app while the harness blocks external access. It does
-not run ComfyUI, a GPU, generation, or product write flows. It is not a required
-job in `.github/workflows/ci.yml`.
+The opt-in Playwright suite builds the production React bundle and serves it from
+an isolated FastAPI process. It includes the A1 app-render/isolation smoke and
+three A2a ModelDetail navigation cases. A2a creates and removes synthetic models
+in the temporary database through the real model handlers and tests real model
+PATCH requests. It does not run ComfyUI, a GPU, or generation, and is not a
+required job in `.github/workflows/ci.yml`.
 
 ## Requirements and commands
 
@@ -78,17 +79,22 @@ probe or reuse a chosen port. Readiness verifies the child PID, launching
 parent PID, port, random nonce, and root token; `/__e2e/identity` then verifies
 the child PID, port, nonce, and root token. The server runs one worker.
 
-The ASGI boundary is read-only. It permits `GET`, `HEAD`, and `OPTIONS` only for
-`/api/components`, `/api/config`, `/api/comfy/loras`, `/api/comfy/models`,
-`/api/comfy/status`, `/api/models`, `/api/sessions`, `/api/wardrobe`, and
-`/api/workflows`; `/api/components` also accepts `?all=1`. `GET` to
-`/__e2e/identity` is the separate health route. The only other test route is
-`GET /__e2e/redirect?port=<1-65535>`, which emits a controlled 302 to a sibling
-loopback listener for the redirect-blocking probe. Static access is limited to
-`/`, `/index.html`, and files below `/assets/`, without query strings. The
-middleware returns 403 for other methods, paths, or queries before product
-handlers run. The smoke also confirms outside-root config and file-preview
-requests are denied without exposing a synthetic sentinel.
+The ASGI boundary defaults to read-only access. It permits `GET`, `HEAD`, and
+`OPTIONS` for `/api/components`, `/api/config`, `/api/comfy/loras`,
+`/api/comfy/models`, `/api/comfy/status`, `/api/models`, `/api/sessions`,
+`/api/wardrobe`, and `/api/workflows`; `/api/components` also accepts `?all=1`.
+While the A2a model fixture is active, it additionally permits `GET /api/rooms`
+and `GET`/`PATCH` only for its two owned model IDs. The test-only
+`/__e2e/model-detail` route accepts `GET`, `POST`, and `DELETE` to inspect,
+create, and remove those synthetic models. Creation and deletion use the real
+model handlers; PATCH reaches the real API handler and records its payload and
+status. All other product writes remain denied. `GET /__e2e/identity` is the
+health route. `GET /__e2e/redirect?port=<1-65535>` emits a controlled 302 to a
+sibling loopback listener for the redirect-blocking probe. Static access is
+limited to `/`, `/index.html`, and files below `/assets/`, without query
+strings. Other methods, paths, and queries return 403 before product handlers
+run. The harness also denies outside-root config and file-preview requests
+without exposing a synthetic sentinel.
 
 The backend's raw socket guard denies every DNS lookup, socket
 `connect`/`connect_ex`/`create_connection`, and UDP `sendto`/`sendmsg`, including
@@ -110,25 +116,42 @@ is preserved and its path appears in the error; failed ownership checks also
 prevent deletion. These are harness-level checks, not an OS sandbox or network
 namespace.
 
-## Independent A1 verification
+## Independent Windows verification
 
-The independent Windows run used Node.js 22.23.4, npm 10.9.9, Playwright
-1.65.0, and Chromium for Testing 158.0.8127.18 (revision 1254). The sanitized
-build, all three Node safety checks, and Chromium smoke passed (one test, one
-worker). A synthetic parent `VITE_*` sentinel was absent from `dist`; loopback
-HTTP, redirect, and WebSocket probes left the sibling listener's TCP, request,
-redirect, and upgrade counters at zero. A two-worker override was rejected
-before temp-root creation or Python startup.
+The verified Windows run used Node.js 22.23.4, npm 10.9.9, Python 3.12.14,
+Playwright 1.65.0, and Chromium for Testing 158.0.8127.18 (revision 1254).
+`npm --prefix frontend run e2e` passed three Node safety checks and four
+Chromium tests: the A1 smoke and all three A2a cases. To repeat just the new
+cases three times from the repository root, set `PLAYWRIGHT_BROWSERS_PATH=0`
+and run:
 
-Lifecycle checks confirmed that an intentional browser-test failure returned
-exit 1 while emitting the clean-stop marker, removing the owned process and
-port, and leaving no owned temporary roots. Cleanup also passed parent PID
-mismatch, the full 60-second startup timeout, spawn failure, and early exit.
-An occupied test port was refused without contact; its owner listener remained
-intact. Only Windows was executed; the Linux commands above are documented but
-were not run. This narrow A1 smoke does not replace the full frontend suite or
-verify later write/generation flows.
+```sh
+node frontend/node_modules/@playwright/test/cli.js test --config=frontend/playwright.config.js model-detail.e2e.mjs --repeat-each=3
+```
 
-This smoke covers the initial A1 app-render and isolation checks only. Any later
-A2 flow must explicitly extend the test-only path/method allowlist and its
-negative safety checks for the endpoints it needs.
+That run passed nine tests with one worker and no retries. The full frontend
+suite passed 1,007 tests across 67 files. Relevant Python checks passed 285
+tests with one skip because Windows symlink privilege was unavailable. The
+sanitized production build passed with its existing chunk-size warning. Final
+Chromium shutdown checks confirmed a clean-stop marker, no owned process,
+successful exclusive port rebinds, and no new owned temporary roots in
+before/after inventories. Loopback HTTP, redirect, and WebSocket probes left
+the sibling listener counters at zero. A two-worker override was rejected
+before temporary-root creation or Python startup.
+
+### Historical A1-only checks (not rerun for A2a)
+
+The original A1 run confirmed a synthetic parent `VITE_*` sentinel was absent
+from `dist`. A1 lifecycle checks confirmed an intentional browser-test failure
+returned exit 1 while emitting the clean-stop marker, removing the owned process
+and port, and leaving no owned temporary roots. Cleanup also passed parent PID
+mismatch, the full 60-second startup timeout, spawn failure, and early exit. An
+occupied test port was refused without contact; its owner listener remained
+intact.
+
+Only Windows was executed; the Linux commands above are documented but were not
+run. Model and Legacy drafts are verified within the current SPA
+ModelDetail instance; reloads and unmounts are outside the guarantee. The delayed
+response cases cover successful committed PATCH responses, not failed requests,
+offline behavior, or restarts. No real providers, ComfyUI service, GPU, or
+generation were exercised.

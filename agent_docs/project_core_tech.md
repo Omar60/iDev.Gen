@@ -24,9 +24,10 @@
 - Backend verification is `python -m pytest`; frontend verification is
   `npm --prefix frontend test`; frontend production output is checked with
   `npm --prefix frontend run build`.
-- The opt-in Playwright browser smoke is `npm --prefix frontend run e2e`; it
-  uses a sanitized Vite production build and isolated read-only harness. Setup,
-  verification scope, and limits are in `docs/e2e-testing.md`.
+- The opt-in Playwright E2E suite is `npm --prefix frontend run e2e`; it uses a
+  sanitized Vite production build and isolated FastAPI harness. Its test-only
+  ModelDetail fixture permits scoped writes to synthetic models. Setup, scope,
+  and limits are in `docs/e2e-testing.md`.
 - GitHub Actions runs the backend suite on Python 3.12 after installing the
   frontend lockfile with Node 22 and `npm ci`; a separate Node 22 job runs
   `npm ci` and builds the frontend.

@@ -1,54 +1,8 @@
-import { expect, test as base } from '@playwright/test'
+import { expect } from '@playwright/test'
+import { test, state } from './fixtures.mjs'
 import { createServer } from 'node:http'
 import { readFile, writeFile } from 'node:fs/promises'
 import { cleanupOwnedRoot, createOwnedRoot, ownedPath } from './owned-root.mjs'
-
-const state = JSON.parse(await readFile(process.env.IDEVGEN_E2E_STATE, 'utf8'))
-const origin = new URL(state.baseUrl).origin
-
-export const test = base.extend({
-  egressGuard: async ({ context }, use, testInfo) => {
-    const expected = new Set()
-    const denied = []
-    const unexpected = []
-    const key = (value) => new URL(value).href
-    const block = (kind, value) => {
-      const normalized = key(value)
-      denied.push(`${kind} ${normalized}`)
-      if (!expected.delete(normalized)) unexpected.push(`${kind} ${new URL(normalized).origin}${new URL(normalized).pathname}`)
-    }
-
-    await context.route('**/*', async (route) => {
-      const requestUrl = new URL(route.request().url())
-      if (requestUrl.origin !== origin) {
-        block('HTTP', requestUrl.href)
-        await route.abort('blockedbyclient')
-        return
-      }
-      const response = await route.fetch({ maxRedirects: 0 })
-      if (response.status() >= 300 && response.status() < 400) {
-        const location = response.headers().location || ''
-        block('HTTP redirect', new URL(location, requestUrl).href)
-        await route.abort('blockedbyclient')
-        return
-      }
-      await route.fulfill({ response })
-    })
-    await context.routeWebSocket('**/*', async (webSocket) => {
-      block('WebSocket', webSocket.url())
-      await webSocket.close({ code: 1008, reason: 'Blocked by the isolated E2E harness.' })
-    })
-
-    await use({
-      expectBlocked(value) { expected.add(key(value)) },
-      denied,
-    })
-    if (testInfo.status === testInfo.expectedStatus) {
-      expect(expected, 'expected browser egress probes were not intercepted').toEqual(new Set())
-      expect(unexpected, `unexpected browser egress was blocked: ${unexpected.join(', ')}`).toEqual([])
-    }
-  },
-})
 
 test('serves the production React build from its isolated FastAPI process', async ({ page, egressGuard }) => {
   await page.goto(`${state.baseUrl}/#/`)

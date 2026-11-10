@@ -1,5 +1,15 @@
 # Project Diary
 
+## E2E A2a Navigation and Committed Responses
+
+Delay delivery after fetching the real FastAPI response to distinguish a
+committed SQLite write from a browser callback. Assert both persisted state and
+exact PATCH counts before releasing the barrier, then preserve newer drafts
+through A-to-B-to-A and browser history. Never replace an internal API response
+with invented frontend data. Keep writes scoped to fixture-owned IDs and test
+foreign IDs, queries, invalid JSON and unrelated rows. Fresh contexts and
+fixture cleanup provide separate browser/database isolation boundaries.
+
 ## E2E A1 Isolation and Evidence
 
 Set temporary config/data and every writable app path before importing main.
@@ -17,9 +27,9 @@ failure paths. Keep controls scoped to the harness; they are not an OS sandbox.
 
 Baseline comparisons must include required tracked static assets and prove
 the runtime inherited by child processes, not only the npm launcher version.
-The final Node 22 frontend gate reproduces two failures in clean b613474;
-retain that non-green gate and HOLD A2 rather than repair unrelated UI tests
-or present isolated passes as complete acceptance. Python and final isolated
+The initial A1 Node 22 frontend gate reproduced two failures in clean b613474.
+A1c/A1d subsequently repaired test isolation and stale Authoring adoption; the
+final A1 integration passed 1,007 frontend tests and was committed before A2a. Python and final isolated
 Chromium/lifecycle checks passed independently; an intentional failed test and
 startup errors still removed the owned process and temporary root.
 ## Connected Look Automation Group 5 Acceptance

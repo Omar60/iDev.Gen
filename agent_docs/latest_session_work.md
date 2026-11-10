@@ -1,62 +1,63 @@
 # Latest Session Work
 
-## Current Handoff: Isolated E2E A1, Acceptance on Hold
+## A2a Handoff
 
-Deployment `idevgen_410_a1_e2e_20261109` began at synchronized clean
-`main@b613474`. The user selected Heavy and authorized only 4.10/A1. Main
-owns architecture/acceptance and these deployment-state documents; A1-EXEC
-owns production/tooling, A1-TEST independent verification, A1-EXP/A1-NET
-bounded discovery, and A1-DOC public documentation and closure reporting.
+Deployment `idevgen-410-a2a`, Medium, starts at clean
+`main@d7cc18bd1e0ed77565cc7da97cc163ddeea6a770` after the accepted A1/Authoring
+integration. Scope: browser navigation and ModelDetail identity only. All new
+work remains unstaged/uncommitted. No product code, dependencies or CI change.
 
-## Delivered Architecture
+## Implementation
 
-The opt-in command `npm --prefix frontend run e2e` uses Node 22 and pinned
-Playwright 1.65.0 / Chromium 158.0.8127.18 revision 1254. It builds real React
-with a sanitized environment and owned empty Vite envDir, validates the local
-project venv, creates token-marked temporary app paths, and starts a separate
-loopback FastAPI process on an exclusively bound ephemeral socket.
+- `frontend/e2e/fixtures.mjs` shares A1 browser HTTP/redirect/WebSocket guards as
+  an automatic fixture. Its explicit PATCH barrier fetches the real FastAPI
+  response, then holds delivery until released; it never manufactures API data.
+- `frontend/e2e/model-detail.e2e.mjs` adds three scenarios. One preserves separate
+  model/Legacy drafts through A-to-B-to-A and Back/Forward without writes. Two
+  hold a committed A PATCH, edit A again, navigate/edit B, then release on B or
+  after returning to A. They assert exact IDs/payloads, persisted snapshots,
+  zero extra writes, exactly two explicit A PATCHes and retained B drafts.
+- `scripts/e2e_harness/model_detail.py` creates/removes only its two synthetic
+  models through real validators/handlers. It verifies the temporary database
+  identity before control actions and captures PATCH payload/status evidence.
+- `scripts/e2e_harness/server.py` extends its default-deny middleware solely for
+  fixture controls, GET rooms while active and GET/PATCH on owned model IDs.
+  Other product writes and file previews remain forbidden. A1 startup identity,
+  raw socket/HTTPX guards, owned paths and process teardown are unchanged.
+- `tests/test_e2e_model_detail.py` verifies the real PATCH and 422 contract,
+  rejection of foreign IDs/queries/config/session writes, precise cleanup and
+  zero mutation when the fixture's database lies outside its owned root.
 
-Windows uses the venv's base interpreter with `-S` and explicit venv packages
-to preserve one directly owned PID. Readiness and health bind PID, parent PID,
-port, nonce and root token. The backend receives synthetic config/data before
-import. A test-only read allowlist blocks product writes and path escapes;
-HTTPX providers are synthetic and raw DNS/TCP/UDP are denied, including local
-services. Browser contexts reject unexpected HTTP, redirects and WebSockets,
-block service workers, and use owned loopback listeners for negative probes.
-Resolved worker overrides are rejected before root/process creation.
+## Executed Evidence
 
-Teardown requests a stop, waits for the owned process and clean-stop marker,
-and validates ownership and link/reparse boundaries before removing its root.
-These are process-level controls, not an OS sandbox. A2 must deliberately
-extend the read-only allowlist and its safety tests before testing write flows.
+Windows, Node 22.23.4, project Python 3.12.14, pinned A1 Playwright/Chromium.
 
-## Independent Evidence
+- `npm --prefix frontend run e2e`: three Node checks and four Chromium tests
+  passed. A first four-test implementation run also passed.
+- `node frontend/node_modules/@playwright/test/cli.js test
+  --config=frontend/playwright.config.js model-detail.e2e.mjs --repeat-each=3`:
+  nine passed, one worker, no retries.
+- `npm --prefix frontend test`: 1,007 passed in 67 files.
+- `python -m pytest -ra tests/test_api.py tests/test_e2e_model_detail.py
+  tests/test_e2e_harness_safety.py tests/test_e2e_harness_independent.py
+  tests/test_no_personal_data.py tests/test_shoot_checks.py`:
+  285 passed, one skip (Windows directory symlink privilege unavailable).
+- `node frontend/e2e/build-production.mjs`: production build passed with the
+  existing chunk-size warning; E2E also ran that sanitized build.
+- Final full E2E and repeated-scenario runs both reported clean shutdown;
+  independent PID checks, exclusive port rebinds and before/after temporary-root
+  inventories passed. No real services or production data were accessed.
 
-Full normal-xdist Python passed 3,715 tests with three skips and 18 warnings,
-exit zero in 472.54 seconds. The final full frontend run used confirmed Node
-22.23.4 and passed 997 of 999 tests in 67 files. Both failures are existing
-Task 8.2 `Generate shared suggestions` assertions, reproduced in a complete
-clean `b613474` source export with the same Node/dependencies. Earlier Judge
-failures did not recur in final runs; they remain unclassified, not repaired.
-Focused final A1 Python passed eight tests with one Windows symlink skip.
+Raw logs and teardown receipts remain outside the repository in the temporary
+A2a evidence directory. Public commands and limitations belong in
+`docs/e2e-testing.md`. Full Python was not rerun for A2a: relevant API/harness
+and privacy/source suites were run as requested. No failing test or isolation
+failure occurred during this deployment.
 
-Independent final E2E passed the sanitized production build, three Node checks
-and Chromium smoke (one test, one worker). Synthetic loopback negative probes
-received no connections. Worker overrides failed before Python/root creation.
-An intentionally failed browser test still produced clean shutdown; independent
-checks also exercised occupied-port refusal, PID-parent mismatch, the real
-60-second startup timeout, spawn ENOENT and early exit. Own PID/port/root audits
-were empty and the unrelated synthetic listener remained intact. A temporary
-early-exit checker originally expected stop on an already-exited child; its
-corrected rerun passed and both logs remain. Logs remain outside the repository. Five npm advisories (two moderate, three high) and the existing
-Vite large-chunk warning remain. Windows executed; Linux commands are documented
-without claiming a Linux execution.
+## Decision and Stop
 
-## Continuation
-
-HOLD A2 while the required full frontend gate remains non-green. Do not expand
-A1 into unrelated UI corrections, staging, commit, push or mandatory CI work.
-The public runbook is `docs/e2e-testing.md`. Main accepts the A1 harness checks
-within their documented read-only scope; overall acceptance and A2 remain on
-hold for the frontend gate. Archivist owns the closing documentation/Git and
-exact token report. No acceptance commit is authorized.
+GO for A2b when separately authorized. Stop here with no staging, commit or push.
+Windows executed; Linux unexecuted. Model drafts survive only within the current
+SPA ModelDetail instance, not a reload or unmount. The response barrier tests
+successful committed PATCH delivery, not failure/offline/restart behavior.
+No visual/GPU, accessibility audit or real provider acceptance is claimed.
