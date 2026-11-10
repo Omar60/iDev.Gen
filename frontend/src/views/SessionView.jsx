@@ -643,6 +643,8 @@ export default function SessionView({
   const sessionViewMountedRef = useRef(false)
   const sessionViewEpochRef = useRef(0)
   const sessionReloadSequenceRef = useRef(0)
+  const sessionReloadsRef = useRef(new Map())
+  const submitReconciliationRef = useRef(new Map())
   const takeReviewRequestSequenceRef = useRef(new Map())
   const approvalRequestSequenceRef = useRef(new Map())
   const approvalOutcomeBySessionRef = useRef(new Map())
@@ -881,96 +883,149 @@ export default function SessionView({
     setError(message)
   }
 
-  const reload = ({ reconcileSelection = false } = {}) => {
-    const sessionId = id
-    const requestEpoch = sessionViewEpochRef.current
-    const requestSequence = ++sessionReloadSequenceRef.current
-    const selectedTakeIdsAtReload = selectedTakeIds
-    return api.get(`/api/sessions/${sessionId}`).then((data) => {
-    if (!isCurrentSessionRequest(sessionId, requestEpoch)
-        || requestSequence !== sessionReloadSequenceRef.current) return false
-    if (!data || String(data.id) !== String(sessionId)) {
-      const message = 'The session response did not match the requested session.'
-      setSessionLoadError({ sessionId: String(sessionId), message })
-      setError(message)
-      return false
+  const releaseSubmitReconciliation = (sessionKey) => {
+    if (!submitReconciliationRef.current.delete(sessionKey)) return
+    setSubmittingTakeSessionIds((current) => {
+      if (!current.has(sessionKey)) return current
+      const next = new Set(current)
+      next.delete(sessionKey)
+      return next
+    })
+  }
+
+  const waitForLatestSessionReload = async (sessionKey, request) => {
+    let current = request
+    while (current) {
+      const result = await current.promise
+      const latest = sessionReloadsRef.current.get(sessionKey)
+      if (!latest || latest.sequence <= current.sequence) return result
+      current = latest
     }
-    setSessionLoadError(null)
-    setS(data)
-    if (isResourceSession(data)) {
-      const planReload = loadSessionPlan(sessionId, api).then((res) => {
-        if (!isCurrentSessionRequest(sessionId, requestEpoch)
-            || requestSequence !== sessionReloadSequenceRef.current) return false
-        if (planDirtyRef.current && planSessionId !== String(sessionId)) return false
-        if (res.ok) {
-          if (typeof res.planRevision !== 'number' || res.planRevision < 0) {
-            handlePlanRefreshFailure(sessionId, 'Loaded draft missing valid plan_revision from backend')
+    return false
+  }
+
+  const reload = ({ reconcileSelection = false } = {}) => {
+    const sessionId = String(id)
+    const sessionKey = sessionId
+    const requestEpoch = sessionViewEpochRef.current
+    const request = { sequence: ++sessionReloadSequenceRef.current, promise: null }
+    sessionReloadsRef.current.set(sessionKey, request)
+    const shouldReconcileSelection = reconcileSelection || submitReconciliationRef.current.has(sessionKey)
+    let sessionLoaded = false
+    let hasPlan = false
+    let planReload = Promise.resolve(true)
+    const isCurrentReload = () => (
+      isCurrentSessionRequest(sessionId, requestEpoch)
+      && sessionReloadsRef.current.get(sessionKey) === request
+    )
+    const failSessionLoad = (message) => {
+      if (!planDirtyRef.current) setPlanSessionId('')
+      setS(null)
+      setSessionLoadError({ sessionId: sessionKey, message })
+      setError(message)
+      releaseSubmitReconciliation(sessionKey)
+    }
+
+    const sessionReload = api.get(`/api/sessions/${sessionId}`).then((data) => {
+      if (!isCurrentReload()) return false
+      if (!data || String(data.id) !== sessionKey) {
+        failSessionLoad('The session response did not match the requested session.')
+        return false
+      }
+      sessionLoaded = true
+      setSessionLoadError(null)
+      setS(data)
+      if (isResourceSession(data)) {
+        hasPlan = true
+        planReload = loadSessionPlan(sessionId, api).then((res) => {
+          if (!isCurrentReload()) return false
+          if (planDirtyRef.current && planSessionId !== sessionKey) return false
+          if (res.ok) {
+            if (typeof res.planRevision !== 'number' || res.planRevision < 0) {
+              handlePlanRefreshFailure(sessionId, 'Loaded draft missing valid plan_revision from backend')
+              releaseSubmitReconciliation(sessionKey)
+              return false
+            }
+            const pendingSubmit = submitReconciliationRef.current.get(sessionKey)
+            if (pendingSubmit && res.planRevision < pendingSubmit.revision) {
+              handlePlanRefreshFailure(sessionId, 'The loaded plan revision predates the submitted revision.')
+              releaseSubmitReconciliation(sessionKey)
+              return false
+            }
+            setPlanRefreshError((previous) => previous?.sessionId === sessionKey ? null : previous)
+            if (!planDirtyRef.current && planRevisionRef.current !== res.planRevision) {
+              if (sharedOperationRef.current) {
+                setPreparationActionCode('plan_revision_stale')
+                setPreparationActionError('The saved plan changed. Reload the saved plan before resuming or starting preparation.')
+                setSharedProposalDrafts({})
+              }
+            }
+            setPlan((prev) => (planDirtyRef.current && prev ? prev : res.plan))
+            setPlanRevision((prev) => (planDirtyRef.current && prev !== null ? prev : res.planRevision))
+            if (!planDirtyRef.current) {
+              setSavedPlan(res.plan)
+              setPlanSessionId(sessionKey)
+            }
+            setPlanConflicts(res.conflicts)
+            setPlanPreparation(res.preparation || null)
+            if (!planDirtyRef.current) setSharedSummary(res.sharedSummary || null)
+            setSelectedTakeIds((current) => {
+              if (!shouldReconcileSelection) return new Set()
+              const readyTakeIds = new Set((res.plan?.takes || [])
+                .filter((take) => getTakePreparationState(take.take_id, res.preparation) === 'ready')
+                .map((take) => take.take_id))
+              return new Set([...current].filter((takeId) => readyTakeIds.has(takeId)))
+            })
+            setTakeReviewData({})
+            setTakeReviewLoading({})
+            setTakeReviewError({})
+            setPlanReviewStatus('idle')
+            setReviewRefreshCounter((count) => count + 1)
+            if (!planDirtyRef.current) {
+              const hasResourceMarkers = [res.conflicts, res.plan?.conflicts]
+                .some((markers) => Array.isArray(markers) && markers.length > 0)
+              setReviewedRevision((prev) => {
+                if (typeof res.reviewedRevision === 'number') return res.reviewedRevision
+                if (hasResourceMarkers) return null
+                return prev && prev === res.planRevision ? prev : null
+              })
+            }
+            releaseSubmitReconciliation(sessionKey)
+          } else {
+            handlePlanRefreshFailure(sessionId, res.error)
+            releaseSubmitReconciliation(sessionKey)
             return false
           }
-          setPlanRefreshError((previous) => previous?.sessionId === String(sessionId) ? null : previous)
-          if (!planDirtyRef.current && planRevisionRef.current !== res.planRevision) {
-            if (sharedOperationRef.current) {
-              setPreparationActionCode('plan_revision_stale')
-              setPreparationActionError('The saved plan changed. Reload the saved plan before resuming or starting preparation.')
-              setSharedProposalDrafts({})
-            }
-          }
-          setPlan((prev) => (planDirtyRef.current && prev ? prev : res.plan))
-          setPlanRevision((prev) => (planDirtyRef.current && prev !== null ? prev : res.planRevision))
-          if (!planDirtyRef.current) {
-            setSavedPlan(res.plan)
-            setPlanSessionId(String(sessionId))
-          }
-          setPlanConflicts(res.conflicts)
-          setPlanPreparation(res.preparation || null)
-          if (!planDirtyRef.current) setSharedSummary(res.sharedSummary || null)
-          setSelectedTakeIds((current) => {
-            if (!reconcileSelection || current === selectedTakeIdsAtReload) return new Set()
-            const readyTakeIds = new Set((res.plan?.takes || [])
-              .filter((take) => getTakePreparationState(take.take_id, res.preparation) === 'ready')
-              .map((take) => take.take_id))
-            return new Set([...current].filter((takeId) => readyTakeIds.has(takeId)))
-          })
-          setTakeReviewData({})
-          setTakeReviewLoading({})
-          setTakeReviewError({})
-          setPlanReviewStatus('idle')
-          setReviewRefreshCounter((count) => count + 1)
-          if (!planDirtyRef.current) {
-            const hasResourceMarkers = [res.conflicts, res.plan?.conflicts]
-              .some((markers) => Array.isArray(markers) && markers.length > 0)
-            setReviewedRevision((prev) => {
-              if (typeof res.reviewedRevision === 'number') return res.reviewedRevision
-              if (hasResourceMarkers) return null
-              return prev && prev === res.planRevision ? prev : null
-            })
-          }
-        } else {
-          handlePlanRefreshFailure(sessionId, res.error)
+          return true
+        }).catch((e) => {
+          if (!isCurrentReload()) return false
+          handlePlanRefreshFailure(sessionId, e?.message || 'Failed to load plan')
+          releaseSubmitReconciliation(sessionKey)
+          return false
+        })
+        if (shouldReconcileSelection) return planReload
+      } else {
+        if (!planDirtyRef.current) setPlanSessionId('')
+        if (submitReconciliationRef.current.has(sessionKey)) {
+          const message = 'The session no longer has a resource plan to reconcile.'
+          setError(message)
+          releaseSubmitReconciliation(sessionKey)
           return false
         }
-        return true
-      }).catch((e) => {
-        if (!isCurrentSessionRequest(sessionId, requestEpoch)
-            || requestSequence !== sessionReloadSequenceRef.current) return false
-        handlePlanRefreshFailure(sessionId, e?.message || 'Failed to load plan')
-        return false
-      })
-      if (reconcileSelection) return planReload
-    } else if (!planDirtyRef.current) {
-      setPlanSessionId('')
-    }
-    return reconcileSelection ? true : undefined
-    }).catch((e) => {
-      if (isCurrentSessionRequest(sessionId, requestEpoch)
-          && requestSequence === sessionReloadSequenceRef.current) {
-        if (!planDirtyRef.current) setPlanSessionId('')
-        const message = e?.message || 'Failed to load session'
-        setSessionLoadError({ sessionId: String(sessionId), message })
-        setError(message)
       }
+      return shouldReconcileSelection ? true : undefined
+    }).catch((e) => {
+      if (isCurrentReload()) failSessionLoad(e?.message || 'Failed to load session')
       return false
     })
+    request.promise = sessionReload.then(async (result) => {
+      if (!sessionLoaded) return false
+      if (hasPlan) return planReload
+      return result !== false
+    })
+    return shouldReconcileSelection
+      ? waitForLatestSessionReload(sessionKey, request)
+      : sessionReload
   }
 
   const resetSharedOperation = () => {
@@ -2111,12 +2166,9 @@ export default function SessionView({
       && planRevisionRef.current === submittedRevision
       && !planDirtyRef.current
     )
-    const isCurrentPlanContext = () => (
+    const isCurrentSubmitSession = () => (
       sessionViewMountedRef.current
       && String(sessionViewIdRef.current) === submittedSessionKey
-      && planSessionIdRef.current === submittedSessionKey
-      && planRevisionRef.current === submittedRevision
-      && !planDirtyRef.current
     )
     setSubmittingTakeSessionIds((current) => new Set(current).add(submittedSessionKey))
     setPostingTakeSessionIds((current) => new Set(current).add(submittedSessionKey))
@@ -2132,28 +2184,31 @@ export default function SessionView({
           return next
         })
       }
-      if (!isCurrentSubmitContext()) {
-        if (res.ok && isCurrentPlanContext()) await reload({ reconcileSelection: true })
+      if (!res.ok) {
+        if (isCurrentSubmitContext()) setError(res.error || 'Failed to submit selected takes')
         return
       }
-      if (res.ok) {
-        const submittedTakeIds = new Set(toSubmit)
-        setSelectedTakeIds((current) => new Set([...current].filter((takeId) => !submittedTakeIds.has(takeId))))
-        setPlanNotice(`Submitted ${res.submitted_count || toSubmit.length} take(s) to queue`)
-        setTimeout(() => { if (isCurrentSubmitContext()) setPlanNotice('') }, 4000)
-        const reconciled = await reload({ reconcileSelection: true })
-        if (reconciled && isCurrentSubmitContext()) navigateStep('generation')
-      } else {
-        setError(res.error || 'Failed to submit selected takes')
+      submitReconciliationRef.current.set(submittedSessionKey, { revision: submittedRevision })
+      if (!isCurrentSubmitContext()) {
+        if (isCurrentSubmitSession()) await reload({ reconcileSelection: true })
+        return
       }
+      const submittedTakeIds = new Set(toSubmit)
+      setSelectedTakeIds((current) => new Set([...current].filter((takeId) => !submittedTakeIds.has(takeId))))
+      setPlanNotice(`Submitted ${res.submitted_count || toSubmit.length} take(s) to queue`)
+      setTimeout(() => { if (isCurrentSubmitContext()) setPlanNotice('') }, 4000)
+      const reconciled = await reload({ reconcileSelection: true })
+      if (reconciled && isCurrentSubmitContext()) navigateStep('generation')
     } catch (e) {
       if (isCurrentSubmitContext()) setError(e?.message || 'Failed to submit selected takes')
     } finally {
-      setSubmittingTakeSessionIds((current) => {
-        const next = new Set(current)
-        next.delete(submittedSessionKey)
-        return next
-      })
+      if (!submitReconciliationRef.current.has(submittedSessionKey)) {
+        setSubmittingTakeSessionIds((current) => {
+          const next = new Set(current)
+          next.delete(submittedSessionKey)
+          return next
+        })
+      }
     }
   }
 
@@ -2706,8 +2761,18 @@ export default function SessionView({
   }, [s?.status])
 
   if (!s || String(s.id) !== String(id)) {
-    const message = sessionLoadError?.sessionId === String(id) ? sessionLoadError.message : 'Loading…'
-    return <p className="muted">{message}</p>
+    const loadFailed = sessionLoadError?.sessionId === String(id)
+    const message = loadFailed ? sessionLoadError.message : 'Loading…'
+    return <div>
+      <p className="muted" role={loadFailed ? 'alert' : 'status'}>{message}</p>
+      {loadFailed && (
+        <button className="ui-button" type="button" onClick={() => {
+          setSessionLoadError(null)
+          setError('')
+          reload()
+        }}>Retry loading session</button>
+      )}
+    </div>
   }
   if (isResourceSession(s) && !planSessionCurrent && (plan || planDirty)) {
     return planDirty && planSessionId

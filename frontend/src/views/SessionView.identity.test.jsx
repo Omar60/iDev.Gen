@@ -440,6 +440,112 @@ it('releases the Submit lock after a current-session submission error', async ()
   expect(post).toHaveBeenCalledTimes(1)
 })
 
+it('keeps Submit locked through replacement Prepare session and plan reloads', async () => {
+  const { post, planReload } = await startAtoBtoAWithPendingSubmitReload()
+  const take44Row = [...container.querySelectorAll('tbody tr')]
+    .find((row) => row.textContent.includes('take-44'))
+  await act(async () => { take44Row.querySelector('button').click(); await drain() })
+  expect(buttonNamed('Re-prepare Take')).toBeTruthy()
+
+  const get = vi.mocked(api.get)
+  const originalGet = get.getMockImplementation()
+  const replacementSession = deferred()
+  const replacementSessionStarted = deferred()
+  let holdSession = true
+  get.mockImplementation(async (path) => {
+    if (path === '/api/sessions/41' && holdSession) {
+      holdSession = false
+      replacementSessionStarted.resolve()
+      return replacementSession.promise
+    }
+    return originalGet(path)
+  })
+  const getVersioned = vi.mocked(api.getVersioned)
+  const originalGetVersioned = getVersioned.getMockImplementation()
+  const replacementPlan = deferred()
+  const replacementPlanStarted = deferred()
+  let holdPlan = true
+  getVersioned.mockImplementation(async (path) => {
+    if (path === '/api/sessions/41/plan' && holdPlan) {
+      holdPlan = false
+      replacementPlanStarted.resolve()
+      return replacementPlan.promise
+    }
+    return originalGetVersioned(path)
+  })
+  const repeatedSubmit = deferred()
+  post.mockImplementation((path) => (
+    path.endsWith('/submit-selected') ? repeatedSubmit.promise : Promise.resolve({})
+  ))
+
+  await clickButton('Re-prepare Take')
+  await act(async () => { await replacementSessionStarted.promise; await drain() })
+  await selectTake('take-44')
+  await act(async () => { planReload.pending.resolve(submitPlanResponse(41)); await drain() })
+
+  expect.soft(buttonNamed('Submitting…')).toBeTruthy()
+  const submit = buttonNamed('Submitting…') || [...container.querySelectorAll('button')]
+    .find((button) => button.textContent.trim().startsWith('Submit Test Selection ('))
+  expect(submit).toBeTruthy()
+  await act(async () => { submit.click(); await drain() })
+  expect.soft(post).toHaveBeenCalledTimes(2)
+  expect(post).toHaveBeenNthCalledWith(1, '/api/sessions/41/plan/preparations/submit-selected', {
+    plan_revision: 3, take_ids: ['take-41'],
+  })
+  expect(post).toHaveBeenNthCalledWith(2, '/api/sessions/41/plan/takes/take-44/prepare', {
+    plan_revision: 3, manual_completion: null, adaptations: null,
+  })
+
+  await act(async () => {
+    replacementSession.resolve(submitSession(41))
+    await replacementPlanStarted.promise
+    await drain()
+  })
+  expect(buttonNamed('Submitting…')).toBeTruthy()
+  await act(async () => { replacementPlan.resolve(submitPlanResponse(41)); await drain() })
+
+  expect(buttonNamed('Submitting…')).toBeFalsy()
+  expect(takeCheckbox('take-44').checked).toBe(true)
+  expect(takeCheckbox('take-41').disabled).toBe(true)
+  expect(container.querySelector('tbody').textContent).toContain('Generated [Shot #941]')
+  expect.soft(post).toHaveBeenCalledTimes(2)
+  if (post.mock.calls.filter(([path]) => path.endsWith('/submit-selected')).length > 1) {
+    repeatedSubmit.resolve({ submitted_count: 1 })
+    await act(async () => { await drain(); await drain() })
+  }
+})
+
+it('invalidates an old plan and recovers after the session GET returns another ID', async () => {
+  await mountSubmitFixtures()
+  const get = vi.mocked(api.get)
+  const originalGet = get.getMockImplementation()
+  let mismatchNextRead = false
+  get.mockImplementation(async (path) => {
+    if (path === '/api/sessions/41' && mismatchNextRead) {
+      mismatchNextRead = false
+      return submitSession(42)
+    }
+    return originalGet(path)
+  })
+  const post = vi.spyOn(api, 'post').mockResolvedValue({ submitted_count: 1 })
+  await selectTake('take-41')
+  submittedFixtureTakes.add('41:take-41')
+  mismatchNextRead = true
+  await clickButton('Submit Test Selection (1)')
+  await act(async () => { await drain(); await drain() })
+
+  expect.soft(container.querySelector('tbody')).toBeNull()
+  expect.soft(container.textContent).toContain('did not match the requested session')
+  const retry = buttonNamed('Retry loading session')
+  expect.soft(retry).toBeTruthy()
+  if (retry) {
+    await act(async () => { retry.click(); await drain(); await drain() })
+  }
+
+  expect(container.querySelector('tbody').textContent).toContain('Generated [Shot #941]')
+  expect(post).toHaveBeenCalledTimes(1)
+})
+
 it('preserves a failed session reload outcome and releases the Submit lock', async () => {
   await mountSubmitFixtures()
   const get = vi.mocked(api.get)
@@ -463,4 +569,7 @@ it('preserves a failed session reload outcome and releases the Submit lock', asy
   expect(container.textContent).toContain('A session reload failed')
   expect(container.textContent).not.toContain('Submitting…')
   expect(post).toHaveBeenCalledTimes(1)
+  await clickButton('Retry loading session')
+  await act(async () => { await drain(); await drain() })
+  expect(container.querySelector('tbody').textContent).toContain('Generated [Shot #941]')
 })
