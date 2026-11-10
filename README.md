@@ -997,6 +997,7 @@ MIT — see [LICENSE](LICENSE).
 [Catalogue measurements](docs/catalogue-measurements.md) ·
 [Asking for candidates](docs/catalogue-candidate-prompt.md) ·
 [Slideshow](docs/slideshow.md) ·
+[Browser E2E smoke](docs/e2e-testing.md) ·
 [Troubleshooting](docs/troubleshooting.md) ·
 [Known limitations](docs/known-limitations.md)
 

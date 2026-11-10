@@ -1,5 +1,27 @@
 # Project Diary
 
+## E2E A1 Isolation and Evidence
+
+Set temporary config/data and every writable app path before importing main.
+A restrictive HTTPX fake alone cannot block local services: deny raw DNS,
+connect and UDP operations too, after creating the runtime event loop.
+Windows venv redirectors can change the server PID; directly run the venv's
+base Python with `-S` and explicit venv packages rather than weakening identity.
+A real Vite build also needs a sanitized child environment and empty owned
+envDir so local dotenv and ambient VITE values cannot enter E2E output.
+
+Use exclusively owned loopback listeners for negative HTTP/WS/redirect probes
+and count received connections. Reject worker overrides before allocation.
+Require clean shutdown evidence and verify owned process/root removal on
+failure paths. Keep controls scoped to the harness; they are not an OS sandbox.
+
+Baseline comparisons must include required tracked static assets and prove
+the runtime inherited by child processes, not only the npm launcher version.
+The final Node 22 frontend gate reproduces two failures in clean b613474;
+retain that non-green gate and HOLD A2 rather than repair unrelated UI tests
+or present isolated passes as complete acceptance. Python and final isolated
+Chromium/lifecycle checks passed independently; an intentional failed test and
+startup errors still removed the owned process and temporary root.
 ## Connected Look Automation Group 5 Acceptance
 
 Separate atomic-save and Full Auto tests do not prove their connection. Begin

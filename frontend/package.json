@@ -7,13 +7,19 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e:install": "playwright install chromium",
+    "e2e": "node e2e/build-production.mjs && node --test e2e/owned-root.node-check.mjs && playwright test --config=playwright.config.js"
+  },
+  "engines": {
+    "node": "22.x"
   },
   "dependencies": {
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.65.0",
     "@vitejs/plugin-react": "^5.0.4",
     "happy-dom": "^20.14.5",
     "vite": "^7.1.12",
