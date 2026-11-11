@@ -1,44 +1,47 @@
 # Project Progress
 
-## Current Deployment: A2c-a Review E2E
+## Current Deployment: A2c-b Approval E2E
 
-Deployment `idevgen-410-a2ca` uses Medium on local branch `e2e-a2c`, created
-from validated `cf063991826ea895179f2643486571e7eb3e7b10`. No staging, commit,
-push, PR, main, production, dependency or CI changes are authorized.
+Deployment `a2c_b_approval_e2e`, Medium, starts at validated local branch
+`e2e-a2c@4a796bee394593518eb4371d0ae43e608da2abf6`. Changes remain unstaged
+and uncommitted. No push, PR, merge, production change, dependency change, or CI
+edit was made.
 
-A2b passed Linux run 42942686174 at that base: complete Python 3,727 passed
-and one opt-in skip, frontend 1,007 passed, Node seven passed, and three fresh
-Chromium runs of fourteen passed with clean lifecycle audits. These historical
-results do not validate the new Review cases or changed fixture helpers.
+A2c-a Review was independently validated in Linux run 42953660419 at this base:
+three full Chromium passes of 22/22, Review 8/8 each, with clean graceful
+lifecycle receipts. Those runs predate A2c-b.
 
 ## Implemented Boundary
 
-Eight new Chromium cases cover persisted Review, explicit take refresh,
-A-to-B-to-A, delayed aggregate/direct reviews, revision changes, stage reentry,
-and explicit recovery from real revision 409 or transport failure. Review is
-GET-only; Approval is a separate operation and is never clicked here.
+Eight new Approval cases use the real Review UI, FastAPI routes and SQLite:
+explicit approval and persisted revision; pending A approval through A-to-B-to-A;
+late A approval on B; late success after revision change; newer success before an
+older stale 409; response after view unmount; stale 409 followed by explicit
+reload; and transport failure followed by explicit user retry. Exact POST
+identity, payload, status and order, exact Review GET order, SQLite approval
+rows/counts and unchanged plans/preparations/shots are asserted. The old 22
+scenario files and their assertions are unchanged.
 
-The opt-in Review fixture starts without approval and rejects runtime product
-POSTs. Its explicit owned control advances one session from revision 1 to 2
-using real save/prepare services; it records the control and checks the other
-session remains unchanged. Full temporary plan/preparation rows, exact review
-request order/IDs/revisions, null GET bodies, zero product writes, approvals,
-shots and authoring operations are asserted. Normal A2b fixture mode remains.
+The opt-in Approval fixture starts both owned sessions unapproved and allows only
+an exact `{plan_revision}` POST to the owned `/plan/review/approve` endpoint.
+FastAPI handles every allowed request. Other product writes remain blocked, and
+the fixture exposes raw approval rows for persistence checks. No production
+source, contract, dependency or CI workflow changed.
 
 ## Verification and Next Boundary
 
-Pertinent Python/API/harness/privacy checks: 292 passed, one Windows symlink
-skip. Frontend: 1,007 passed; Node: seven passed; sanitized build passed with
-the existing chunk-size warning. Collection lists twenty-two tests, including
-eight Review cases; collection alone is not a browser execution.
+Python harness plus existing API approval lifecycle: 5 passed. Frontend: 1,007
+passed; Node lifecycle checks: 7 passed; privacy/source: 46 passed; normal and
+sanitized builds passed with the existing large-chunk warning. The new Approval
+file passed 8/8, and the full Chromium inventory passed 30/30 on Windows with
+preflight HTML integrity and active egress guards. The server exited gracefully
+with `forced=false`, code 0, drained streams, `clean=true` stop/root markers;
+all four owned PIDs and listeners from the local attempts are absent.
 
-Windows preflight still rejects 417 build bytes versus 906 delivered bytes.
-It exits before functional cases, then closes gracefully without kill, exit0,
-streams drained, root removed; independent PID absence, exclusive port rebind
-and unchanged temporary-root inventory passed.
+The Linux workflow still audits 22 cases. Before Linux validation, update its
+inventory from 22 to 30, add `session-approval.e2e.mjs: 8`, and update the
+expected collection/failure summary to include Approval 8/8. The workflow was
+left untouched, so A2c-b has no Linux run yet.
 
-GO to clean Linux validation after final local gates; HOLD on functional A2c-a
-acceptance until the eight Review cases and all fourteen regressions pass and
-repeat with fresh servers and clean lifecycle audits. Full Python, Linux
-frontend/build/Node/privacy, exact HTML integrity and all lifecycle checks are
-pending for the new tree. No Linux run or publication is claimed.
+GO to the separately scoped Linux workflow-inventory update. HOLD on A2c-b
+acceptance until a clean Linux run validates all 30 cases and lifecycle gates.

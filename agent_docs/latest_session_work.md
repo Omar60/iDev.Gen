@@ -1,67 +1,59 @@
 # Latest Session Work
 
-## A2c-a Review E2E Handoff
+## A2c-b Approval E2E Handoff
 
-Deployment `idevgen-410-a2ca`, Medium, implements only Review E2E and its
-indispensable synthetic fixture support. Local branch `e2e-a2c` starts at
-`cf063991826ea895179f2643486571e7eb3e7b10`. Leave changes unstaged/uncommitted;
-do not publish, merge, modify main or launch another task.
+Deployment `a2c_b_approval_e2e`, Medium, starts from
+`e2e-a2c@4a796bee394593518eb4371d0ae43e608da2abf6`. Keep all changes
+unstaged/uncommitted and local. Do not publish, merge, modify `main`, or start a
+later task without authorization.
 
 ## Contract and Implementation
 
-Real Review routes are GET `/api/sessions/{id}/plan/review?plan_revision=N`
-and GET `/api/sessions/{id}/plan/takes/{take_id}/review?plan_revision=N`.
-They return persisted preparation, final prompt and current revision; stale
-revision requests return 409. Approval is a distinct POST and is forbidden in
-the Review fixture, along with Prepare, Submit and Run product writes.
+Approval is the explicit `POST /api/sessions/{id}/plan/review/approve` with
+`{plan_revision}`. The real FastAPI endpoint persists one approval row for the
+current revision and returns 409 for a stale revision. Entering Review remains
+read-only. `SessionView` already fences results by session, revision, request
+sequence and mounted state; this task made no production changes.
 
-`session-review.e2e.mjs` adds eight scenarios: persisted preparation and explicit
-refresh; late A delivered on B or after A-to-B-to-A; late aggregate/direct take
-review after revision advance and session reload; Review stage reentry with an
-older read pending; 409 and aborted-read recovery only after explicit reload.
-Exact review counts/order, request bodies, IDs/revisions, full SQLite plan and
-prepared rows, untouched B, and zero implicit operations are asserted. Session
-changes leave Review through the real Takes stage before loading the next ID,
-while retaining the old response barrier; direct Review-to-Review jumps are not
-a new A2c-a claim. Revision-race cases reload through an A-to-B-to-A route cycle,
-so they exercise session epoch and revision fencing together.
+`frontend/e2e/session-approval.e2e.mjs` adds eight Chromium cases: explicit
+approval/persistence/no automatic approval; pending A through A-to-B-to-A; late A
+response on B; stale success after revision advance; current success before an
+older stale 409; response after unmount; stale 409 then explicit reload; and
+transport abort then explicit retry. Assertions cover session/revision/payload,
+response and read order, approval SQLite rows and counts, no unrelated writes,
+and unchanged plan/preparation/shot rows. Existing 22 scenario files are
+unchanged.
 
-`session-fixture.mjs` opts into `{review:true}` only for these tests. The existing
-session-flow control creates unapproved distinguishable A/B plans, then permits
-one explicit PATCH control `{session_id,expected_revision:1}` to advance only
-an owned session to revision 2 through real save/prepare services. Controls are
-audited separately from runtime GETs. No API response is manufactured. The
-server routes this fixture PATCH without logging it as a model PATCH. Normal
-A2b mode, browser egress, identity, HTML preflight and lifecycle remain enforced.
+`session-fixture.mjs` adds an Approval-only option. `scripts/e2e_harness/session_flow.py`
+creates two unapproved owned sessions and admits only the exact approval path
+with an integer `plan_revision` of 1 or 2. Other runtime writes stay blocked.
+`tests/test_e2e_session_flow.py` proves strict fixture inputs, real 200/409
+responses, duplicate upsert, exact SQLite rows/audits, blocked Submit/Prepare/Run,
+and cleanup. The browser harness used the real React build, FastAPI and SQLite;
+barriers delayed actual HTTP requests/responses, with no frontend API mocks.
 
-`test_e2e_session_flow.py` exercises real ASGI handlers, persisted prompt identity,
-read-only effects, forbidden writes, invalid controls, unchanged B, stale 409,
-current revision 2, exact audit counts and restoration of baseline counts.
+## Verification and Limits
 
-## Current Evidence and Limits
+- `tests/test_e2e_session_flow.py` plus
+  `tests/test_api.py::test_api_plan_review_approval_lifecycle`: 5 passed.
+- Frontend: 1,007/1,007; Node lifecycle checks: 7/7; privacy/source: 46/46.
+- Normal and sanitized builds passed; existing bundle-size warning remains.
+- Approval-only Chromium: 8/8. Full existing-plus-new inventory: 30/30,
+  one worker and zero retries. HTML preflight passed; egress guard remained
+  active; server exited code 0 with `forced=false`, drained streams, clean stop
+  and removed root. Independently checked all owned PIDs absent and four ports
+  free across attempts.
+- Initial Approval runs exposed an unnecessary plan-text locator: rendered text
+  was prefixed and duplicated. It was removed while retaining session/revision
+  and SQLite assertions. No product defect was found.
 
-Windows Node22.23.4/Python3.12.14: pertinent API/harness/privacy Python 292 passed,
-one symlink skip; frontend 1,007 passed in 67 files; Node seven passed; sanitized
-build passed. Collection-only metadata outside the repository listed all22
-cases without starting a server or executing browser tests. Syntax checks passed.
+The Linux workflow `.github/workflows/e2e-a2c-validation.yml` was not changed and
+still expects 22 cases. Before Linux validation, update its per-file inventory
+with `session-approval.e2e.mjs: 8`, collected total to 30, and the inventory
+failure/summary text to include Approval 8/8. Then run its clean-Linux gates and
+three independent full 30-case passes. A2c-b has no Linux result yet.
 
-The isolated real preflight failed on the known environmental HTML injection:
-417 expected bytes versus 906 received. The response was rejected unchanged.
-Teardown reported graceful, forced=false, code0, no signal, drained streams,
-clean stop and removed root. Independent owned PID/port/root checks passed.
-No functional browser body was executed. No product defect is established.
-
-## Required Linux Validation
-
-Use a fresh clean Linux environment, Node22/Python3.12, project requirements,
-`npm ci`, hermetic pinned Playwright Chromium and active guards. Run build,
-Node7, exact-HTML preflight, full Python/frontend/privacy/source checks, then
-Review8 and the full22 suite. Repeat the full suite in three independent CLI
-runs, one worker, zero retries, fresh server/context ownership each run; never
-repeat A1 in one server. Audit each owned PID/listener/root and require graceful
-exit0 without kill. Assert the actual cases, not just a successful process exit.
-
-The workflow still triggers only on `e2e-a2b-validation`; this local branch is
-not published and no CI change was made. Any Linux publication/execution needs
-separate user authorization. A2c-a functional acceptance remains HOLD until
-that evidence exists; the implementation is ready for Linux validation.
+The six original E2E source files, workflow, `SessionView.jsx` and
+`backend/main.py` still match their base hashes. No production, API contract,
+dependency or CI behavior changed. Local branch is `e2e-a2c`; task work is
+pending without staging, commit or push.

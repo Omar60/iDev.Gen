@@ -31,14 +31,16 @@
   Submit/Prepare writes, request audits, SQLite snapshots and response barriers.
   A2c Review is GET-only: its fixture starts unapproved, exposes one separately
   audited revision-advance control through real handlers, and checks complete
-  persisted rows remain unchanged by reads. Approval is a separate action.
+  persisted rows remain unchanged by reads. `session-approval.e2e.mjs` adds
+  eight cases for the separate, revision-bound Approval action. A2c-a Review
+  passed Linux validation; A2c-b Approval has local Windows evidence but no
+  Linux result, and the current Linux workflow still audits 22 cases.
   Byte-exact HTML preflight and SHA256-bound document checks reject altered
   responses. Lifecycle monitoring distinguishes graceful, forced and failed
   outcomes, drains process streams and separately audits owned-root removal; the
   Windows Selector loop has a bounded shutdown deadline, while Linux retains its
-  normal loop. A2b passed Linux run 42942686174; A2c has no Linux browser result.
-  Windows HTML injection still blocks browser tests at preflight. Setup, evidence
-  and limits are in `docs/e2e-testing.md`; canonical deployment state is in
+  normal loop. A2b passed Linux run 42942686174. Setup, current evidence and
+  limits are in `docs/e2e-testing.md`; canonical deployment state is in
   `agent_docs/project_progress.md` and `agent_docs/latest_session_work.md`.
 - GitHub Actions runs the backend suite on Python 3.12 after installing the
   frontend lockfile with Node 22 and `npm ci`; a separate Node 22 job runs

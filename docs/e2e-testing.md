@@ -1,12 +1,14 @@
 # Browser E2E harness
 
 The opt-in Playwright suite builds the production React bundle and serves it from
-an isolated FastAPI process. Its 22 cases comprise the A1 smoke, three A2a
-ModelDetail cases, ten A2b session/guard cases, and eight A2c Review cases.
-A2b passed its Linux validation; the new A2c cases still require clean-Linux
-browser validation. A2a creates and removes synthetic models through real
-handlers and tests real PATCH requests. The suite does not run ComfyUI, a GPU,
-or generation, and is not a required job in `.github/workflows/ci.yml`.
+an isolated FastAPI process. Its 30 cases comprise the A1 smoke, three A2a
+ModelDetail cases, ten A2b session/guard cases, and eight each for A2c Review
+and Approval. A2b and A2c-a Review passed Linux validation; A2c-b Approval has
+passed locally on Windows but still needs Linux acceptance. The current Linux
+workflow audits the 22-case A2c-a inventory. A2a creates and removes synthetic
+models through real handlers and tests real PATCH requests. The suite does not
+run ComfyUI, a GPU, or generation, and is not a required job in
+`.github/workflows/ci.yml`.
 
 ## Requirements and commands
 
@@ -147,15 +149,16 @@ reusable, and no new temporary roots remained. An earlier Windows attempt also
 recorded unexpected cross-origin requests and a Proactor shutdown error; their
 exact source and causal relationship were not established. D2's Selector and
 lifecycle correction did not remove or allow injected content. No security
-settings or network allowlists were changed. The injection also blocked the
-current A2c Windows preflight; no functional Chromium case ran there.
+settings or network allowlists were changed. That earlier A2c Windows attempt
+stopped at preflight; the later A2c-b Windows run passed locally, as recorded
+below.
 
 The A2b session fixture creates synthetic A/B sessions through real handlers;
 Submit and Prepare use bounded writes, request barriers, audits and SQLite
 snapshots. Their ten cases cover five Submit cases, four Prepare cases and one
 egress-guard regression. Runtime Review, Approval and Run writes are denied.
 
-## A2c Review coverage and Linux validation
+## A2c Review and Approval coverage
 
 `frontend/e2e/session-review.e2e.mjs` adds eight cases against the real Review
 GET routes: persisted plan review and explicit take refresh; late A responses on
@@ -164,7 +167,7 @@ reload; stage reentry through Takes with an older request pending; and recovery
 from stale-revision 409 or transport failure only after explicit reload. The
 cases assert request IDs/revisions/order, complete temporary plan and preparation
 rows, exact control/runtime audits, and zero runtime product writes. Review is
-GET-only; Approval is a separate action and is never invoked.
+GET-only; it does not invoke Approval.
 
 The opt-in Review fixture starts with two unapproved synthetic plans. Its single
 owned revision control advances A from revision 1 to 2 through the real save and
@@ -173,56 +176,34 @@ asserted unchanged. Review reads must leave full SQLite rows unchanged. The
 fixture continues to reject product POSTs, including Approval, Submit, Prepare
 and Run. No API response is manufactured.
 
-Current local checks list 22 Playwright cases but collection is not execution.
-Pertinent Python/API/harness/privacy checks passed 292 with one Windows symlink
-skip; frontend passed 1,007, Node passed seven, and the sanitized build passed
-with the existing chunk-size warning. Windows preflight compared expected 417
-HTML bytes with 906 delivered bytes and stopped before test bodies; teardown was
-graceful with no kill, exit 0, drained streams, absent PID, reusable port and no
-new roots. No Linux A2c browser run has occurred.
+`frontend/e2e/session-approval.e2e.mjs` adds eight Approval cases for explicit
+revision-bound approval; A-to-B-to-A navigation and late-response isolation;
+revision changes and out-of-order responses; unmount; and recovery after stale
+revision or transport failure only through explicit reload or retry. The cases
+verify approval rows and reviewed revisions against SQLite snapshots while
+plans, prepared takes and shots remain unchanged.
 
-For A2c acceptance, use a clean Linux environment with Node 22, Python 3.12,
-project development requirements, and the Chromium version pinned by
-`frontend/package-lock.json`. From the repository root:
+A2c-a Linux Actions run 42953660419 passed all 22 cases in each of three fresh
+Chromium passes, including Review 8/8 each time, with clean server and root
+lifecycle audits. This validates Review, not Approval.
 
-```sh
-set -euo pipefail
-validation_dir="$(mktemp -d)"
-export TMPDIR="$validation_dir/tmp"
-mkdir -p "$TMPDIR"
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r backend/requirements-dev.txt
-npm ci --prefix frontend
-export PLAYWRIGHT_BROWSERS_PATH=0
-npm --prefix frontend run e2e:install -- --with-deps
-test "$(node -p 'process.versions.node.split(".")[0]')" = 22
-test "$(.venv/bin/python -c 'import sys; print(sys.version_info[:2] == (3, 12))')" = True
-node -e "console.log(JSON.stringify(require('./frontend/node_modules/playwright-core/browsers.json').browsers.find(({ name }) => name === 'chromium')))"
-npm --prefix frontend test
-.venv/bin/python -m pytest -ra
-.venv/bin/python -m pytest -ra tests/test_no_personal_data.py tests/test_shoot_checks.py
-npm --prefix frontend run build
-node frontend/e2e/build-production.mjs
-node --test frontend/e2e/owned-root.node-check.mjs
-node --input-type=module -e "import setup from './frontend/e2e/global-setup.mjs'; const stop = await setup({ workers: 1 }); await stop();" 2>&1 | tee "$validation_dir/preflight.log"
-node frontend/node_modules/@playwright/test/cli.js test --config=frontend/playwright.config.js session-review.e2e.mjs --workers=1 --retries=0 --max-failures=1 --output="$validation_dir/review-results" 2>&1 | tee "$validation_dir/review.log"
-node frontend/node_modules/@playwright/test/cli.js test --config=frontend/playwright.config.js --workers=1 --retries=0 --max-failures=1 --output="$validation_dir/full-1-results" 2>&1 | tee "$validation_dir/full-1.log"
-node frontend/node_modules/@playwright/test/cli.js test --config=frontend/playwright.config.js --workers=1 --retries=0 --max-failures=1 --output="$validation_dir/full-2-results" 2>&1 | tee "$validation_dir/full-2.log"
-node frontend/node_modules/@playwright/test/cli.js test --config=frontend/playwright.config.js --workers=1 --retries=0 --max-failures=1 --output="$validation_dir/full-3-results" 2>&1 | tee "$validation_dir/full-3.log"
-git diff --check
-```
+A2c-b passed locally on Windows: all eight Approval cases and the full 30-case
+Chromium inventory passed with the real React build, FastAPI app and SQLite,
+`workers=1`, and `retries=0`. HTML preflight and the active egress guard passed.
+The pertinent Python harness/API checks passed 5, frontend passed 1,007, Node
+lifecycle checks passed 7, privacy/source checks passed 46, and normal and
+sanitized builds passed; the sanitized build retained the existing large-chunk
+warning. Lifecycle reported graceful exit 0, `forced=false`, drained streams,
+and `clean=true` for stop and root; all owned PIDs were absent and ports free.
+This local functional evidence does not establish Linux validation.
 
-The targeted run must pass Review 8/8; each of the next three invocations must
-pass all 22 cases. Each CLI invocation creates a fresh server and test contexts;
-these are separate runs, not Playwright retries. Before proceeding past any run,
-audit its log for exactly one owned server and
-`E2E_SERVER_EXIT termination=graceful forced=false code=0 signal=none streams_drained=true`,
-`E2E_SERVER_STOPPED clean=true` and `E2E_ROOT_REMOVED clean=true`. Independently
-confirm that PID is absent, its listener is absent from `/proc/net/tcp*`, and no
-owned `idevgen-e2e-*` roots remain in the isolated temporary directory. Stop on
-any HTML mismatch, blocked unexpected request, missing audit or leaked resource.
-The local branch has no A2c workflow; no GitHub Actions run or publication is
-claimed.
+The follow-up is to update `.github/workflows/e2e-a2c-validation.yml` and rerun
+it on Linux. Its `audit_inventory` still expects 22 in collection/pass checks,
+counts six test files, emits 22-specific receipt booleans, and requires Review
+8/8 in its failure message. Add `session-approval.e2e.mjs: 8`, change collection
+and pass checks, receipt booleans, and failure message to require 30 cases
+including Approval 8/8. The workflow already runs three full-suite passes. No
+A2c-b Linux Actions run exists yet.
 
 ## Historical A2a Windows verification
 

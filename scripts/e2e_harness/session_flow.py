@@ -68,6 +68,7 @@ class SessionFlowFixture:
         self.requests: list[dict] = []
         self.baseline_counts: dict[str, int] | None = None
         self.review_mode = False
+        self.approval_mode = False
         self.revision_controls: list[dict] = []
 
     def _database(self) -> Path:
@@ -171,6 +172,7 @@ class SessionFlowFixture:
         self.requests.clear()
         self.baseline_counts = None
         self.review_mode = False
+        self.approval_mode = False
         self.revision_controls.clear()
         return counts
 
@@ -206,6 +208,11 @@ class SessionFlowFixture:
                 f"WHERE session_id IN ({placeholders}) ORDER BY session_id, take_id",
                 *params,
             )
+            approvals = self.backend.db.q(
+                "SELECT session_id, plan_revision, approved_at FROM session_plan_approval "
+                f"WHERE session_id IN ({placeholders}) ORDER BY session_id",
+                *params,
+            )
             shots = self.backend.db.q(
                 "SELECT id, session_id, status, prompt FROM shot "
                 f"WHERE session_id IN ({placeholders}) ORDER BY session_id, id",
@@ -217,7 +224,7 @@ class SessionFlowFixture:
                 *params,
             )
         else:
-            plans, prepared, shots, operations = [], [], [], []
+            plans, prepared, approvals, shots, operations = [], [], [], [], []
         return {
             "sessions": [self._session(session_id) for session_id in ids],
             "baseline_counts": self.baseline_counts,
@@ -225,6 +232,7 @@ class SessionFlowFixture:
             "requests": list(self.requests),
             "plans": plans,
             "prepared_takes": prepared,
+            "approval_rows": approvals,
             "shots": shots,
             "authoring_operations": operations,
             "revision_controls": list(self.revision_controls),
@@ -255,7 +263,7 @@ class SessionFlowFixture:
             return False
         if method == "POST":
             if self.review_mode:
-                return False
+                return self.approval_mode and suffix == "/plan/review/approve" and not query
             if query:
                 return False
             prepare = _TAKE_PREPARE_PATH.fullmatch(path)
@@ -274,6 +282,17 @@ class SessionFlowFixture:
             payload = json.loads(body)
         except (UnicodeDecodeError, json.JSONDecodeError):
             return False
+        if method.upper() == "POST" and path.endswith("/plan/review/approve"):
+            match = _SESSION_PATH.fullmatch(path)
+            return (
+                self.approval_mode
+                and isinstance(payload, dict)
+                and match is not None
+                and int(match.group(1)) in self.session_ids
+                and set(payload) == {"plan_revision"}
+                and type(payload["plan_revision"]) is int
+                and payload["plan_revision"] in {1, 2}
+            )
         prepare = _TAKE_PREPARE_PATH.fullmatch(path)
         if method.upper() == "POST" and prepare:
             return payload == {
@@ -388,12 +407,21 @@ class SessionFlowFixture:
                 payload = await request.json() if request.headers.get("content-type") == "application/json" else {}
             except (ValueError, UnicodeDecodeError):
                 return JSONResponse({"detail": "Invalid session fixture mode."}, status_code=403)
-            if not isinstance(payload, dict) or (payload and (
-                set(payload) != {"review"} or payload["review"] is not True
-            )):
+            review_mode = (
+                isinstance(payload, dict)
+                and set(payload) == {"review"}
+                and payload["review"] is True
+            )
+            approval_mode = (
+                isinstance(payload, dict)
+                and set(payload) == {"approval"}
+                and payload["approval"] is True
+            )
+            if not isinstance(payload, dict) or (payload and not (review_mode or approval_mode)):
                 return JSONResponse({"detail": "Invalid session fixture mode."}, status_code=403)
             self.baseline_counts = self._counts()
-            self.review_mode = payload == {"review": True}
+            self.review_mode = review_mode or approval_mode
+            self.approval_mode = approval_mode
             self.requests.clear()
             try:
                 self._create()

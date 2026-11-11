@@ -139,15 +139,16 @@ jobs:
                   "smoke.e2e.mjs": 1, "model-detail.e2e.mjs": 3,
                   "session-submit.e2e.mjs": 5, "session-prepare.e2e.mjs": 4,
                   "session-guard.e2e.mjs": 1, "session-review.e2e.mjs": 8,
+                  "session-approval.e2e.mjs": 8,
               }
               counts = {name: len(re.findall(r"^\s+✓\s+\d+ [^\n]*frontend/e2e/" + re.escape(name) + r":", text, re.M)) for name in expected}
-              collected = bool(re.search(r"^Running 22 tests using 1 worker$", text, re.M))
-              passed = bool(re.search(r"^\s+22 passed(?:\s|$)", text, re.M))
-              receipt = {"phase": phase, "collected_exactly_22": collected, "passed_22": passed, "passed_by_file": counts}
+              collected = bool(re.search(r"^Running 30 tests using 1 worker$", text, re.M))
+              passed = bool(re.search(r"^\s+30 passed(?:\s|$)", text, re.M))
+              receipt = {"phase": phase, "collected_exactly_30": collected, "passed_30": passed, "passed_by_file": counts}
               (logs / f"{phase}-inventory-audit.json").write_text(json.dumps(receipt, indent=2))
               print(json.dumps(receipt), flush=True)
               if not collected or not passed or counts != expected:
-                  raise RuntimeError("The collected/passed E2E inventory must be exactly 22, including Review 8/8.")
+                  raise RuntimeError("The collected/passed E2E inventory must be exactly 30, including Review 8/8 and Approval 8/8.")
 
           run("build", ["node", "frontend/e2e/build-production.mjs"])
           run("node-checks", ["node", "--test", "frontend/e2e/owned-root.node-check.mjs"])

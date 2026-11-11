@@ -233,3 +233,108 @@ def test_review_fixture_uses_real_read_contracts_and_owned_revision_control(clie
                 assert not fixture.review_mode
 
     asyncio.run(exercise())
+
+
+def test_approval_fixture_allows_only_owned_explicit_approval(client, monkeypatch):
+    from starlette.routing import Route
+    from scripts.e2e_harness.model_detail import ModelDetailFixture
+
+    root = Path(main.DATA_DIR).parent
+    fixture = SessionFlowFixture(main, root)
+    baseline = fixture._counts()
+    route = Route(FIXTURE_PATH, fixture.control, methods=["GET", "POST", "PATCH", "DELETE"])
+    monkeypatch.setattr(main.app.router, "routes", [route, *main.app.router.routes])
+    denials = []
+    model_fixture = ModelDetailFixture(main, root)
+    app = HarnessIsolationMiddleware(main.app, root, denials, model_fixture, fixture)
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://synthetic-harness.invalid",
+        ) as transport:
+            for payload in (
+                {"approval": 1}, {"approval": True, "extra": True},
+                {"review": True, "approval": True},
+            ):
+                assert (await transport.post(FIXTURE_PATH, json=payload)).status_code == 403
+                assert fixture._counts() == baseline
+
+            created = await transport.post(FIXTURE_PATH, json={"approval": True})
+            assert created.status_code == 200
+            first, second = created.json()["sessions"]
+            before = fixture.snapshot()
+            assert [item["reviewed_revision"] for item in (first, second)] == [None, None]
+            assert before["approval_rows"] == []
+            assert before["counts"]["approvals"] == baseline["approvals"]
+            sid = first["id"]
+            path = f"/api/sessions/{sid}/plan"
+            review = await transport.get(f"{path}/review?plan_revision=1")
+            assert review.status_code == 200
+            assert review.json()["reviewed_revision"] is None
+
+            for target, payload in (
+                (f"/api/sessions/99999999/plan/review/approve", {"plan_revision": 1}),
+                (f"{path}/approve", {"plan_revision": 1}),
+                (f"{path}/review/approve?plan_revision=1", {"plan_revision": 1}),
+                (f"{path}/review/approve", {"plan_revision": True}),
+                (f"{path}/review/approve", {"plan_revision": 1, "extra": True}),
+                (f"{path}/preparations/submit-selected", {"plan_revision": 1, "take_ids": ["take-001"]}),
+                (f"{path}/takes/take-003/prepare", {
+                    "plan_revision": 1, "manual_completion": None, "adaptations": None,
+                }),
+                (f"/api/sessions/{sid}/run", {}),
+            ):
+                assert (await transport.post(target, json=payload)).status_code == 403
+
+            approved = await transport.post(f"{path}/review/approve", json={"plan_revision": 1})
+            assert approved.status_code == 200, approved.text
+            assert approved.json()["session_id"] == sid
+            assert approved.json()["plan_revision"] == 1
+            assert approved.json()["approved"] is True
+            duplicate = await transport.post(f"{path}/review/approve", json={"plan_revision": 1})
+            assert duplicate.status_code == 200, duplicate.text
+            assert fixture.snapshot()["approval_rows"] == [
+                {"session_id": sid, "plan_revision": 1, "approved_at": duplicate.json()["approved_at"]},
+            ]
+
+            advanced = await transport.patch(FIXTURE_PATH, json={"session_id": sid, "expected_revision": 1})
+            assert advanced.status_code == 200
+            assert advanced.json()["plan_revision"] == 2
+            assert fixture.snapshot()["approval_rows"] == []
+            stale = await transport.post(f"{path}/review/approve", json={"plan_revision": 1})
+            assert stale.status_code == 409
+            current = await transport.post(f"{path}/review/approve", json={"plan_revision": 2})
+            assert current.status_code == 200, current.text
+            after = fixture.snapshot()
+            assert after["approval_rows"] == [{
+                "session_id": sid, "plan_revision": 2, "approved_at": current.json()["approved_at"],
+            }]
+            assert after["sessions"][1]["reviewed_revision"] is None
+            assert after["counts"]["approvals"] == baseline["approvals"] + 1
+            assert after["shots"] == []
+            assert after["authoring_operations"] == []
+            assert [
+                (item["method"], item["path"], item["status"], item["payload"])
+                for item in after["requests"] if item["method"] == "POST"
+            ] == [
+                ("POST", f"{path}/review/approve", 200, {"plan_revision": 1}),
+                ("POST", f"{path}/review/approve", 200, {"plan_revision": 1}),
+                ("POST", f"{path}/review/approve", 409, {"plan_revision": 1}),
+                ("POST", f"{path}/review/approve", 200, {"plan_revision": 2}),
+            ]
+            assert [
+                (item["method"], item["path"], item["query"], item["status"], item["payload"])
+                for item in after["requests"] if item["method"] == "GET"
+            ] == [("GET", f"{path}/review", "plan_revision=1", 200, None)]
+
+    try:
+        asyncio.run(exercise())
+        assert len(denials) == 8
+        assert model_fixture.operations == []
+    finally:
+        cleaned = asyncio.run(fixture.control(_control_request("DELETE")))
+        result = json.loads(cleaned.body)
+        assert result["cleaned"] is True
+        assert result["counts"] == baseline
+        assert not fixture.review_mode
+        assert not fixture.approval_mode

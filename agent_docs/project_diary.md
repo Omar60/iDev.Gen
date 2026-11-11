@@ -1,13 +1,14 @@
 # Project Diary
 
-## Review Reads and Explicit Fixture Transitions
+## Review and Explicit Approval E2E
 
-Review inspects preparation through GET; Approval is a separate write. Start
-Review fixtures without approval and compare full persisted rows before/after
-reads. Make a concurrent revision change through a narrowly scoped owned fixture
-control using real services, audit it separately, and keep the other session
-unchanged. A collected test is not an executed Chromium test; environment
-preflight rejection plus graceful cleanup cannot establish functional success.
+Review is read-only; Approval is a separate write bound to one plan revision.
+Start synthetic fixtures unapproved and let only the owned approval route through
+the runtime guard. Delay real FastAPI responses before or after send to separate
+backend persistence from UI delivery; verify request sequence, SQLite approval
+rows and zero Submit, Prepare or Run writes. Keep stale 409 and transport
+recovery explicit. Passing browser tests do not replace the Linux workflow's
+inventory and lifecycle checks.
 
 ## A2b-D2 Clean Shutdown and Integrity
 

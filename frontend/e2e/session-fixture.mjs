@@ -5,15 +5,18 @@ const fixtureUrl = `${state.baseUrl}/__e2e/session-flow`
 
 export const test = isolated.extend({
   reviewMode: [false, { option: true }],
-  sessionPair: async ({ request, reviewMode }, use) => {
+  approvalMode: [false, { option: true }],
+  sessionPair: async ({ request, reviewMode, approvalMode }, use) => {
+    const unapproved = reviewMode || approvalMode
     const created = await request.post(fixtureUrl, {
-      maxRedirects: 0, ...(reviewMode ? { data: { review: true } } : {}),
+      maxRedirects: 0,
+      ...(unapproved ? { data: { [approvalMode ? 'approval' : 'review']: true } } : {}),
     })
     expect(created.status()).toBe(200)
     const { sessions } = await created.json()
     expect(sessions).toHaveLength(2)
     expect(sessions.map(({ plan_revision: revision, reviewed_revision: reviewed }) => [revision, reviewed]))
-      .toEqual(reviewMode ? [[1, null], [1, null]] : [[1, 1], [1, 1]])
+      .toEqual(unapproved ? [[1, null], [1, null]] : [[1, 1], [1, 1]])
     expect(sessions.map(({ ready_take_ids: ready, incomplete_take_ids: incomplete }) => [ready, incomplete]))
       .toEqual([
         [['take-001', 'take-002'], ['take-003']],
