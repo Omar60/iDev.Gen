@@ -17,7 +17,7 @@ async function open(page, session, ready = true) {
   if (new URL(page.url()).hash.startsWith('#/session/')) {
     // Leave Review observably before changing IDs, so only the new saved plan starts its review load.
     await page.getByRole('navigation', { name: 'Session stages' })
-      .getByRole('button', { name: '3. Takes', exact: true }).click()
+      .getByRole('button', { name: '3. Takes (3)', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Current stage: Takes', exact: true })).toBeVisible()
   }
   await page.goto(`${state.baseUrl}/#/session/${session.id}?step=review`)
@@ -153,7 +153,7 @@ test('reloads Review on stage reentry while its earlier complete review is still
   await open(page, a, false)
   await gate.received
   const navigation = page.getByRole('navigation', { name: 'Session stages' })
-  await navigation.getByRole('button', { name: '3. Takes', exact: true }).click()
+  await navigation.getByRole('button', { name: '3. Takes (3)', exact: true }).click()
   await navigation.getByRole('button', { name: '4. Review', exact: true }).click()
   await expect(approval(page, a)).toBeEnabled()
   await deliver(page, gate, planReview(a))
