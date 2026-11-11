@@ -198,6 +198,7 @@ def client(monkeypatch):
     monkeypatch.setattr(main, "_schedule_full_auto_cancellation", lambda *_args: None)
     monkeypatch.setattr(main, "_schedule_startup_full_auto_runs", lambda: None)
     with TestClient(main.app) as c:
+        db.run("DELETE FROM saved_look_automation_proposal")
         yield c
     # Full Auto guards intentionally reject deleting a live owner. Test cleanup
     # first removes the synthetic coordinator rows after each isolated case.
@@ -208,7 +209,8 @@ def client(monkeypatch):
     db.run("DELETE FROM full_auto_run")
     for table in ("shot", "session", "model", "workflow", "cell", "component", "reading",
                   "garment", "outfit", "saved_look_photo_evidence",
-                  "saved_look_automation_profile", "saved_look_combined_save_receipt",
+                  "saved_look_automation_profile", "saved_look_automation_proposal",
+                  "saved_look_combined_save_receipt",
                   "saved_look_version"):
         db.run(f"DELETE FROM {table}")
 
