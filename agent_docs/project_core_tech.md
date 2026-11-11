@@ -3,7 +3,7 @@
 ## Languages and Runtimes
 
 - Python 3.11+ for the backend and command-line scripts.
-- JavaScript/JSX with Node 22+ for the frontend toolchain.
+- JavaScript/JSX with Node 22.x for the frontend toolchain.
 
 ## Frameworks and Libraries
 
@@ -32,9 +32,11 @@
   A2c Review is GET-only: its fixture starts unapproved, exposes one separately
   audited revision-advance control through real handlers, and checks complete
   persisted rows remain unchanged by reads. `session-approval.e2e.mjs` adds
-  eight cases for the separate, revision-bound Approval action. A2c-a Review
-  passed Linux validation; A2c-b Approval has local Windows evidence but no
-  Linux result, and the current Linux workflow still audits 22 cases.
+  eight cases for the separate, revision-bound Approval action. A1 through A2c
+  are closed at `d674826`; Linux run 42965352388 passed three independent 30/30
+  inventories, including Review and Approval 8/8 each. The retained A2c workflow
+  triggers only on push to `e2e-a2c`; A3 will decide its replacement with
+  permanent CI. The A2b workflow is retired, with its history preserved.
   Byte-exact HTML preflight and SHA256-bound document checks reject altered
   responses. Lifecycle monitoring distinguishes graceful, forced and failed
   outcomes, drains process streams and separately audits owned-root removal; the

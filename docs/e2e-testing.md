@@ -3,12 +3,38 @@
 The opt-in Playwright suite builds the production React bundle and serves it from
 an isolated FastAPI process. Its 30 cases comprise the A1 smoke, three A2a
 ModelDetail cases, ten A2b session/guard cases, and eight each for A2c Review
-and Approval. A2b and A2c-a Review passed Linux validation; A2c-b Approval has
-passed locally on Windows but still needs Linux acceptance. The current Linux
-workflow audits the 22-case A2c-a inventory. A2a creates and removes synthetic
+and Approval. A1, A2a, A2b and A2c are closed at validated SHA
+`d67482658fa9a2a4f8c8c93433e09fc37dfdf248`. Linux acceptance covers three
+independent passes of 30/30, totaling 90/90. A2a creates and removes synthetic
 models through real handlers and tests real PATCH requests. The suite does not
 run ComfyUI, a GPU, or generation, and is not a required job in
 `.github/workflows/ci.yml`.
+
+## Integration status and Linux evidence
+
+[Actions run 42965352388](https://github.com/Omar60/iDev.Gen/actions/runs/42965352388)
+passed at that exact SHA on `e2e-a2c`, using Node 22.23.4, Python 3.12 and
+Chromium pinned by Playwright. Each pass verified smoke 1, ModelDetail 3,
+Submit 5, Prepare 4, guard 1, Review 8 and Approval 8. Complete Python passed
+3,729 tests with one opt-in 500-take synthesis benchmark skipped; frontend
+passed 1,007/1,007, Node checks 7/7 and privacy/source checks 46/46. Build and
+diff-check passed. Each fresh server had intact HTML, active egress guards,
+graceful exit 0, `forced=false`, drained streams, `clean=true` stop/root markers,
+absent owned PID/listener and zero remaining owned temporary roots.
+
+A2d integration is in preparation; `origin/main` remains at
+`b6134746965d1e6344ebce2c0e30dcbf28adef81`. The documentation cleanup and
+retirement of the A2b workflow require a new commit and Linux validation of its
+exact SHA. Run 42965352388 validates only `d674826`; any later SHA requires
+separate validation.
+
+The retained `.github/workflows/e2e-a2c-validation.yml` runs only on push to
+`e2e-a2c`, with a matching job-level ref check. It requires exactly 30 tests per
+pass, three fresh-server passes, one worker and zero retries. The retired A2b
+workflow remains available in Git history; its decisions and original procedure
+are preserved in [the historical A2b guide](e2e-a2b-validation.md). A3 will decide
+how to replace temporary validation with permanent CI. The retained workflow
+does not run on main or pull requests and is not a required main CI gate.
 
 ## Requirements and commands
 
@@ -197,13 +223,10 @@ warning. Lifecycle reported graceful exit 0, `forced=false`, drained streams,
 and `clean=true` for stop and root; all owned PIDs were absent and ports free.
 This local functional evidence does not establish Linux validation.
 
-The follow-up is to update `.github/workflows/e2e-a2c-validation.yml` and rerun
-it on Linux. Its `audit_inventory` still expects 22 in collection/pass checks,
-counts six test files, emits 22-specific receipt booleans, and requires Review
-8/8 in its failure message. Add `session-approval.e2e.mjs: 8`, change collection
-and pass checks, receipt booleans, and failure message to require 30 cases
-including Approval 8/8. The workflow already runs three full-suite passes. No
-A2c-b Linux Actions run exists yet.
+Subsequent Linux run 42965352388 validated Approval 8/8 and Review 8/8 in each
+of three complete 30/30 passes at `d674826`, as recorded above. Its workflow
+audits all seven scenario files and exact collection/pass totals. This closes
+A2c-b; validation of the subsequent A2d cleanup SHA remains a separate step.
 
 ## Historical A2a Windows verification
 

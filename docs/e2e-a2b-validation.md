@@ -1,4 +1,32 @@
-# Temporary A2b Linux validation branch
+# Historical A2b Linux validation branch
+
+## Retired workflow and accepted evidence
+
+This guide preserves the original A2b-D4 preparation decisions and publication
+procedure as historical records. All commands and execution instructions below
+belong to that earlier phase; they are not the current publication procedure.
+The A2b workflow is retired during A2d preparation. Its pre-retirement source
+is available at
+[`d674826`](https://github.com/Omar60/iDev.Gen/blob/d67482658fa9a2a4f8c8c93433e09fc37dfdf248/.github/workflows/e2e-a2b-validation.yml).
+
+A2b was accepted by
+[run 42942686174](https://github.com/Omar60/iDev.Gen/actions/runs/42942686174)
+at `cf063991826ea895179f2643486571e7eb3e7b10`. A1, A2a, A2b and A2c are now
+closed at `d67482658fa9a2a4f8c8c93433e09fc37dfdf248`:
+[run 42965352388](https://github.com/Omar60/iDev.Gen/actions/runs/42965352388)
+passed three independent 30/30 Chromium inventories, totaling 90/90, including
+Review and Approval 8/8 per pass. Complete Python passed 3,729 tests with one
+opt-in skip; frontend passed 1,007/1,007, Node 7/7 and privacy/source 46/46.
+HTML integrity and graceful lifecycle/resource audits passed in every pass.
+
+A2d integration into main is still in preparation. The retained
+`.github/workflows/e2e-a2c-validation.yml` triggers only on push to `e2e-a2c`;
+A3 will decide its replacement with permanent CI. It is not a main CI gate.
+The cleanup must receive a new SHA and its own Linux validation; the earlier
+run does not validate these subsequent changes. See
+[the current E2E guide](e2e-testing.md) for commands and acceptance state.
+
+## Historical D4 preparation snapshot
 
 This is a prepared workflow, not evidence of a GitHub run. Nothing was staged,
 committed, branched or pushed while preparing it. The nineteen existing A2b/D2
@@ -6,7 +34,7 @@ files must retain their captured hashes. The only D4 files are this guide and
 `.github/workflows/e2e-a2b-validation.yml`; existing CI and documentation remain
 unchanged.
 
-## Execution boundary
+## Historical execution boundary
 
 The workflow runs only on pushes to `e2e-a2b-validation`, with an additional
 job-level ref check. It has no pull-request, main, manual-dispatch, schedule,
@@ -30,7 +58,7 @@ The job prints actual tool/browser versions. Backend lower-bound requirements,
 Node/Python patch resolution and the Ubuntu image can still change; they are
 reproducibility limits, not reasons to ignore failures.
 
-## Gates and evidence
+## Historical gates and evidence
 
 1. Check ref/SHA/base ancestry and absence of real config/session data.
 2. Build with the existing sanitized Vite helper; run all seven Node checks.
@@ -38,7 +66,7 @@ reproducibility limits, not reasons to ignore failures.
    and audit its PID, listener, clean marker, exit and owned temporary roots.
 4. Run complete Python and frontend suites.
 5. Run the complete Chromium suite three times, with a fresh server each time.
-   Current inventory: A1 smoke 1, A2a ModelDetail 3, Submit 5, Prepare 4 and guard
+   Inventory at A2b: A1 smoke 1, A2a ModelDetail 3, Submit 5, Prepare 4 and guard
    regression 1: fourteen cases per run. Each uses one worker, zero retries and
    stops at the first failure. A later run never converts a failed run to green.
 6. Recheck privacy/source controls and the diff from the approved base.
@@ -60,7 +88,7 @@ Installation failures still have the standard GitHub job log. Traces exist only
 if a browser test reached tracing. Preflight rejection must leave functional
 tests unexecuted and the job red, even when cleanup succeeds.
 
-## Commands used by the job
+## Historical commands used by the job
 
 From the repository root on Linux after setting up Node 22/Python 3.12:
 
@@ -83,7 +111,7 @@ the final Chromium command three times independently. Use the workflow for the
 complete repetition/artifact procedure; do not repeat A1 inside one server with
 `--repeat-each`, because its intentional denial ledger survives within that run.
 
-## Publication procedure: requires separate explicit authorization
+## Historical publication procedure (not current instructions)
 
 Do not execute these commands as part of D4 preparation. Review the complete
 21-file change first. Require the nineteen original hashes to match the
@@ -162,7 +190,7 @@ If the run is not listed immediately after push, wait for scheduling and query
 the same branch/SHA again; do not trigger dummy commits or rerun tests. A queued
 or running result is not acceptance. Check all gates and receipts after completion.
 
-## GitHub-only limitations and acceptance
+## Historical GitHub-only limitations and acceptance criteria
 
 Local syntax/route/tool checks cannot demonstrate Ubuntu dependency resolution,
 browser installation, unmodified HTML on the hosted runner, Linux startup,
