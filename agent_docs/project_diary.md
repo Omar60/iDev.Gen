@@ -1,5 +1,14 @@
 # Project Diary
 
+## Review Reads and Explicit Fixture Transitions
+
+Review inspects preparation through GET; Approval is a separate write. Start
+Review fixtures without approval and compare full persisted rows before/after
+reads. Make a concurrent revision change through a narrowly scoped owned fixture
+control using real services, audit it separately, and keep the other session
+unchanged. A collected test is not an executed Chromium test; environment
+preflight rejection plus graceful cleanup cannot establish functional success.
+
 ## A2b-D2 Clean Shutdown and Integrity
 
 Bound the actual server completion after a stop request; a timeout in a finally

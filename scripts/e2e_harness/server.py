@@ -253,7 +253,7 @@ class HarnessIsolationMiddleware:
             method in SAFE_METHODS and self._safe_static_path(path) and not query
         )
         if allowed:
-            if method == "PATCH" and self.model_fixture is not None:
+            if method == "PATCH" and self.model_fixture is not None and self.model_fixture.allows(method, path, query):
                 await self.model_fixture.record_patch(self.app, scope, receive, send)
                 return
             if self.session_flow_fixture is not None and self.session_flow_fixture.is_runtime_path(method, path):
@@ -473,7 +473,7 @@ def main(argv=None) -> int:
 
     from starlette.routing import Route
     backend_main.app.router.routes.insert(0, Route(FIXTURE_PATH, model_fixture.control, methods=["GET", "POST", "DELETE"]))
-    backend_main.app.router.routes.insert(0, Route(SESSION_FLOW_PATH, session_flow_fixture.control, methods=["GET", "POST", "DELETE"]))
+    backend_main.app.router.routes.insert(0, Route(SESSION_FLOW_PATH, session_flow_fixture.control, methods=["GET", "POST", "PATCH", "DELETE"]))
     backend_main.app.router.routes.insert(0, Route(IDENTITY_PATH, read_identity, methods=["GET"]))
 
     original_lifespan = backend_main.app.router.lifespan_context

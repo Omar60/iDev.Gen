@@ -7,21 +7,25 @@ Verified baseline from the repository layout and application entry points.
 - `backend/` contains the Python application and domain modules.
 - `frontend/src/` contains the React UI, hash-based routing, views, helpers,
   and frontend tests. `frontend/dist/` is generated build output.
-- `frontend/e2e/` contains the Playwright smoke, ModelDetail and A2b session
-  Submit/Prepare cases, sanitized build, and owned-root safeguards.
-  `session-fixture.mjs` owns browser session setup and inspection;
+- `frontend/e2e/` contains the Playwright smoke, ModelDetail, A2b Submit/Prepare
+  and A2c Review cases, sanitized build, and owned-root safeguards.
+  `session-fixture.mjs` owns browser session setup and inspection; Review mode
+  seeds unapproved plans and uses one explicit, audited revision control through
+  real handlers. `session-review.e2e.mjs` verifies read-only review state and
+  identity/revision races; Approval remains a separate action.
   `session-guard.e2e.mjs` covers immutable response routing options.
   `lifecycle.mjs` observes child close, stream drain and termination outcome;
   `preflight.mjs` validates exact build HTML and its reference digest, used by
   global setup and the per-document browser guard.
   `scripts/e2e_harness/` serves the isolated synthetic FastAPI process and scoped
   model/session fixtures. `session_flow.py` owns real-handler resource-v1 setup,
-  bounded runtime Submit/Prepare access, request audits, SQLite snapshots and
-  baseline/folder cleanup checks. `tests/test_e2e_session_flow.py` covers the
-  session fixture; `tests/test_e2e_lifecycle.py` covers server shutdown outcomes.
-  D2 corrects bounded lifecycle/integrity handling; altered HTML still blocks
-  functional A2b revalidation. See `docs/e2e-testing.md` and canonical state in
-  `agent_docs/project_progress.md` and `agent_docs/latest_session_work.md`.
+  bounded runtime writes, separate fixture-control audits, full SQLite snapshots
+  and baseline/folder cleanup checks. `tests/test_e2e_session_flow.py` covers
+  session fixtures; `tests/test_e2e_lifecycle.py` covers server shutdown outcomes.
+  A2b passed Linux run 42942686174. A2c Review still needs clean-Linux browser
+  validation; Windows injection fails closed at HTML preflight. See
+  `docs/e2e-testing.md` and canonical state in `agent_docs/project_progress.md`
+  and `agent_docs/latest_session_work.md`.
 - `tests/` contains the backend pytest suite and ComfyUI test doubles.
 - `scripts/` contains import, backup, mining, analysis, and operational tools.
 - `docs/` contains user-facing guidance; `README.md` is the short project

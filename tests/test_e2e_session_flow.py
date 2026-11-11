@@ -148,3 +148,88 @@ def test_session_flow_cleanup_surfaces_owned_session_folder_warning(client, monk
     monkeypatch.setattr(main, "delete_session", original_delete)
     cleaned = fixture._cleanup()
     assert cleaned == baseline
+
+
+def test_review_fixture_uses_real_read_contracts_and_owned_revision_control(client, monkeypatch):
+    from starlette.routing import Route
+    from scripts.e2e_harness.model_detail import ModelDetailFixture
+
+    root = Path(main.DATA_DIR).parent
+    fixture = SessionFlowFixture(main, root)
+    baseline = fixture._counts()
+    route = Route(FIXTURE_PATH, fixture.control, methods=["GET", "POST", "PATCH", "DELETE"])
+    monkeypatch.setattr(main.app.router, "routes", [route, *main.app.router.routes])
+    denials = []
+    model_fixture = ModelDetailFixture(main, root)
+    app = HarnessIsolationMiddleware(main.app, root, denials, model_fixture, fixture)
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://synthetic-harness.invalid",
+        ) as transport:
+            for payload in ({"review": 1}, {"review": False}, {"review": True, "extra": True}):
+                assert (await transport.post(FIXTURE_PATH, json=payload)).status_code == 403
+                assert fixture._counts() == baseline
+            created = await transport.post(FIXTURE_PATH, json={"review": True})
+            assert created.status_code == 200
+            first, second = created.json()["sessions"]
+            assert [first["reviewed_revision"], second["reviewed_revision"]] == [None, None]
+            assert first["plan"]["look"] != second["plan"]["look"]
+            before = fixture.snapshot()
+            assert before["counts"]["approvals"] == baseline["approvals"]
+            sid = first["id"]
+            path = f"/api/sessions/{sid}/plan"
+            try:
+                for endpoint in (f"{path}/review", f"{path}/takes/take-001/review"):
+                    response = await transport.get(endpoint, params={"plan_revision": 1})
+                    assert response.status_code == 200, response.text
+                    body = response.json()
+                    assert body["session_id"] == sid
+                    assert body["plan_revision"] == 1
+                    assert body["reviewed_revision"] is None
+                    review = body["takes"][0] if "takes" in body else body
+                    stored = next(row for row in before["prepared_takes"] if row["session_id"] == sid and row["take_id"] == "take-001")
+                    assert review["snapshot"]["id"] == stored["id"]
+                    assert review["snapshot"]["final_prompt"] == stored["final_prompt"]
+                    assert first["plan"]["look"] in stored["final_prompt"]
+                read = fixture.snapshot()
+                for key in ("sessions", "counts", "plans", "prepared_takes", "shots", "authoring_operations"):
+                    assert read[key] == before[key]
+                for suffix in ("/review/approve", "/preparations/submit-selected", "/takes/take-003/prepare"):
+                    assert (await transport.post(path + suffix, json={"plan_revision": 1})).status_code == 403
+                assert (await transport.post(f"/api/sessions/{sid}/run", json={})).status_code == 403
+                for payload in (
+                    {"session_id": 99999999, "expected_revision": 1},
+                    {"session_id": sid, "expected_revision": True},
+                    {"session_id": sid, "expected_revision": 2},
+                    {"session_id": sid, "expected_revision": 1, "extra": True},
+                ):
+                    assert (await transport.patch(FIXTURE_PATH, json=payload)).status_code == 403
+                    assert fixture.snapshot()["prepared_takes"] == before["prepared_takes"]
+                advanced = await transport.patch(FIXTURE_PATH, json={"session_id": sid, "expected_revision": 1})
+                assert advanced.status_code == 200, advanced.text
+                assert advanced.json()["plan_revision"] == 2
+                assert advanced.json()["reviewed_revision"] is None
+                assert fixture._session(second["id"]) == second
+                assert (await transport.patch(FIXTURE_PATH, json={"session_id": sid, "expected_revision": 1})).status_code == 409
+                assert (await transport.get(f"{path}/review?plan_revision=1")).status_code == 409
+                current = await transport.get(f"{path}/review?plan_revision=2")
+                assert current.status_code == 200, current.text
+                assert current.json()["plan_revision"] == 2
+                assert advanced.json()["plan"]["look"] in current.json()["takes"][0]["snapshot"]["final_prompt"]
+                assert (await transport.get(f"{path}/review?plan_revision=3")).status_code == 403
+                final = fixture.snapshot()
+                assert final["revision_controls"] == [{"session_id": sid, "expected_revision": 1, "plan_revision": 2}]
+                assert final["shots"] == []
+                assert final["counts"]["approvals"] == baseline["approvals"]
+                assert final["authoring_operations"] == []
+                assert len(final["requests"]) == 4
+                assert all(row["method"] == "GET" and row["payload"] is None for row in final["requests"])
+                assert model_fixture.operations == []
+            finally:
+                removed = await transport.delete(FIXTURE_PATH)
+                assert removed.status_code == 200
+                assert removed.json()["counts"] == baseline
+                assert not fixture.review_mode
+
+    asyncio.run(exercise())

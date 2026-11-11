@@ -1,12 +1,12 @@
 # Browser E2E harness
 
 The opt-in Playwright suite builds the production React bundle and serves it from
-an isolated FastAPI process. It includes the A1 app-render/isolation smoke and
-three A2a ModelDetail navigation cases, and implemented A2b Submit/Prepare
-cases whose independent acceptance is on HOLD. A2a creates and removes synthetic
-models in the temporary database through the real model handlers and tests real model
-PATCH requests. It does not run ComfyUI, a GPU, or generation, and is not a
-required job in `.github/workflows/ci.yml`.
+an isolated FastAPI process. Its 22 cases comprise the A1 smoke, three A2a
+ModelDetail cases, ten A2b session/guard cases, and eight A2c Review cases.
+A2b passed its Linux validation; the new A2c cases still require clean-Linux
+browser validation. A2a creates and removes synthetic models through real
+handlers and tests real PATCH requests. The suite does not run ComfyUI, a GPU,
+or generation, and is not a required job in `.github/workflows/ci.yml`.
 
 ## Requirements and commands
 
@@ -130,84 +130,99 @@ event loop. This choice belongs to the one-worker test harness, not the product
 backend; do not introduce asyncio subprocesses here. These are harness-level
 checks, not an OS sandbox or network namespace.
 
-## A2b-D2 lifecycle correction and environment HOLD
+## A2b Linux acceptance and historical D2 Windows block
 
-Deployment `idevgen-410-a2bd2` completes the bounded lifecycle/integrity correction;
-functional A2b acceptance remains HOLD. Windows verification passed seven Node
-checks, 291 pertinent Python checks with one symlink-privilege skip, and 1,007
-frontend tests across 67 files. The sanitized production build passed with the
-existing chunk-size warning. Checks cover intact/altered HTML, 4,096 stdout lines
-plus the clean marker and stderr tail, forced timeout and nonzero exit even with
-a marker, and Python normal/timeout/failure shutdown paths.
+A2b passed Linux run 42942686174 at validated base
+`cf063991826ea895179f2643486571e7eb3e7b10`: full Python 3,727 passed with one
+opt-in skip, frontend 1,007 passed, seven Node checks passed, and three fresh
+Chromium runs each passed all 14 A1/A2a/A2b cases with clean lifecycle audits.
+This validates the A2b tree only; it does not validate A2c's Review cases or
+changed fixture helpers.
 
-The real `npm --prefix frontend run e2e -- --max-failures=1` command correctly
-failed at integrity preflight: build HTML was 417 bytes, received HTML 906 bytes.
-No functional test body ran. The same run reported graceful termination,
-`forced=false`, code zero, no signal, drained streams, `E2E_SERVER_STOPPED clean=true`
-and `E2E_ROOT_REMOVED clean=true`. Independent checks confirmed the owned PID
-absent, exclusive port rebind successful and no new temporary roots.
+The earlier A2b-D2 Windows run was blocked before browser tests by altered HTML:
+the build was 417 bytes and the delivered response 906 bytes. Preflight rejected
+the response unchanged. Teardown was graceful (`forced=false`, exit 0, no signal,
+streams drained, `clean=true`), the owned PID was absent, the exclusive port was
+reusable, and no new temporary roots remained. An earlier Windows attempt also
+recorded unexpected cross-origin requests and a Proactor shutdown error; their
+exact source and causal relationship were not established. D2's Selector and
+lifecycle correction did not remove or allow injected content. No security
+settings or network allowlists were changed. The injection also blocked the
+current A2c Windows preflight; no functional Chromium case ran there.
 
-D1 had located injected HTML in Node HTTP bytes before Chromium/React. Its
-before-fix Proactor reproduction retained two active connections and required
-forced termination after fifteen seconds; Selector closed cleanly despite the
-same HTML injection. The original socket-error trigger and any causal link to
-the injector remain unproven. D2 establishes corrected lifecycle behavior and
-rejection of altered HTML; it does not establish a clean-HTML Chromium smoke,
-a full functional E2E pass or passing repetitions. Those need a clean runner.
-No user software, proxy, AdGuard settings or network allowlists were changed.
-Windows executed; Linux, real providers, GPU and generation remain unverified.
+The A2b session fixture creates synthetic A/B sessions through real handlers;
+Submit and Prepare use bounded writes, request barriers, audits and SQLite
+snapshots. Their ten cases cover five Submit cases, four Prepare cases and one
+egress-guard regression. Runtime Review, Approval and Run writes are denied.
 
-## A2b session coverage and historical verification
+## A2c Review coverage and Linux validation
 
-`SessionFlowFixture` in `scripts/e2e_harness/session_flow.py` and
-`frontend/e2e/session-fixture.mjs` create two owned synthetic resource-v1
-sessions through real handlers. Each starts at plan revision 1 with prior
-approval, two ready takes and one incomplete take. Setup uses real preparation
-and approval validation; runtime allows only bounded Submit/Prepare POSTs and
-owned reads. Review, Approval and Run writes remain denied. Request audits and
-SQLite snapshots expose payloads, revisions, pending shots and preparation links.
-Cleanup rejects deletion warnings or surviving owned session folders and checks
-baseline counts. No product code changed for Submit/Prepare.
+`frontend/e2e/session-review.e2e.mjs` adds eight cases against the real Review
+GET routes: persisted plan review and explicit take refresh; late A responses on
+B or after A-to-B-to-A; late plan/take review after a real revision change and
+reload; stage reentry through Takes with an older request pending; and recovery
+from stale-revision 409 or transport failure only after explicit reload. The
+cases assert request IDs/revisions/order, complete temporary plan and preparation
+rows, exact control/runtime audits, and zero runtime product writes. Review is
+GET-only; Approval is a separate action and is never invoked.
 
-- `session-submit.e2e.mjs`: five cases cover double-click uniqueness, late A on B,
-  A-to-B-to-A while pending, and separate session/plan reconciliation barriers.
-- `session-prepare.e2e.mjs`: four cases cover superseding reloads, selection
-  reconciliation, failed session/plan GETs, and an unchanged real B response
-  delivered to an A request after committed Submit. Recovery remains explicit.
-- `session-guard.e2e.mjs`: one regression copies/freezes response-release options
-  before validation, then mutates the caller's options and checks the owned
-  sibling listener receives no TCP or HTTP contact. Request barriers support
-  before-send and after-response phases; transport failures abort requests.
+The opt-in Review fixture starts with two unapproved synthetic plans. Its single
+owned revision control advances A from revision 1 to 2 through the real save and
+prepare handlers; the control is audited separately from Review reads and B is
+asserted unchanged. Review reads must leave full SQLite rows unchanged. The
+fixture continues to reject product POSTs, including Approval, Submit, Prepare
+and Run. No API response is manufactured.
 
-Before D2, executor selfchecks reported Submit 5/5, guard 1/1 and fixture Python 2 passed.
-A1/A2a 4/4 passed before the final shared-helper hardening; this is not a final
-aggregate pass. An initial seed returned the expected 422 for four missing
-choices; only valid synthetic fixture choices were corrected. An initial Prepare
-launch produced four errors before test bodies because that command omitted
-`PLAYWRIGHT_BROWSERS_PATH=0`; no browser was installed.
+Current local checks list 22 Playwright cases but collection is not execution.
+Pertinent Python/API/harness/privacy checks passed 292 with one Windows symlink
+skip; frontend passed 1,007, Node passed seven, and the sanitized build passed
+with the existing chunk-size warning. Windows preflight compared expected 417
+HTML bytes with 906 delivered bytes and stopped before test bodies; teardown was
+graceful with no kill, exit 0, drained streams, absent PID, reusable port and no
+new roots. No Linux A2c browser run has occurred.
 
-Independent verification then used Node 22.23.4 and the hermetic browser path and
-ran only Prepare: exit 1, four FAILED, zero skipped, plus a global teardown
-error. All four bodies and session cleanup reached their functional assertions,
-but the browser isolation guard rejected respectively 2, 2, 2 and 4 unexpected
-cross-origin requests. Traces contain AdGuard content-script indicators; no
-matching code was found in application sources or the build. Environment
-contamination is indicated, but the exact origin is unproven. Requests remained
-blocked; do not allow the unexpected host or disable guards.
+For A2c acceptance, use a clean Linux environment with Node 22, Python 3.12,
+project development requirements, and the Chromium version pinned by
+`frontend/package-lock.json`. From the repository root:
 
-That historical global teardown lacked `E2E_SERVER_STOPPED clean=true` and repeatedly reported
-asyncio Proactor WinError 10022; causality remains unresolved. Independent
-cleanup confirmed the owned PID absent, its port freely rebound exclusively and
-no new owned temporary roots, with no baseline cleanup failure or unrelated
-process closure. Eventual cleanup does not pass the clean-shutdown gate.
-Evidence remains outside the repository as `prepare.log`, `trace-summary.txt`,
-`playwright-results`, `roots-before.txt` and `roots-after.txt`.
+```sh
+set -euo pipefail
+validation_dir="$(mktemp -d)"
+export TMPDIR="$validation_dir/tmp"
+mkdir -p "$TMPDIR"
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements-dev.txt
+npm ci --prefix frontend
+export PLAYWRIGHT_BROWSERS_PATH=0
+npm --prefix frontend run e2e:install -- --with-deps
+test "$(node -p 'process.versions.node.split(".")[0]')" = 22
+test "$(.venv/bin/python -c 'import sys; print(sys.version_info[:2] == (3, 12))')" = True
+node -e "console.log(JSON.stringify(require('./frontend/node_modules/playwright-core/browsers.json').browsers.find(({ name }) => name === 'chromium')))"
+npm --prefix frontend test
+.venv/bin/python -m pytest -ra
+.venv/bin/python -m pytest -ra tests/test_no_personal_data.py tests/test_shoot_checks.py
+npm --prefix frontend run build
+node frontend/e2e/build-production.mjs
+node --test frontend/e2e/owned-root.node-check.mjs
+node --input-type=module -e "import setup from './frontend/e2e/global-setup.mjs'; const stop = await setup({ workers: 1 }); await stop();" 2>&1 | tee "$validation_dir/preflight.log"
+node frontend/node_modules/@playwright/test/cli.js test --config=frontend/playwright.config.js session-review.e2e.mjs --workers=1 --retries=0 --max-failures=1 --output="$validation_dir/review-results" 2>&1 | tee "$validation_dir/review.log"
+node frontend/node_modules/@playwright/test/cli.js test --config=frontend/playwright.config.js --workers=1 --retries=0 --max-failures=1 --output="$validation_dir/full-1-results" 2>&1 | tee "$validation_dir/full-1.log"
+node frontend/node_modules/@playwright/test/cli.js test --config=frontend/playwright.config.js --workers=1 --retries=0 --max-failures=1 --output="$validation_dir/full-2-results" 2>&1 | tee "$validation_dir/full-2.log"
+node frontend/node_modules/@playwright/test/cli.js test --config=frontend/playwright.config.js --workers=1 --retries=0 --max-failures=1 --output="$validation_dir/full-3-results" 2>&1 | tee "$validation_dir/full-3.log"
+git diff --check
+```
 
-Those four cases remain historical failures; no functional Submit/Prepare defect
-was demonstrated. The original user stop left full E2E, repetitions, full
-frontend, final build and Python/privacy gates unexecuted in that deployment.
-The D2 results above supersede its lifecycle status and add the stated checks;
-they do not revalidate these functional cases. A2c remains on HOLD.
+The targeted run must pass Review 8/8; each of the next three invocations must
+pass all 22 cases. Each CLI invocation creates a fresh server and test contexts;
+these are separate runs, not Playwright retries. Before proceeding past any run,
+audit its log for exactly one owned server and
+`E2E_SERVER_EXIT termination=graceful forced=false code=0 signal=none streams_drained=true`,
+`E2E_SERVER_STOPPED clean=true` and `E2E_ROOT_REMOVED clean=true`. Independently
+confirm that PID is absent, its listener is absent from `/proc/net/tcp*`, and no
+owned `idevgen-e2e-*` roots remain in the isolated temporary directory. Stop on
+any HTML mismatch, blocked unexpected request, missing audit or leaked resource.
+The local branch has no A2c workflow; no GitHub Actions run or publication is
+claimed.
 
 ## Historical A2a Windows verification
 

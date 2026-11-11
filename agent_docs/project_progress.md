@@ -1,47 +1,44 @@
 # Project Progress
 
-## Current Deployment: A2b-D2 Lifecycle and HTML Integrity
+## Current Deployment: A2c-a Review E2E
 
-Deployment `idevgen-410-a2bd2` uses Medium on
-`main@a9bbc2e0a60724eee78198e06aafd41270d6ae4d`, with the fourteen unstaged A2b
-files retained. Their original bytes and SHA256 hashes were captured outside
-the repository before editing. A2b functional acceptance remains HOLD.
-Main owns implementation and verification; bounded read-only support audited
-lifecycle and integrity. No product, API, dependency or CI changes.
+Deployment `idevgen-410-a2ca` uses Medium on local branch `e2e-a2c`, created
+from validated `cf063991826ea895179f2643486571e7eb3e7b10`. No staging, commit,
+push, PR, main, production, dependency or CI changes are authorized.
 
-## Delivered Correction
+A2b passed Linux run 42942686174 at that base: complete Python 3,727 passed
+and one opt-in skip, frontend 1,007 passed, Node seven passed, and three fresh
+Chromium runs of fourteen passed with clean lifecycle audits. These historical
+results do not validate the new Review cases or changed fixture helpers.
 
-The isolated server uses SelectorEventLoop only on Windows, before the egress
-guard. A blocking stdin thread signals stop through call_soon_threadsafe. The
-shutdown deadline now bounds the actual server task after stop; timeout cannot
-emit clean=true. Linux retains its normal event loop.
+## Implemented Boundary
 
-The launcher observes process exit, close and drained stdout/stderr, preserves
-received event order and distinguishes graceful, forced and failed outcomes.
-Normal success requires the clean marker, exit zero, no signal and no kill.
-Owned-root removal is reported separately. HTML is compared byte-for-byte with
-the production build before functional tests and again before document delivery;
-SHA256 binds the browser guard to the original build. Differences are rejected
-without stripping injected content or permitting another origin.
+Eight new Chromium cases cover persisted Review, explicit take refresh,
+A-to-B-to-A, delayed aggregate/direct reviews, revision changes, stage reentry,
+and explicit recovery from real revision 409 or transport failure. Review is
+GET-only; Approval is a separate operation and is never clicked here.
 
-## Verified Evidence
+The opt-in Review fixture starts without approval and rejects runtime product
+POSTs. Its explicit owned control advances one session from revision 1 to 2
+using real save/prepare services; it records the control and checks the other
+session remains unchanged. Full temporary plan/preparation rows, exact review
+request order/IDs/revisions, null GET bodies, zero product writes, approvals,
+shots and authoring operations are asserted. Normal A2b fixture mode remains.
 
-- Node safety/lifecycle/integrity checks: seven passed.
-- Pertinent Python API, harness, lifecycle, privacy/source checks:
-  291 passed, one Windows symlink privilege skip.
-- Full frontend: 1,007 passed in 67 files.
-- Sanitized production build passed with the existing large-chunk warning.
-- Real E2E command: integrity preflight rejected 417 build bytes versus 906
-  received bytes before functional scenarios ran. Teardown reported graceful,
-  forced=false, code=0, signal=none, drained streams, clean=true and root removed.
-- Independent audit: owned PID absent, exclusive port rebind successful, no new
-  temporary roots. The read-only audit found no required correction.
+## Verification and Next Boundary
 
-## Stop Boundary
+Pertinent Python/API/harness/privacy checks: 292 passed, one Windows symlink
+skip. Frontend: 1,007 passed; Node: seven passed; sanitized build passed with
+the existing chunk-size warning. Collection lists twenty-two tests, including
+eight Review cases; collection alone is not a browser execution.
 
-HOLD for functional A2b revalidation in this environment: it still alters HTML.
-No clean-HTML Chromium smoke, full functional E2E or repeats are claimed.
-No AdGuard/antivirus/proxy/user settings were changed and no host was allowlisted.
-D1 preserves the before-fix reproduction: Proactor retained two active
-connections and required a kill; Selector closed cleanly with the same injection.
-Windows executed; Linux remains unexecuted. Leave all work unstaged/uncommitted.
+Windows preflight still rejects 417 build bytes versus 906 delivered bytes.
+It exits before functional cases, then closes gracefully without kill, exit0,
+streams drained, root removed; independent PID absence, exclusive port rebind
+and unchanged temporary-root inventory passed.
+
+GO to clean Linux validation after final local gates; HOLD on functional A2c-a
+acceptance until the eight Review cases and all fourteen regressions pass and
+repeat with fresh servers and clean lifecycle audits. Full Python, Linux
+frontend/build/Node/privacy, exact HTML integrity and all lifecycle checks are
+pending for the new tree. No Linux run or publication is claimed.

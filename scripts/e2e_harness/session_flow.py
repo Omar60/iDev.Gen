@@ -67,6 +67,8 @@ class SessionFlowFixture:
         self.workflow_id: int | None = None
         self.requests: list[dict] = []
         self.baseline_counts: dict[str, int] | None = None
+        self.review_mode = False
+        self.revision_controls: list[dict] = []
 
     def _database(self) -> Path:
         row = self.backend.db.conn().execute("PRAGMA database_list").fetchone()
@@ -121,9 +123,12 @@ class SessionFlowFixture:
                 composition_mode=backend.session_plan.MODE_RESOURCE_V1,
             ))["id"]
             self.session_ids.append(int(session_id))
+            plan = _plan()
+            if self.review_mode:
+                plan["look"] = f"Synthetic Review {name}, revision 1."
             saved = backend.save_plan_draft(
                 session_id,
-                backend.PlanDraftIn(plan=_plan(), expected_revision=0),
+                backend.PlanDraftIn(plan=plan, expected_revision=0),
             )
             if saved["plan_revision"] != 1:
                 raise RuntimeError("Session flow fixture plan did not start at revision 1.")
@@ -137,9 +142,10 @@ class SessionFlowFixture:
                 )
                 if prepared["status"] != "ready":
                     raise RuntimeError(f"Session flow fixture take {take_id} did not become ready.")
-            approval = backend.session_plan.approve_plan_review(session_id, 1)
-            if approval["approved"] is not True:
-                raise RuntimeError("Session flow fixture plan review was not approved.")
+            if not self.review_mode:
+                approval = backend.session_plan.approve_plan_review(session_id, 1)
+                if approval["approved"] is not True:
+                    raise RuntimeError("Session flow fixture plan review was not approved.")
 
     def _cleanup(self) -> dict[str, int]:
         backend = self.backend
@@ -164,6 +170,8 @@ class SessionFlowFixture:
         self.workflow_id = None
         self.requests.clear()
         self.baseline_counts = None
+        self.review_mode = False
+        self.revision_controls.clear()
         return counts
 
     def _session(self, session_id: int) -> dict:
@@ -189,13 +197,12 @@ class SessionFlowFixture:
             placeholders = ",".join("?" for _ in ids)
             params = tuple(ids)
             plans = self.backend.db.q(
-                "SELECT session_id, plan_revision, plan_json FROM session_plan "
+                "SELECT * FROM session_plan "
                 f"WHERE session_id IN ({placeholders}) ORDER BY session_id",
                 *params,
             )
             prepared = self.backend.db.q(
-                "SELECT id, session_id, plan_revision, take_id, status, linked_shot_id "
-                "FROM prepared_take "
+                "SELECT * FROM prepared_take "
                 f"WHERE session_id IN ({placeholders}) ORDER BY session_id, take_id",
                 *params,
             )
@@ -220,12 +227,15 @@ class SessionFlowFixture:
             "prepared_takes": prepared,
             "shots": shots,
             "authoring_operations": operations,
+            "revision_controls": list(self.revision_controls),
         }
 
     def allows(self, method: str, path: str, query: bytes) -> bool:
         method = method.upper()
         if path == FIXTURE_PATH:
-            return method in {"GET", "POST", "DELETE"} and not query
+            return (method in {"GET", "POST", "DELETE"} or (
+                method == "PATCH" and self.review_mode and bool(self.session_ids)
+            )) and not query
         match = _SESSION_PATH.fullmatch(path)
         if match is None or int(match.group(1)) not in self.session_ids:
             return False
@@ -234,12 +244,18 @@ class SessionFlowFixture:
             if suffix in {"", "/plan", "/full-auto"}:
                 return not query
             if suffix == "/plan/review":
-                return query == b"plan_revision=1"
+                return query == b"plan_revision=1" or (
+                    self.review_mode and query == b"plan_revision=2"
+                )
             review = _TAKE_REVIEW_PATH.fullmatch(path)
             if review and int(review.group(1)) == int(session_id):
-                return review.group(2) in TAKE_IDS and query == b"plan_revision=1"
+                return review.group(2) in TAKE_IDS and (query == b"plan_revision=1" or (
+                    self.review_mode and query == b"plan_revision=2"
+                ))
             return False
         if method == "POST":
+            if self.review_mode:
+                return False
             if query:
                 return False
             prepare = _TAKE_PREPARE_PATH.fullmatch(path)
@@ -340,10 +356,44 @@ class SessionFlowFixture:
 
     async def control(self, request):
         self._database()
+        if request.method == "PATCH":
+            try:
+                payload = await request.json()
+            except (ValueError, UnicodeDecodeError):
+                return JSONResponse({"detail": "Invalid owned Review revision control."}, status_code=403)
+            if (not self.review_mode or not isinstance(payload, dict)
+                    or set(payload) != {"session_id", "expected_revision"}
+                    or type(payload["session_id"]) is not int
+                    or payload["session_id"] not in self.session_ids
+                    or type(payload["expected_revision"]) is not int
+                    or payload["expected_revision"] != 1):
+                return JSONResponse({"detail": "Invalid owned Review revision control."}, status_code=403)
+            sid = payload["session_id"]
+            current = self.backend.get_plan_draft(sid)
+            if current["plan_revision"] != 1:
+                return JSONResponse({"detail": "Review fixture revision already advanced."}, status_code=409)
+            plan = current["plan"]
+            plan["look"] = f"Synthetic Review session {sid}, revision 2."
+            self.backend.save_plan_draft(sid, self.backend.PlanDraftIn(plan=plan, expected_revision=1))
+            for take_id in READY_TAKE_IDS:
+                self.backend.prepare_take_endpoint(sid, take_id, self.backend.TakePrepareIn(
+                    plan_revision=2, manual_completion=None, adaptations=None,
+                ))
+            self.revision_controls.append({**payload, "plan_revision": 2})
+            return JSONResponse(self._session(sid))
         if request.method == "POST":
             if self.session_ids or self.baseline_counts is not None:
                 return JSONResponse({"detail": "Session flow fixture is already active."}, status_code=409)
+            try:
+                payload = await request.json() if request.headers.get("content-type") == "application/json" else {}
+            except (ValueError, UnicodeDecodeError):
+                return JSONResponse({"detail": "Invalid session fixture mode."}, status_code=403)
+            if not isinstance(payload, dict) or (payload and (
+                set(payload) != {"review"} or payload["review"] is not True
+            )):
+                return JSONResponse({"detail": "Invalid session fixture mode."}, status_code=403)
             self.baseline_counts = self._counts()
+            self.review_mode = payload == {"review": True}
             self.requests.clear()
             try:
                 self._create()

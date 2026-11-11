@@ -26,18 +26,20 @@
   `npm --prefix frontend run build`.
 - The opt-in Playwright E2E suite is `npm --prefix frontend run e2e`; it uses a
   sanitized Vite production build and isolated FastAPI harness. Its test-only
-  ModelDetail fixture permits scoped writes to synthetic models. A2b adds owned
-  resource-v1 session fixtures with real handler setup, scoped Submit/Prepare
-  runtime writes, request audits, SQLite snapshots and frozen response barriers.
-  D2 adds byte-exact HTML preflight and per-document SHA256-bound checks, plus
-  process-close/stream-drain observation with distinct graceful/forced/failed
-  outcomes and separate root cleanup. The Windows-only Selector harness has a
-  bounded shutdown deadline; Linux keeps its normal event loop. D2 lifecycle
-  checks and real preflight-failure teardown passed, but altered HTTP HTML keeps
-  functional A2b on HOLD. Historical A1/A2a passes do not validate the final
-  shared-helper changes. Setup, evidence and limits are in `docs/e2e-testing.md`;
-  canonical deployment state is in `agent_docs/project_progress.md` and
-  `agent_docs/latest_session_work.md`.
+  ModelDetail fixture permits scoped writes to synthetic models. The A2b session
+  fixture uses real handlers for synthetic resource-v1 plans, bounded
+  Submit/Prepare writes, request audits, SQLite snapshots and response barriers.
+  A2c Review is GET-only: its fixture starts unapproved, exposes one separately
+  audited revision-advance control through real handlers, and checks complete
+  persisted rows remain unchanged by reads. Approval is a separate action.
+  Byte-exact HTML preflight and SHA256-bound document checks reject altered
+  responses. Lifecycle monitoring distinguishes graceful, forced and failed
+  outcomes, drains process streams and separately audits owned-root removal; the
+  Windows Selector loop has a bounded shutdown deadline, while Linux retains its
+  normal loop. A2b passed Linux run 42942686174; A2c has no Linux browser result.
+  Windows HTML injection still blocks browser tests at preflight. Setup, evidence
+  and limits are in `docs/e2e-testing.md`; canonical deployment state is in
+  `agent_docs/project_progress.md` and `agent_docs/latest_session_work.md`.
 - GitHub Actions runs the backend suite on Python 3.12 after installing the
   frontend lockfile with Node 22 and `npm ci`; a separate Node 22 job runs
   `npm ci` and builds the frontend.
