@@ -238,6 +238,126 @@ function Assert-ChromiumOwnershipSelfCheck {
     }
 }
 
+function Get-SymlinkTestOutcomeFromJUnitXml([string]$XmlText) {
+    if ([string]::IsNullOrWhiteSpace($XmlText)) { throw 'The focused symlink JUnit XML is empty.' }
+    $document = [Xml.XmlDocument]::new()
+    $document.XmlResolver = $null
+    try { $document.LoadXml($XmlText) }
+    catch { throw 'The focused symlink JUnit XML is malformed.' }
+
+    $root = $document.DocumentElement
+    if ($null -eq $root -or $root.LocalName -ne 'testsuites') { throw 'The focused symlink JUnit XML has an unexpected root.' }
+    $rootElements = @($root.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+    if ($rootElements.Count -ne 1 -or $rootElements[0].LocalName -ne 'testsuite') {
+        throw 'The focused symlink JUnit XML must contain exactly one testsuite.'
+    }
+    $suite = $rootElements[0]
+    $allowedSuiteElements = @('properties', 'testcase', 'system-out', 'system-err')
+    $unexpectedSuiteElements = @($suite.ChildNodes | Where-Object {
+        $_.NodeType -eq [Xml.XmlNodeType]::Element -and $_.LocalName -notin $allowedSuiteElements
+    })
+    if ($unexpectedSuiteElements.Count -gt 0) { throw 'The focused symlink testsuite contains an unsupported result element.' }
+
+    $testCases = @($document.SelectNodes('/testsuites/testsuite/testcase'))
+    if ($testCases.Count -ne 1) { throw "The focused symlink JUnit XML must contain exactly one testcase; found $($testCases.Count)." }
+    $testCase = $testCases[0]
+    if ($testCase.GetAttribute('classname') -ne 'tests.test_e2e_harness_independent' -or
+        $testCase.GetAttribute('name') -ne 'test_owned_root_and_paths_reject_synthetic_symlinks_when_supported') {
+        throw 'The focused symlink JUnit testcase identity did not match the expected test.'
+    }
+    $allowedCaseElements = @('failure', 'error', 'skipped', 'system-out', 'system-err')
+    $unexpectedCaseElements = @($testCase.ChildNodes | Where-Object {
+        $_.NodeType -eq [Xml.XmlNodeType]::Element -and $_.LocalName -notin $allowedCaseElements
+    })
+    if ($unexpectedCaseElements.Count -gt 0) { throw 'The focused symlink testcase contains an unsupported result element.' }
+
+    $suiteCounts = @{}
+    foreach ($name in @('tests', 'failures', 'errors', 'skipped')) {
+        $value = 0
+        if (-not $suite.HasAttribute($name) -or -not [int]::TryParse($suite.GetAttribute($name), [ref]$value) -or $value -lt 0) {
+            throw "The focused symlink JUnit testsuite has a missing or invalid '$name' count."
+        }
+        $suiteCounts[$name] = $value
+        if ($root.HasAttribute($name)) {
+            $rootValue = 0
+            if (-not [int]::TryParse($root.GetAttribute($name), [ref]$rootValue) -or $rootValue -ne $value) {
+                throw "The focused symlink JUnit root '$name' count is invalid or inconsistent."
+            }
+        }
+    }
+    if ($suiteCounts.tests -ne 1 -or $suiteCounts.failures -ne 0 -or $suiteCounts.errors -ne 0 -or
+        $suiteCounts.skipped -gt 1) {
+        throw 'The focused symlink JUnit aggregate counts are inconsistent or report failures.'
+    }
+
+    $failureCount = @($testCase.SelectNodes('.//failure')).Count
+    $errorCount = @($testCase.SelectNodes('.//error')).Count
+    $skippedNodes = @($testCase.SelectNodes('.//skipped'))
+    if ($failureCount -ne $suiteCounts.failures -or $errorCount -ne $suiteCounts.errors -or
+        $skippedNodes.Count -ne $suiteCounts.skipped -or $failureCount -ne 0 -or $errorCount -ne 0) {
+        throw 'The focused symlink testcase result does not match its aggregate counts or has failed.'
+    }
+    if ($skippedNodes.Count -eq 0 -and $suiteCounts.skipped -eq 0) {
+        return [pscustomobject]@{ outcome = 'executed-passed'; skipReason = $null }
+    }
+    if ($skippedNodes.Count -ne 1 -or $suiteCounts.skipped -ne 1) {
+        throw 'The focused symlink test has an unsupported or ambiguous skipped result.'
+    }
+    $skipReason = $skippedNodes[0].GetAttribute('message')
+    if ([string]::IsNullOrWhiteSpace($skipReason)) { $skipReason = $skippedNodes[0].InnerText.Trim() }
+    if ($skipReason -cnotmatch '^Directory symlinks are unavailable in this environment:\s*\S') {
+        throw 'The focused symlink test was skipped for an unknown or missing reason.'
+    }
+    return [pscustomobject]@{ outcome = 'skipped-unavailable'; skipReason = $skipReason }
+}
+
+function Get-SymlinkTestOutcomeFromJUnitFile([string]$ReportPath) {
+    if (-not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) { throw 'The focused symlink JUnit report was not created.' }
+    return Get-SymlinkTestOutcomeFromJUnitXml ([IO.File]::ReadAllText($ReportPath))
+}
+
+function Assert-SymlinkJUnitParserSelfCheck {
+    $className = 'tests.test_e2e_harness_independent'
+    $testName = 'test_owned_root_and_paths_reject_synthetic_symlinks_when_supported'
+    $testCase = "<testcase classname=`"$className`" name=`"$testName`" time=`"0.001`" />"
+    $passedXml = "<testsuites name=`"pytest tests`"><testsuite tests=`"1`" failures=`"0`" errors=`"0`" skipped=`"0`">$testCase</testsuite></testsuites>"
+    $skippedCase = "<testcase classname=`"$className`" name=`"$testName`" time=`"0.001`"><skipped type=`"pytest.skip`" message=`"Directory symlinks are unavailable in this environment: synthetic privilege unavailable`" /></testcase>"
+    $skippedXml = "<testsuites name=`"pytest tests`"><testsuite tests=`"1`" failures=`"0`" errors=`"0`" skipped=`"1`">$skippedCase</testsuite></testsuites>"
+
+    $passed = Get-SymlinkTestOutcomeFromJUnitXml $passedXml
+    if ($passed.outcome -ne 'executed-passed' -or $null -ne $passed.skipReason) {
+        throw 'The focused symlink JUnit parser self-check rejected a valid pass.'
+    }
+    $skipped = Get-SymlinkTestOutcomeFromJUnitXml $skippedXml
+    if ($skipped.outcome -ne 'skipped-unavailable' -or $skipped.skipReason -notmatch 'synthetic privilege unavailable') {
+        throw 'The focused symlink JUnit parser self-check rejected a valid unavailable-symlink skip.'
+    }
+
+    $invalidXml = @(
+        '<testsuites>',
+        $passedXml.Replace("name=`"$testName`"", 'name="unexpected-test"'),
+        $passedXml.Replace('tests="1"', 'tests="2"').Replace('</testsuite>', "$testCase</testsuite>"),
+        $passedXml.Replace('failures="0"', 'failures="1"').Replace(' />', '><failure message="synthetic failure" /></testcase>'),
+        $passedXml.Replace('errors="0"', 'errors="1"').Replace(' />', '><error message="synthetic error" /></testcase>'),
+        $passedXml.Replace(' errors="0"', ''),
+        $passedXml.Replace('skipped="0"', 'skipped="2"'),
+        $passedXml.Replace('<testsuites name="pytest tests">', '<testsuites name="pytest tests" tests="2">'),
+        $skippedXml.Replace('Directory symlinks are unavailable in this environment:', 'Unknown symlink skip:')
+    )
+    foreach ($xml in $invalidXml) {
+        $rejected = $false
+        try { $null = Get-SymlinkTestOutcomeFromJUnitXml $xml }
+        catch { $rejected = $true }
+        if (-not $rejected) { throw 'The focused symlink JUnit parser self-check accepted an invalid result.' }
+    }
+    $missingReport = Join-Path $logs 'symlink-parser-self-check-missing.xml'
+    if (Test-Path -LiteralPath $missingReport) { throw 'Refusing to use an existing synthetic missing-report path.' }
+    $missingReportRejected = $false
+    try { $null = Get-SymlinkTestOutcomeFromJUnitFile $missingReport }
+    catch { $missingReportRejected = $true }
+    if (-not $missingReportRejected) { throw 'The focused symlink JUnit parser self-check accepted a missing report.' }
+}
+
 function Wait-ForChromiumExit([object[]]$Baseline) {
     $baselineIds = @{}
     $baselineByPid = @{}
@@ -488,6 +608,8 @@ Write-Host "E2E_RUNTIME node=$nodeVersion python=$pythonVersion playwright=$play
 
 Assert-ChromiumOwnershipSelfCheck
 Write-Host 'CHROMIUM_IDENTITY_SELF_CHECK=passed'
+Assert-SymlinkJUnitParserSelfCheck
+Write-Host 'SYMLINK_JUNIT_PARSER_SELF_CHECK=passed'
 
 $baseAncestry = Invoke-LoggedProcess -Name 'git-base-ancestry' -Executable 'git' -Arguments @('merge-base', '--is-ancestor', $DiffBase, 'HEAD')
 Assert-PhaseSuccess $baseAncestry
@@ -540,14 +662,17 @@ for ($iteration = 1; $iteration -le 3; $iteration++) {
     if ($inventoryFailure) { throw $inventoryFailure }
 }
 
+$symlinkReportPath = Join-Path $logs 'symlink-coverage.report.xml'
+if (Test-Path -LiteralPath $symlinkReportPath) { throw 'Refusing to overwrite the focused symlink JUnit report.' }
 $symlinkTest = Invoke-LoggedProcess -Name 'symlink-coverage' -Executable $python -Arguments @(
-    '-m', 'pytest', '-q', '-rs', 'tests/test_e2e_harness_independent.py::test_owned_root_and_paths_reject_synthetic_symlinks_when_supported'
+    '-m', 'pytest', '-o', 'addopts=', "--junitxml=$symlinkReportPath", '-ra',
+    'tests/test_e2e_harness_independent.py::test_owned_root_and_paths_reject_synthetic_symlinks_when_supported'
 )
 if ($symlinkTest.exitCode -ne 0) { throw 'The focused symlink coverage test failed.' }
-$symlinkOutput = "$($symlinkTest.stdout)`n$($symlinkTest.stderr)"
-$skip = [regex]::Match($symlinkOutput, '(?im)^SKIPPED\s+\[\d+\]\s+[^\r\n]*Directory symlinks are unavailable in this environment: ([^\r\n]+)')
-$symlinkOutcome = if ($skip.Success) { 'skipped-unavailable' } elseif ($symlinkOutput -match '(?im)^1 passed(?:\s|$)') { 'executed-passed' } else { throw 'The symlink test outcome could not be identified; no coverage claim is allowed.' }
-$symlinkReceipt = [ordered]@{ test = 'test_owned_root_and_paths_reject_synthetic_symlinks_when_supported'; outcome = $symlinkOutcome; skipReason = if ($skip.Success) { "Directory symlinks are unavailable in this environment: $($skip.Groups[1].Value)" } else { $null } }
+try { $symlinkResult = Get-SymlinkTestOutcomeFromJUnitFile $symlinkReportPath }
+catch { throw "The symlink test outcome could not be identified; no coverage claim is allowed. $($_.Exception.Message)" }
+$symlinkOutcome = $symlinkResult.outcome
+$symlinkReceipt = [ordered]@{ test = 'test_owned_root_and_paths_reject_synthetic_symlinks_when_supported'; outcome = $symlinkOutcome; skipReason = $symlinkResult.skipReason }
 [IO.File]::WriteAllText((Join-Path $logs 'symlink-coverage-audit.json'), ($symlinkReceipt | ConvertTo-Json -Depth 4), $utf8)
 Write-Host "SYMLINK_COVERAGE $($symlinkReceipt | ConvertTo-Json -Compress)"
 
