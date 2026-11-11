@@ -1,63 +1,73 @@
 # Latest Session Work
 
-## A2a Handoff
+## A2b-D2 Handoff: Lifecycle Corrected, Functional E2E Still HOLD
 
-Deployment `idevgen-410-a2a`, Medium, starts at clean
-`main@d7cc18bd1e0ed77565cc7da97cc163ddeea6a770` after the accepted A1/Authoring
-integration. Scope: browser navigation and ModelDetail identity only. All new
-work remains unstaged/uncommitted. No product code, dependencies or CI change.
+Deployment `idevgen-410-a2bd2`, Medium, starts at
+`main@a9bbc2e0a60724eee78198e06aafd41270d6ae4d` with fourteen unstaged A2b files.
+Main captured all original hashes and byte copies before editing, outside the
+repository. No staging, commit, push, product/dependency/CI change is authorized.
+The six A2b scenario/fixture assets outside the authorized shared guard/server
+edits must keep their original hashes. Documentation is updated for this handoff.
 
-## Implementation
+## Cause and Implementation
 
-- `frontend/e2e/fixtures.mjs` shares A1 browser HTTP/redirect/WebSocket guards as
-  an automatic fixture. Its explicit PATCH barrier fetches the real FastAPI
-  response, then holds delivery until released; it never manufactures API data.
-- `frontend/e2e/model-detail.e2e.mjs` adds three scenarios. One preserves separate
-  model/Legacy drafts through A-to-B-to-A and Back/Forward without writes. Two
-  hold a committed A PATCH, edit A again, navigate/edit B, then release on B or
-  after returning to A. They assert exact IDs/payloads, persisted snapshots,
-  zero extra writes, exactly two explicit A PATCHes and retained B drafts.
-- `scripts/e2e_harness/model_detail.py` creates/removes only its two synthetic
-  models through real validators/handlers. It verifies the temporary database
-  identity before control actions and captures PATCH payload/status evidence.
-- `scripts/e2e_harness/server.py` extends its default-deny middleware solely for
-  fixture controls, GET rooms while active and GET/PATCH on owned model IDs.
-  Other product writes and file previews remain forbidden. A1 startup identity,
-  raw socket/HTTPX guards, owned paths and process teardown are unchanged.
-- `tests/test_e2e_model_detail.py` verifies the real PATCH and 422 contract,
-  rejection of foreign IDs/queries/config/session writes, precise cleanup and
-  zero mutation when the fixture's database lies outside its owned root.
+D1 identified injected tags already present in Node HTTP response bytes before
+Chromium/React. The build has 417 bytes; received HTML is contaminated. In the
+before-fix lifecycle reproduction CPython Proactor raised WinError10022 before
+closing/detaching a transport; Server.wait_closed retained active=2. After stop,
+Node killed its owned process at fifteen seconds. The original OS trigger for
+that socket error and any causal connection to the injector remain unproven.
 
-## Executed Evidence
+- `scripts/e2e_harness/server.py`: choose Windows Selector only, construct loop
+  before the existing guard, retain blocking stdin thread and signal stop with
+  call_soon_threadsafe. A real deadline bounds server completion after stop.
+  Timeout or controlled failure cannot print clean=true.
+- `frontend/e2e/lifecycle.mjs`: capture both streams and received event order,
+  await child close plus reader drain, record forced termination and code/signal.
+  Graceful success requires marker + exit0 + no signal/kill. Do not signal a PID
+  whose process has already exited while its pipes remain open.
+- `frontend/e2e/global-setup.mjs`: use that observer, report server outcome and
+  owned-root removal independently, and reject contaminated HTML in preflight.
+- `frontend/e2e/preflight.mjs` plus `fixtures.mjs`: compare exact original build
+  bytes; bind the per-document guard to the recorded SHA256 before fulfillment.
+  Never strip injected tags, alter the response to pass, or permit another host.
+- `frontend/e2e/owned-root.node-check.mjs` and `tests/test_e2e_lifecycle.py`:
+  intact/altered HTML, drained output, normal stdin shutdown, forced timeout and
+  controlled failure cannot masquerade as a clean exit.
 
-Windows, Node 22.23.4, project Python 3.12.14, pinned A1 Playwright/Chromium.
+A read-only audit found no required corrections. Its minor finding, duplicated
+stdout lines in the startup parser, was removed; the shared observer owns capture.
 
-- `npm --prefix frontend run e2e`: three Node checks and four Chromium tests
-  passed. A first four-test implementation run also passed.
-- `node frontend/node_modules/@playwright/test/cli.js test
-  --config=frontend/playwright.config.js model-detail.e2e.mjs --repeat-each=3`:
-  nine passed, one worker, no retries.
-- `npm --prefix frontend test`: 1,007 passed in 67 files.
-- `python -m pytest -ra tests/test_api.py tests/test_e2e_model_detail.py
-  tests/test_e2e_harness_safety.py tests/test_e2e_harness_independent.py
-  tests/test_no_personal_data.py tests/test_shoot_checks.py`:
-  285 passed, one skip (Windows directory symlink privilege unavailable).
-- `node frontend/e2e/build-production.mjs`: production build passed with the
-  existing chunk-size warning; E2E also ran that sanitized build.
-- Final full E2E and repeated-scenario runs both reported clean shutdown;
-  independent PID checks, exclusive port rebinds and before/after temporary-root
-  inventories passed. No real services or production data were accessed.
+## Executed Verification
 
-Raw logs and teardown receipts remain outside the repository in the temporary
-A2a evidence directory. Public commands and limitations belong in
-`docs/e2e-testing.md`. Full Python was not rerun for A2a: relevant API/harness
-and privacy/source suites were run as requested. No failing test or isolation
-failure occurred during this deployment.
+Node 22.23.4, Python 3.12.14, existing pinned Playwright/Chromium, Windows.
 
-## Decision and Stop
+- Existing/new Node checks: seven passed.
+- Python pertinent command includes test_api, test_e2e_lifecycle,
+  test_e2e_session_flow, test_e2e_model_detail, test_e2e_harness_safety,
+  test_e2e_harness_independent, test_no_personal_data and test_shoot_checks:
+  291 passed, one skip (Windows directory symlink privilege unavailable).
+- Full frontend: 1,007 passed across 67 files.
+- `npm --prefix frontend run e2e -- --max-failures=1` ran the sanitized real
+  build and Node checks, then failed intentionally at HTML integrity preflight:
+  expected417 bytes, received906. No functional test body was executed.
+- That error still produced termination=graceful, forced=false, code=0,
+  signal=none, streams_drained=true, E2E_SERVER_STOPPED clean=true and
+  E2E_ROOT_REMOVED clean=true. Independent PID/port/root checks passed.
 
-GO for A2b when separately authorized. Stop here with no staging, commit or push.
-Windows executed; Linux unexecuted. Model drafts survive only within the current
-SPA ModelDetail instance, not a reload or unmount. The response barrier tests
-successful committed PATCH delivery, not failure/offline/restart behavior.
-No visual/GPU, accessibility audit or real provider acceptance is claimed.
+Raw logs, before.json and original byte copies are retained outside the repo in
+an owned temporary A2b-D2 evidence directory. D1 before-fix traces/timelines and
+original A2b failure evidence remain separately preserved. Build chunk-size and
+existing Python warnings remain; no dependencies were upgraded.
+
+## Continuation and Limits
+
+Lifecycle and integrity correction are ready for review; functional A2b remains
+HOLD until a clean environment supplies unaltered HTML. Do not permit the
+injected origin, disable the guard, reconfigure user software, or manufacture a
+clean response. A clean-HTML Chromium smoke and the full A1/A2a/A2b scenarios
+and repetitions remain unexecuted in D2. Linux was not run. Selector's Windows
+socket/subprocess limitations fit this one-worker harness with stdin in a thread;
+do not apply that choice to the product backend or add asyncio subprocesses here.
+No real providers, generation or production data were used. Stop without
+staging/commit/push or starting the next task.

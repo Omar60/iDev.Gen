@@ -1,5 +1,33 @@
 # Project Diary
 
+## A2b-D2 Clean Shutdown and Integrity
+
+Bound the actual server completion after a stop request; a timeout in a finally
+block after an unbounded await cannot protect that path. Keep process exit,
+stream drain, clean protocol marker and physical root cleanup as separate facts.
+Forced termination or a nonzero exit must fail even if a marker was printed.
+
+A response guard that fetches through Node can receive injected HTML before the
+browser sees it. Compare original build bytes before functional tests and at
+document delivery; reject differences without stripping tags or extending the
+network allowlist. A correctly rejected contaminated response and clean teardown
+do not establish a passing functional browser suite.
+
+## A2b Isolation Gates and Request Barriers
+
+Passing a test body does not pass its fixtures or global teardown. Unexpected
+cross-origin requests must remain visible even when blocked; injected browser
+content is an environment hypothesis, not permission to allow its host. A dead
+owned process and reclaimed port are separate from a clean-stop marker. Keep
+those failures distinct until their causes are demonstrated, and stop later
+gates rather than hide them behind retries or assertions on UI alone.
+
+Copy and freeze request-barrier options before validation and delivery; retaining
+the caller's mutable object can invalidate a validated target. Treat session
+folder deletion warnings as fixture failures and retain ownership IDs for safe
+recovery. Valid synthetic plans need all required descriptive choices; complete
+fixture preconditions instead of weakening the real Prepare contract.
+
 ## E2E A2a Navigation and Committed Responses
 
 Delay delivery after fetching the real FastAPI response to distinguish a

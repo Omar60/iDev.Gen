@@ -1,0 +1,165 @@
+name: Temporary A2b Linux validation
+
+'on':
+  push:
+    branches: [e2e-a2b-validation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-a2b-validation
+  cancel-in-progress: false
+
+jobs:
+  isolated-e2e:
+    if: github.ref == 'refs/heads/e2e-a2b-validation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: 'true'
+      PLAYWRIGHT_BROWSERS_PATH: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Prepare private temporary directories
+        run: |
+          test "$RUNNER_OS" = Linux
+          temporary="$RUNNER_TEMP/idevgen-a2b-tmp"
+          mkdir -p "$temporary" "$RUNNER_TEMP/idevgen-a2b-logs" "$RUNNER_TEMP/idevgen-a2b-traces"
+          printf 'TMPDIR=%s\n' "$temporary" >> "$GITHUB_ENV"
+
+      - name: Check out the validation commit without persistent credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install project dependencies in a fresh environment
+        run: |
+          test "$GITHUB_REF" = refs/heads/e2e-a2b-validation
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor a9bbc2e0a60724eee78198e06aafd41270d6ae4d HEAD
+          test ! -e config.json
+          test ! -d data/sessions
+          python -m venv .venv
+          .venv/bin/python -m pip install -r backend/requirements-dev.txt
+          npm ci --prefix frontend
+          npm --prefix frontend run e2e:install -- --with-deps
+          node --version
+          .venv/bin/python --version
+          node frontend/node_modules/@playwright/test/cli.js --version
+          node -e "const b=require('./frontend/node_modules/playwright-core/browsers.json').browsers.find(x=>x.name==='chromium'); console.log(JSON.stringify(b))"
+
+      - name: Validate build, integrity, suites and owned lifecycle
+        id: validation
+        run: |
+          .venv/bin/python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          if sys.platform != "linux":
+              raise SystemExit("This process/socket audit is Linux-only.")
+          temporary = Path(os.environ["TMPDIR"])
+          logs = Path(os.environ["RUNNER_TEMP"]) / "idevgen-a2b-logs"
+          traces = Path(os.environ["RUNNER_TEMP"]) / "idevgen-a2b-traces"
+          cli = "frontend/node_modules/@playwright/test/cli.js"
+          python = ".venv/bin/python"
+          ready = re.compile(r"^E2E_SERVER_READY base_url=http://127\.0\.0\.1:(\d+) pid=(\d+) ", re.M)
+
+          def roots():
+              return sorted(str(path) for path in temporary.glob("idevgen-e2e-*"))
+
+          def listening(port):
+              # Read-only LISTEN inspection; never connect to a potentially reused port.
+              for table in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+                  for line in table.read_text().splitlines()[1:]:
+                      fields = line.split()
+                      if fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == port:
+                          return True
+              return False
+
+          def audit(text, phase):
+              receipt = {"phase": phase, "servers": [], "remaining_roots": roots()}
+              matches = ready.findall(text)
+              for port, pid in matches:
+                  port, pid = int(port), int(pid)
+                  try:
+                      os.kill(pid, 0)
+                      absent = False
+                  except ProcessLookupError:
+                      absent = True
+                  receipt["servers"].append({"pid": pid, "port": port, "pid_absent": absent, "listener_absent": not listening(port)})
+              receipt["html_intact"] = "E2E_HTML_PREFLIGHT clean=true" in text
+              receipt["graceful"] = "E2E_SERVER_EXIT termination=graceful forced=false code=0 signal=none streams_drained=true" in text
+              receipt["clean_stop"] = "E2E_SERVER_STOPPED clean=true" in text
+              receipt["root_removed"] = "E2E_ROOT_REMOVED clean=true" in text
+              (logs / f"{phase}-audit.json").write_text(json.dumps(receipt, indent=2))
+              print(json.dumps(receipt), flush=True)
+              if len(matches) != 1 or not all(receipt[key] for key in ("html_intact", "graceful", "clean_stop", "root_removed")):
+                  raise RuntimeError("HTML integrity or graceful lifecycle evidence is missing.")
+              if receipt["remaining_roots"] or not all(item["pid_absent"] and item["listener_absent"] for item in receipt["servers"]):
+                  raise RuntimeError("Owned server, listener or temporary root survived teardown.")
+
+          def run(phase, command, harness=False):
+              if roots():
+                  raise RuntimeError("Unexpected E2E root exists before the next phase; no cleanup/reuse attempted.")
+              print(f"PHASE {phase}: {json.dumps(command)}", flush=True)
+              with (logs / f"{phase}.log").open("w") as output:
+                  result = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, text=True)
+              text = (logs / f"{phase}.log").read_text(errors="replace")
+              print(text, flush=True)
+              if harness:
+                  audit(text, phase)
+              if result.returncode:
+                  raise SystemExit(result.returncode)
+              if roots():
+                  raise RuntimeError("A validation phase leaked an E2E root.")
+
+          run("build", ["node", "frontend/e2e/build-production.mjs"])
+          run("node-checks", ["node", "--test", "frontend/e2e/owned-root.node-check.mjs"])
+          preflight = "import setup from './frontend/e2e/global-setup.mjs'; const stop=await setup({workers:1}); await stop();"
+          run("preflight", ["node", "--input-type=module", "-e", preflight], harness=True)
+          run("python", [python, "-m", "pytest", "-ra"])
+          run("frontend", ["npm", "--prefix", "frontend", "test"])
+          # Three independent runs, not retries: stop on the first failure.
+          # A fresh server avoids retaining A1's intentional denial probes across runs.
+          for iteration in range(1, 4):
+              run(f"e2e-pass-{iteration}", [
+                  "node", cli, "test", "--config=frontend/playwright.config.js",
+                  "--workers=1", "--retries=0", "--max-failures=1",
+                  f"--output={traces / f'pass-{iteration}'}",
+              ], harness=True)
+          run("privacy", [python, "-m", "pytest", "-ra", "tests/test_no_personal_data.py", "tests/test_shoot_checks.py"])
+          run("diff-check", ["git", "diff", "--check", "a9bbc2e0a60724eee78198e06aafd41270d6ae4d", "HEAD"])
+          PY
+
+      - name: Retain only failure diagnostics from synthetic validation
+        if: ${{ failure() && steps.validation.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-a2b-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 3
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/idevgen-a2b-logs/*.log
+            ${{ runner.temp }}/idevgen-a2b-logs/*-audit.json
+            ${{ runner.temp }}/idevgen-a2b-traces/**/trace.zip
+            ${{ runner.temp }}/idevgen-a2b-traces/**/error-context.md

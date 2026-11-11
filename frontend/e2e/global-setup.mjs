@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
-import { createInterface } from 'node:readline'
+import { createHash, randomBytes } from 'node:crypto'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createOwnedRoot, ownedPath, cleanupOwnedRoot } from './owned-root.mjs'
+import { cleanStop, observeChild, stopOwnedServer } from './lifecycle.mjs'
+import { assertHTMLIntegrity } from './preflight.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const frontend = path.resolve(here, '..')
@@ -57,12 +58,9 @@ function childEnvironment(owned, configPath, dataPath, nonce, pythonPath) {
   return env
 }
 
-function waitForReady(child, nonce, rootToken, timeoutMs) {
+function waitForReady(child, observed, nonce, rootToken, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const lines = []
-    const errors = []
-    const stdout = createInterface({ input: child.stdout })
-    const stderr = createInterface({ input: child.stderr })
+    const { lines, errors, stdout } = observed
     const timer = setTimeout(() => finish(new Error(`E2E server startup timed out.\n${errors.join('\n')}`)), timeoutMs)
     let settled = false
     const finish = (error, identity) => {
@@ -73,7 +71,6 @@ function waitForReady(child, nonce, rootToken, timeoutMs) {
       else resolve({ identity, lines, errors })
     }
     stdout.on('line', (line) => {
-      lines.push(line)
       const match = readyPattern.exec(line)
       if (!match) return
       const identity = {
@@ -92,38 +89,11 @@ function waitForReady(child, nonce, rootToken, timeoutMs) {
         finish(null, identity)
       }
     })
-    stderr.on('line', (line) => errors.push(line))
-    child.once('exit', () => { stdout.close(); stderr.close() })
     child.once('error', (error) => finish(new Error(`E2E server process could not start: ${error.message}`)))
-    child.once('exit', (code, signal) => {
+    child.once('close', (code, signal) => {
       if (!settled) finish(new Error(`E2E server exited before readiness (code=${code}, signal=${signal}).\n${[...lines, ...errors].join('\n')}`))
     })
   })
-}
-
-async function stopOwnedServer(child, timeoutMs = 15000) {
-  if (child.exitCode !== null || child.signalCode !== null) return
-  const exited = new Promise((resolve) => child.once('exit', resolve))
-  if (!child.stdin.destroyed) child.stdin.write('stop\n')
-  let timer
-  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) })
-  if (await Promise.race([exited.then(() => true), timeout]) === true) {
-    clearTimeout(timer)
-    return
-  }
-  clearTimeout(timer)
-  child.kill()
-  let killTimer
-  const killed = await Promise.race([
-    new Promise((resolve) => child.once('exit', () => resolve(true))),
-    new Promise((resolve) => { killTimer = setTimeout(() => resolve(false), 5000) }),
-  ])
-  clearTimeout(killTimer)
-  if (!killed) throw new Error(`E2E server process ${child.pid} did not exit after its owned-process termination request.`)
-}
-
-async function removeOwnedTemp(owned) {
-  await cleanupOwnedRoot(owned)
 }
 
 export default async function globalSetup(playwrightConfig) {
@@ -134,8 +104,23 @@ export default async function globalSetup(playwrightConfig) {
     throw new Error(`The E2E harness requires exactly one resolved Playwright worker; found ${playwrightConfig?.workers}.`)
   }
   const python = await pythonCommand()
+  const expectedHTML = await readFile(path.join(frontend, 'dist', 'index.html'))
   const owned = await createOwnedRoot()
   let child
+  let observed
+  const finish = async () => {
+    let result
+    if (child) {
+      result = await stopOwnedServer(child, observed)
+      console.log(`E2E_SERVER_EXIT termination=${result.termination} forced=${result.forced} code=${result.code} signal=${result.signal || 'none'} streams_drained=${result.streamsDrained}`)
+    }
+    await cleanupOwnedRoot(owned)
+    console.log('E2E_ROOT_REMOVED clean=true')
+    if (result && result.termination !== 'graceful') {
+      throw new Error(`E2E shutdown was not graceful: ${JSON.stringify(result)}.\n${observed.events.map((event) => JSON.stringify(event)).join('\n')}`)
+    }
+    if (result) console.log(cleanStop)
+  }
   try {
     const nonce = randomBytes(24).toString('hex')
     const paths = {
@@ -180,7 +165,8 @@ export default async function globalSetup(playwrightConfig) {
       env: childEnvironment(owned, paths.config, paths.data, nonce, python.pythonPath),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
-    const { identity, lines, errors } = await waitForReady(child, nonce, owned.token, 60000)
+    observed = observeChild(child)
+    const { identity, lines, errors } = await waitForReady(child, observed, nonce, owned.token, 60000)
     if (identity.port < 1 || identity.port > 65535) throw new Error('E2E server reported an invalid loopback port.')
     console.log(lines.find((line) => line.startsWith('E2E_SERVER_READY ')))
 
@@ -193,6 +179,7 @@ export default async function globalSetup(playwrightConfig) {
       startupLog: lines,
       startupErrors: errors,
       stateFile: paths.state,
+      htmlSHA256: createHash('sha256').update(expectedHTML).digest('hex'),
     }
     await writeFile(paths.state, `${JSON.stringify(runtime, null, 2)}\n`)
 
@@ -205,28 +192,17 @@ export default async function globalSetup(playwrightConfig) {
     process.env.IDEVGEN_E2E_STATE = paths.state
     process.env.IDEVGEN_E2E_BASE_URL = identity.baseUrl
 
-    return async () => {
-      await stopOwnedServer(child)
-      const exitCode = child.exitCode
-      const stopLine = lines.find((line) => line === 'E2E_SERVER_STOPPED clean=true')
-      await removeOwnedTemp(owned)
-      if (!stopLine) {
-        throw new Error(`E2E server exited without clean shutdown evidence.\n${[...lines, ...errors].join('\n')}`)
-      }
-      console.log(stopLine)
-      if (exitCode !== 0) {
-        throw new Error(`E2E server exited with code ${exitCode}.\n${[...lines, ...errors].join('\n')}`)
-      }
-    }
+    const document = await fetch(`${identity.baseUrl}/`, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+    if (document.status !== 200) throw new Error(`E2E HTML preflight returned status ${document.status}.`)
+    assertHTMLIntegrity(expectedHTML, Buffer.from(await document.arrayBuffer()))
+    console.log('E2E_HTML_PREFLIGHT clean=true')
+    return finish
   } catch (error) {
-    if (child) {
-      try {
-        await stopOwnedServer(child, 5000)
-      } catch (stopError) {
-        throw new Error(`${error.message}\n${stopError.message}; owned temp root preserved at ${owned.root}`)
-      }
+    try {
+      await finish()
+    } catch (cleanupError) {
+      throw new Error(`${error.message}\nE2E cleanup failed: ${cleanupError.message}`, { cause: error })
     }
-    await removeOwnedTemp(owned)
     throw error
   }
 }

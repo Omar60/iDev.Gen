@@ -1,39 +1,47 @@
 # Project Progress
 
-## Current Deployment: A2a Navigation and ModelDetail E2E
+## Current Deployment: A2b-D2 Lifecycle and HTML Integrity
 
-Deployment `idevgen-410-a2a` uses Medium from clean
-`main@d7cc18bd1e0ed77565cc7da97cc163ddeea6a770`. A1 and the Authoring repair
-were integrated in two commits before this deployment. The user authorizes
-only A2a, with no staging, commit, push, dependency changes or mandatory CI gate.
-Main owns implementation and verification; Archivist owns public documentation
-and the closing usage report. No new OpenSpec change was selected.
+Deployment `idevgen-410-a2bd2` uses Medium on
+`main@a9bbc2e0a60724eee78198e06aafd41270d6ae4d`, with the fourteen unstaged A2b
+files retained. Their original bytes and SHA256 hashes were captured outside
+the repository before editing. A2b functional acceptance remains HOLD.
+Main owns implementation and verification; bounded read-only support audited
+lifecycle and integrity. No product, API, dependency or CI changes.
 
-## Delivered Boundary
+## Delivered Correction
 
-Three Chromium scenarios exercise real ModelDetail navigation, independent model
-and Legacy drafts, A-to-B-to-A, Back/Forward, and delayed real PATCH responses.
-Test-only fixtures create A/B through the real model validators and handlers in
-owned temporary SQLite. Only those IDs permit GET/PATCH. Config writes,
-session creation, foreign IDs, queries and other product writes remain denied.
-No product frontend/backend source, API contract or dependencies changed.
+The isolated server uses SelectorEventLoop only on Windows, before the egress
+guard. A blocking stdin thread signals stop through call_soon_threadsafe. The
+shutdown deadline now bounds the actual server task after stop; timeout cannot
+emit clean=true. Linux retains its normal event loop.
 
-## Verification
+The launcher observes process exit, close and drained stdout/stderr, preserves
+received event order and distinguishes graceful, forced and failed outcomes.
+Normal success requires the clean marker, exit zero, no signal and no kill.
+Owned-root removal is reported separately. HTML is compared byte-for-byte with
+the production build before functional tests and again before document delivery;
+SHA256 binds the browser guard to the original build. Differences are rejected
+without stripping injected content or permitting another origin.
 
-- E2E: four passed (three new scenarios plus A1 smoke); Node checks: three passed.
-- Determinism: the three new scenarios repeated three times, nine passed.
-- Full frontend: 1,007 passed across 67 files, Node 22.23.4.
-- Relevant Python including API, harness, privacy and source controls:
-  285 passed, one Windows symlink-capability skip.
-- Sanitized production build passed; existing large-chunk warning remains.
-- Both final browser runs emitted clean stop evidence. Independent audits found
-  no surviving owned PID or new temporary roots and exclusively rebound each
-  released port. Backend/socket and browser denial probes remain enforced.
+## Verified Evidence
 
-## Continuation
+- Node safety/lifecycle/integrity checks: seven passed.
+- Pertinent Python API, harness, lifecycle, privacy/source checks:
+  291 passed, one Windows symlink privilege skip.
+- Full frontend: 1,007 passed in 67 files.
+- Sanitized production build passed with the existing large-chunk warning.
+- Real E2E command: integrity preflight rejected 417 build bytes versus 906
+  received bytes before functional scenarios ran. Teardown reported graceful,
+  forced=false, code=0, signal=none, drained streams, clean=true and root removed.
+- Independent audit: owned PID absent, exclusive port rebind successful, no new
+  temporary roots. The read-only audit found no required correction.
 
-GO for A2b planning/implementation when separately authorized; A2b is not started.
-Changes remain unstaged and uncommitted for review. Windows executed; Linux
-commands are documented without a Linux run. Draft retention covers the current
-SPA ModelDetail instance, not a reload or navigation that unmounts it. This
-harness is not an OS sandbox; no real provider, GPU or generation was exercised.
+## Stop Boundary
+
+HOLD for functional A2b revalidation in this environment: it still alters HTML.
+No clean-HTML Chromium smoke, full functional E2E or repeats are claimed.
+No AdGuard/antivirus/proxy/user settings were changed and no host was allowlisted.
+D1 preserves the before-fix reproduction: Proactor retained two active
+connections and required a kill; Selector closed cleanly with the same injection.
+Windows executed; Linux remains unexecuted. Leave all work unstaged/uncommitted.

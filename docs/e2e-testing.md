@@ -2,8 +2,9 @@
 
 The opt-in Playwright suite builds the production React bundle and serves it from
 an isolated FastAPI process. It includes the A1 app-render/isolation smoke and
-three A2a ModelDetail navigation cases. A2a creates and removes synthetic models
-in the temporary database through the real model handlers and tests real model
+three A2a ModelDetail navigation cases, and implemented A2b Submit/Prepare
+cases whose independent acceptance is on HOLD. A2a creates and removes synthetic
+models in the temporary database through the real model handlers and tests real model
 PATCH requests. It does not run ComfyUI, a GPU, or generation, and is not a
 required job in `.github/workflows/ci.yml`.
 
@@ -49,8 +50,8 @@ npm run e2e:install
 npm run e2e
 ```
 
-`npm run e2e` runs the isolated production-build helper, three owned-root Node
-safety checks, then Playwright with one Chromium worker. The resolved
+`npm run e2e` runs the isolated production-build helper, seven owned-root/lifecycle/integrity Node
+checks, then Playwright with one Chromium worker. The resolved
 Playwright worker count must be exactly one; an override fails before the
 temporary root is created or the backend starts. Browser installation is a
 separate, one-time step for each Playwright version.
@@ -107,18 +108,110 @@ sibling ephemeral `127.0.0.1` listener over HTTP, WebSocket, and a redirect;
 the fixture checks that its TCP connection, HTTP request, redirect, and
 WebSocket upgrade counters all remain zero.
 
-Normal teardown asks the owned child to stop, waits for that exact process, and
-removes the temporary root only after checking its owner marker, direct-child
-location, and contents for links or reparse points. A successful teardown
-also requires the server's clean-stop marker and a zero exit code. Startup
-failures try to stop the child before cleanup. If that stop times out, the root
-is preserved and its path appears in the error; failed ownership checks also
-prevent deletion. These are harness-level checks, not an OS sandbox or network
-namespace.
+Before functional tests, `preflight.mjs` compares the root HTML response
+byte-for-byte with the production `index.html`. Its SHA256 is saved in runtime
+state; the browser guard checks every document response against those build
+bytes and that reference before fulfillment. A mismatch aborts delivery without
+stripping content or relaxing cross-origin, redirect or WebSocket denial.
 
-## Independent Windows verification
+Normal teardown asks the owned child to stop. `lifecycle.mjs` records received
+stdout/stderr and process events in order, waits for child close and both stream
+readers to drain, and distinguishes graceful, forced and failed termination.
+Graceful success requires the clean-stop marker, exit zero, no signal and no
+forced termination. Owned-root removal has a separate result and remains subject
+to owner-marker, direct-child and link/reparse-point checks. An unclosed child
+or undrained streams preserve the root; an already-exited PID is not signaled.
 
-The verified Windows run used Node.js 22.23.4, npm 10.9.9, Python 3.12.14,
+The Python harness selects SelectorEventLoop only on Windows, before installing
+the egress guard. A blocking stdin thread signals an asyncio event through
+`call_soon_threadsafe`; a ten-second deadline bounds actual server completion
+after stop. Timeout or failure cannot emit `clean=true`. Linux retains its normal
+event loop. This choice belongs to the one-worker test harness, not the product
+backend; do not introduce asyncio subprocesses here. These are harness-level
+checks, not an OS sandbox or network namespace.
+
+## A2b-D2 lifecycle correction and environment HOLD
+
+Deployment `idevgen-410-a2bd2` completes the bounded lifecycle/integrity correction;
+functional A2b acceptance remains HOLD. Windows verification passed seven Node
+checks, 291 pertinent Python checks with one symlink-privilege skip, and 1,007
+frontend tests across 67 files. The sanitized production build passed with the
+existing chunk-size warning. Checks cover intact/altered HTML, 4,096 stdout lines
+plus the clean marker and stderr tail, forced timeout and nonzero exit even with
+a marker, and Python normal/timeout/failure shutdown paths.
+
+The real `npm --prefix frontend run e2e -- --max-failures=1` command correctly
+failed at integrity preflight: build HTML was 417 bytes, received HTML 906 bytes.
+No functional test body ran. The same run reported graceful termination,
+`forced=false`, code zero, no signal, drained streams, `E2E_SERVER_STOPPED clean=true`
+and `E2E_ROOT_REMOVED clean=true`. Independent checks confirmed the owned PID
+absent, exclusive port rebind successful and no new temporary roots.
+
+D1 had located injected HTML in Node HTTP bytes before Chromium/React. Its
+before-fix Proactor reproduction retained two active connections and required
+forced termination after fifteen seconds; Selector closed cleanly despite the
+same HTML injection. The original socket-error trigger and any causal link to
+the injector remain unproven. D2 establishes corrected lifecycle behavior and
+rejection of altered HTML; it does not establish a clean-HTML Chromium smoke,
+a full functional E2E pass or passing repetitions. Those need a clean runner.
+No user software, proxy, AdGuard settings or network allowlists were changed.
+Windows executed; Linux, real providers, GPU and generation remain unverified.
+
+## A2b session coverage and historical verification
+
+`SessionFlowFixture` in `scripts/e2e_harness/session_flow.py` and
+`frontend/e2e/session-fixture.mjs` create two owned synthetic resource-v1
+sessions through real handlers. Each starts at plan revision 1 with prior
+approval, two ready takes and one incomplete take. Setup uses real preparation
+and approval validation; runtime allows only bounded Submit/Prepare POSTs and
+owned reads. Review, Approval and Run writes remain denied. Request audits and
+SQLite snapshots expose payloads, revisions, pending shots and preparation links.
+Cleanup rejects deletion warnings or surviving owned session folders and checks
+baseline counts. No product code changed for Submit/Prepare.
+
+- `session-submit.e2e.mjs`: five cases cover double-click uniqueness, late A on B,
+  A-to-B-to-A while pending, and separate session/plan reconciliation barriers.
+- `session-prepare.e2e.mjs`: four cases cover superseding reloads, selection
+  reconciliation, failed session/plan GETs, and an unchanged real B response
+  delivered to an A request after committed Submit. Recovery remains explicit.
+- `session-guard.e2e.mjs`: one regression copies/freezes response-release options
+  before validation, then mutates the caller's options and checks the owned
+  sibling listener receives no TCP or HTTP contact. Request barriers support
+  before-send and after-response phases; transport failures abort requests.
+
+Before D2, executor selfchecks reported Submit 5/5, guard 1/1 and fixture Python 2 passed.
+A1/A2a 4/4 passed before the final shared-helper hardening; this is not a final
+aggregate pass. An initial seed returned the expected 422 for four missing
+choices; only valid synthetic fixture choices were corrected. An initial Prepare
+launch produced four errors before test bodies because that command omitted
+`PLAYWRIGHT_BROWSERS_PATH=0`; no browser was installed.
+
+Independent verification then used Node 22.23.4 and the hermetic browser path and
+ran only Prepare: exit 1, four FAILED, zero skipped, plus a global teardown
+error. All four bodies and session cleanup reached their functional assertions,
+but the browser isolation guard rejected respectively 2, 2, 2 and 4 unexpected
+cross-origin requests. Traces contain AdGuard content-script indicators; no
+matching code was found in application sources or the build. Environment
+contamination is indicated, but the exact origin is unproven. Requests remained
+blocked; do not allow the unexpected host or disable guards.
+
+That historical global teardown lacked `E2E_SERVER_STOPPED clean=true` and repeatedly reported
+asyncio Proactor WinError 10022; causality remains unresolved. Independent
+cleanup confirmed the owned PID absent, its port freely rebound exclusively and
+no new owned temporary roots, with no baseline cleanup failure or unrelated
+process closure. Eventual cleanup does not pass the clean-shutdown gate.
+Evidence remains outside the repository as `prepare.log`, `trace-summary.txt`,
+`playwright-results`, `roots-before.txt` and `roots-after.txt`.
+
+Those four cases remain historical failures; no functional Submit/Prepare defect
+was demonstrated. The original user stop left full E2E, repetitions, full
+frontend, final build and Python/privacy gates unexecuted in that deployment.
+The D2 results above supersede its lifecycle status and add the stated checks;
+they do not revalidate these functional cases. A2c remains on HOLD.
+
+## Historical A2a Windows verification
+
+The accepted A2a Windows run used Node.js 22.23.4, npm 10.9.9, Python 3.12.14,
 Playwright 1.65.0, and Chromium for Testing 158.0.8127.18 (revision 1254).
 `npm --prefix frontend run e2e` passed three Node safety checks and four
 Chromium tests: the A1 smoke and all three A2a cases. To repeat just the new
@@ -149,8 +242,9 @@ mismatch, the full 60-second startup timeout, spawn failure, and early exit. An
 occupied test port was refused without contact; its owner listener remained
 intact.
 
-Only Windows was executed; the Linux commands above are documented but were not
-run. Model and Legacy drafts are verified within the current SPA
+For that historical acceptance, only Windows was executed; the Linux commands
+above are documented but were not run. Model and Legacy drafts are verified
+within the current SPA
 ModelDetail instance; reloads and unmounts are outside the guarantee. The delayed
 response cases cover successful committed PATCH responses, not failed requests,
 offline behavior, or restarts. No real providers, ComfyUI service, GPU, or

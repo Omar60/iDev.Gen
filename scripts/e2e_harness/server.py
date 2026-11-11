@@ -190,11 +190,12 @@ def isolated_sync_client_factory(handler, original):
 
 
 class HarnessIsolationMiddleware:
-    def __init__(self, app, root: Path, denials: list[dict[str, str]], model_fixture=None):
+    def __init__(self, app, root: Path, denials: list[dict[str, str]], model_fixture=None, session_flow_fixture=None):
         self.app = app
         self.root = root
         self.denials = denials
         self.model_fixture = model_fixture
+        self.session_flow_fixture = session_flow_fixture
 
     @staticmethod
     def _query_allowed(path: str, query: bytes) -> bool:
@@ -239,6 +240,8 @@ class HarnessIsolationMiddleware:
         allowed = (
             self.model_fixture is not None and self.model_fixture.allows(method, path, query)
         ) or (
+            self.session_flow_fixture is not None and self.session_flow_fixture.allows(method, path, query)
+        ) or (
             path == IDENTITY_PATH and method == "GET" and not query
         ) or (
             path == REDIRECT_PATH and method == "GET" and self._redirect_target(query) is not None
@@ -252,6 +255,9 @@ class HarnessIsolationMiddleware:
         if allowed:
             if method == "PATCH" and self.model_fixture is not None:
                 await self.model_fixture.record_patch(self.app, scope, receive, send)
+                return
+            if self.session_flow_fixture is not None and self.session_flow_fixture.is_runtime_path(method, path):
+                await self.session_flow_fixture.record_request(self.app, scope, receive, send, self.denials)
                 return
             if path == REDIRECT_PATH:
                 response = JSONResponse({}, status_code=302, headers={"Location": self._redirect_target(query)})
@@ -357,6 +363,50 @@ def _arguments(argv=None):
     return parser.parse_args(argv)
 
 
+def owned_event_loop():
+    # This single-worker harness uses sockets and a blocking stdin thread, not
+    # asyncio pipes/subprocesses. Keep Windows Proactor shutdown out of this path.
+    return asyncio.SelectorEventLoop() if os.name == "nt" else asyncio.new_event_loop()
+
+
+async def run_owned_server(server, listener, stop_requested, on_ready, *, startup_timeout=60, shutdown_timeout=10):
+    task = asyncio.create_task(server.serve(sockets=[listener]))
+    stop_task = asyncio.create_task(stop_requested.wait())
+    deadline = time.monotonic() + startup_timeout
+    try:
+        while not server.started:
+            if task.done():
+                await task
+                raise RuntimeError("E2E FastAPI exited before lifespan startup completed.")
+            if stop_requested.is_set():
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("E2E FastAPI lifespan startup timed out.")
+            await asyncio.sleep(0.05)
+        if server.started:
+            on_ready()
+        done, _ = await asyncio.wait({task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        if task in done and not stop_requested.is_set():
+            await task
+            raise RuntimeError("E2E FastAPI exited before an owned stop request.")
+        server.should_exit = True
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=shutdown_timeout)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("E2E FastAPI shutdown deadline exceeded; clean=false.") from exc
+        print("E2E_SERVER_STOPPED clean=true", flush=True)
+        return 0
+    finally:
+        server.should_exit = True
+        stop_task.cancel()
+        await asyncio.gather(stop_task, return_exceptions=True)
+        if not task.done():
+            task.cancel()
+            await asyncio.wait({task}, timeout=1)
+        if task.done() and not task.cancelled():
+            task.exception()
+
+
 def main(argv=None) -> int:
     args = _arguments(argv)
     if args.workers != 1:
@@ -374,10 +424,8 @@ def main(argv=None) -> int:
     os.environ.pop("https_proxy", None)
     os.environ.pop("all_proxy", None)
 
-    # Windows' ProactorEventLoop creates an internal loopback socket pair during
-    # construction. Create and install the runtime loop before the raw socket
-    # guard so that this implementation detail does not need an egress exception.
-    event_loop = asyncio.new_event_loop()
+    # Construct internal loop sockets before installing the egress guard.
+    event_loop = owned_event_loop()
     asyncio.set_event_loop(event_loop)
 
     egress = BackendEgressGuard()
@@ -407,9 +455,14 @@ def main(argv=None) -> int:
 
     request_denials: list[dict[str, str]] = []
     from scripts.e2e_harness.model_detail import FIXTURE_PATH, ModelDetailFixture
+    from scripts.e2e_harness.session_flow import FIXTURE_PATH as SESSION_FLOW_PATH, SessionFlowFixture
 
     model_fixture = ModelDetailFixture(backend_main, root)
-    backend_main.app.add_middleware(HarnessIsolationMiddleware, root=root, denials=request_denials, model_fixture=model_fixture)
+    session_flow_fixture = SessionFlowFixture(backend_main, root)
+    backend_main.app.add_middleware(
+        HarnessIsolationMiddleware, root=root, denials=request_denials,
+        model_fixture=model_fixture, session_flow_fixture=session_flow_fixture,
+    )
     identity = lambda: _identity(root, args.root_token, args.nonce, listener.getsockname()[1], backend_main, egress, providers, request_denials)
 
     async def read_identity(request):
@@ -420,6 +473,7 @@ def main(argv=None) -> int:
 
     from starlette.routing import Route
     backend_main.app.router.routes.insert(0, Route(FIXTURE_PATH, model_fixture.control, methods=["GET", "POST", "DELETE"]))
+    backend_main.app.router.routes.insert(0, Route(SESSION_FLOW_PATH, session_flow_fixture.control, methods=["GET", "POST", "DELETE"]))
     backend_main.app.router.routes.insert(0, Route(IDENTITY_PATH, read_identity, methods=["GET"]))
 
     original_lifespan = backend_main.app.router.lifespan_context
@@ -446,18 +500,19 @@ def main(argv=None) -> int:
         log_level="warning",
         access_log=False,
     ))
-    stop_requested = threading.Event()
+    stop_requested = asyncio.Event()
+
+    def request_stop():
+        event_loop.call_soon_threadsafe(stop_requested.set)
 
     def watch_parent():
         try:
             for line in sys.stdin:
                 if line.strip() == "stop":
-                    stop_requested.set()
-                    server.should_exit = True
+                    request_stop()
                     return
         finally:
-            stop_requested.set()
-            server.should_exit = True
+            request_stop()
 
     control_thread = threading.Thread(target=watch_parent, name="idevgen-e2e-control", daemon=True)
     control_thread.start()
@@ -466,41 +521,18 @@ def main(argv=None) -> int:
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
             old_handlers[sig] = signal.getsignal(sig)
-            signal.signal(sig, lambda _signum, _frame: (stop_requested.set(), setattr(server, "should_exit", True)))
+            signal.signal(sig, lambda _signum, _frame: request_stop())
 
-    async def serve_owned_server():
-        server_task = asyncio.create_task(server.serve(sockets=[listener]))
-        deadline = time.monotonic() + 60
-        try:
-            while not server.started:
-                if server_task.done():
-                    await server_task
-                    raise RuntimeError("E2E FastAPI exited before lifespan startup completed.")
-                if time.monotonic() >= deadline:
-                    server.should_exit = True
-                    raise RuntimeError("E2E FastAPI lifespan startup timed out.")
-                await asyncio.sleep(0.05)
-
-            port = listener.getsockname()[1]
-            print(
-                f"E2E_SERVER_READY base_url=http://{HOST}:{port} pid={os.getpid()} parent_pid={os.getppid()} "
-                f"port={port} nonce={args.nonce} root_id={args.root_token}",
-                flush=True,
-            )
-            await server_task
-            print("E2E_SERVER_STOPPED clean=true", flush=True)
-            return 0
-        finally:
-            server.should_exit = True
-            if not server_task.done():
-                try:
-                    await asyncio.wait_for(server_task, timeout=15)
-                except asyncio.TimeoutError as exc:
-                    server_task.cancel()
-                    raise RuntimeError("E2E FastAPI did not stop within the shutdown deadline.") from exc
+    def ready():
+        port = listener.getsockname()[1]
+        print(
+            f"E2E_SERVER_READY base_url=http://{HOST}:{port} pid={os.getpid()} parent_pid={os.getppid()} "
+            f"port={port} nonce={args.nonce} root_id={args.root_token}",
+            flush=True,
+        )
 
     try:
-        return event_loop.run_until_complete(serve_owned_server())
+        return event_loop.run_until_complete(run_owned_server(server, listener, stop_requested, ready))
     finally:
         server.should_exit = True
         if listener.fileno() >= 0:
