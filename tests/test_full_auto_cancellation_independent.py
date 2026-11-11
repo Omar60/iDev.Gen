@@ -489,6 +489,8 @@ def test_explicit_resume_observing_a_verified_running_prompt_stays_cancel_reques
     )
     queued = asyncio.Event()
     original_queue = fake.queue_prompt
+    runner_history_entered = asyncio.Event()
+    release_runner_history = asyncio.Event()
 
     async def record_queue(*args, **kwargs):
         prompt_id = await original_queue(*args, **kwargs)
@@ -496,6 +498,8 @@ def test_explicit_resume_observing_a_verified_running_prompt_stays_cancel_reques
         return prompt_id
 
     async def remain_running(_prompt_id):
+        runner_history_entered.set()
+        await release_runner_history.wait()
         return None
 
     scheduled = []
@@ -523,29 +527,38 @@ def test_explicit_resume_observing_a_verified_running_prompt_stays_cancel_reques
 
     async def start_and_cancel():
         assert runner.start(session_id, _full_auto_claim=owner)
-        await asyncio.wait_for(queued.wait(), timeout=5)
-        unrelated_prompt_id = "unrelated-running-prompt"
-        fake.queue_records.append([
-            99, unrelated_prompt_id, fake.queue_records[0][2],
-            {"client_id": "unrelated-client"}, [],
-        ])
-        cancelled = await asyncio.to_thread(
-            client.post,
-            f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
-            json=_control_body(run_id),
-        )
-        if (
-            cancelled.status_code == 409
-            and cancelled.json().get("detail", {}).get("code") == "run_revision_stale"
-        ):
-            # Refresh once if the runner advanced the control revision in flight.
+        try:
+            await asyncio.wait_for(queued.wait(), timeout=5)
+            await asyncio.wait_for(runner_history_entered.wait(), timeout=5)
+            assert remote_reads == {"queue": 1, "history": 0}
+            unrelated_prompt_id = "unrelated-running-prompt"
+            fake.queue_records.append([
+                99, unrelated_prompt_id, fake.queue_records[0][2],
+                {"client_id": "unrelated-client"}, [],
+            ])
             cancelled = await asyncio.to_thread(
                 client.post,
                 f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
                 json=_control_body(run_id),
             )
-        await asyncio.wait_for(runner._task, timeout=5)
-        return cancelled, unrelated_prompt_id
+            if (
+                cancelled.status_code == 409
+                and cancelled.json().get("detail", {}).get("code") == "run_revision_stale"
+            ):
+                # Refresh once if the runner advanced the control revision in flight.
+                cancelled = await asyncio.to_thread(
+                    client.post,
+                    f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
+                    json=_control_body(run_id),
+                )
+            assert cancelled.status_code == 202, cancelled.text
+            assert cancelled.json()["state"] == "cancel_requested"
+            assert remote_reads == {"queue": 1, "history": 0}
+            return cancelled, unrelated_prompt_id
+        finally:
+            release_runner_history.set()
+            if runner._task is not None:
+                await asyncio.wait_for(runner._task, timeout=5)
 
     cancelled, unrelated_prompt_id = asyncio.run(start_and_cancel())
     assert cancelled.status_code == 202, cancelled.text
