@@ -23,11 +23,15 @@ Verified baseline from the repository layout and application entry points.
   bounded runtime writes, separate fixture-control audits, full SQLite snapshots
   and baseline/folder cleanup checks. `tests/test_e2e_session_flow.py` covers
   session fixtures; `tests/test_e2e_lifecycle.py` covers server shutdown outcomes.
-  A1 through A2c are closed at `d674826`, with Linux run 42965352388 passing
-  three independent 30/30 inventories. The A2b workflow is retired; its guide
-  remains historical. The retained A2c workflow triggers only on push to
-  `e2e-a2c`, pending A3's permanent CI decision. A2d integration is in preparation;
-  the cleanup SHA needs its own Linux validation. See
+  Historical acceptance snapshot (2026-11-11): E2E phases A1–A2c are complete.
+  Linux run 42965352388 passed three independent 30/30 inventories at
+  `d674826`; Windows validation of
+  `c365c47` passed four independent 30/30 inventories. Run 43036836646 for
+  c365 stopped during dependency installation after DNS failures, before E2E
+  suites. Commit c365 was published to `e2e-a2c` and retired the A2b workflow;
+  its guide remains historical. The retained A2c workflow triggers only on
+  push to `e2e-a2c`. A3 separately decides permanent Windows CI. Consult Git
+  for current branch refs and integration status. See
   `docs/e2e-testing.md` and canonical state in `agent_docs/project_progress.md`
   and `agent_docs/latest_session_work.md`.
 - `tests/` contains the backend pytest suite and ComfyUI test doubles.

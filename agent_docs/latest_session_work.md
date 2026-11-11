@@ -1,12 +1,12 @@
 # Latest Session Work
 
-## A2d Integration Preparation Handoff
+## Dated A2d Integration Snapshot — 2026-11-11
 
-A1, A2a, A2b and A2c are closed at
-`e2e-a2c@d67482658fa9a2a4f8c8c93433e09fc37dfdf248`. A2d-a/D1 uses the
-Light route to reconcile documentation and retire only the A2b workflow.
-Integration into `origin/main@b6134746965d1e6344ebce2c0e30dcbf28adef81`
-has not occurred. The eight existing commits remain intact.
+As of this snapshot, `c365c47c95a5bde0e9d45c303a447bce743a6142` was published
+to `e2e-a2c` and removed the temporary A2b workflow. The current branch refs,
+ancestry and integration state must be checked in Git; this dated record is not
+a live status source. E2E phases A1–A2c are complete; Linux and Windows
+acceptance evidence is recorded separately below by SHA.
 
 ## Contract and Implementation
 
@@ -48,7 +48,17 @@ barriers delayed actual HTTP requests/responses, with no frontend API mocks.
   was prefixed and duplicated. It was removed while retaining session/revision
   and SQLite assertions. No product defect was found.
 
-## Accepted Linux Evidence and Next Boundary
+## Accepted Windows Evidence — c365c47 — 2026-11-11
+
+The accepted Windows validation used Node 22.23.4, Playwright 1.65.0 and its
+pinned Chromium 158.0.8127.18 (revision 1254). Four independent E2E passes each
+passed 30/30, totaling 120/120; Review and Approval passed 8/8 in every pass.
+Frontend passed 1,007/1,007, Node checks 7/7 and privacy/source checks 46/46.
+The build passed, the served HTML matched it, and every server shut down
+cleanly with `forced=false`, drained streams, absent owned processes/listeners
+and no remaining temporary roots.
+
+## Historical Linux Evidence — d674826 — 2026-11-10
 
 [Run 42965352388](https://github.com/Omar60/iDev.Gen/actions/runs/42965352388)
 passed at `d674826`: complete Python 3,729 passed with one opt-in benchmark
@@ -58,13 +68,15 @@ Review 8/8 and Approval 8/8, totaling 90/90. HTML was intact; every owned server
 exited gracefully with code 0, `forced=false`, drained streams, `clean=true`
 stop/root markers, absent PID/listener and zero remaining owned roots.
 
+The later [Linux run 43036836646](https://github.com/Omar60/iDev.Gen/actions/runs/43036836646)
+for `c365c47` failed on both attempts during apt dependency installation after
+Ubuntu package-host DNS resolution failed. The E2E suites did not start, so
+this run produced no Linux test result for c365.
+
 The A2b workflow is retired; its guide and Git history retain the original
 decisions and procedure. The A2c workflow is preserved unchanged and triggers
-only on push to `e2e-a2c`. A3 will decide its replacement with permanent CI;
-it is not a required main CI gate. Node 22.x is required (22.23.4 was validated).
-
-This cleanup is local and awaits a separately authorized commit/publication
-and Linux validation of the new exact SHA before integration. Run 42965352388
-validates `d674826` only. Functional source, tests, harness, dependencies,
-`project_diary.md` and main CI are outside this cleanup. Current commands,
-inventory, evidence and platform limits are in `docs/e2e-testing.md`.
+only on push to `e2e-a2c`. A3 will decide whether and how to add permanent
+Windows CI. E2E is not a required main CI gate. Node 22.x is required.
+Functional source, tests, harness, dependencies, `project_diary.md` and main CI
+were outside the documentary A2d changes. Current commands, inventory,
+evidence and platform limits are in `docs/e2e-testing.md`.

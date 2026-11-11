@@ -3,42 +3,52 @@
 The opt-in Playwright suite builds the production React bundle and serves it from
 an isolated FastAPI process. Its 30 cases comprise the A1 smoke, three A2a
 ModelDetail cases, ten A2b session/guard cases, and eight each for A2c Review
-and Approval. A1, A2a, A2b and A2c are closed at validated SHA
-`d67482658fa9a2a4f8c8c93433e09fc37dfdf248`. Linux acceptance covers three
-independent passes of 30/30, totaling 90/90. A2a creates and removes synthetic
-models through real handlers and tests real PATCH requests. The suite does not
-run ComfyUI, a GPU, or generation, and is not a required job in
-`.github/workflows/ci.yml`.
+and Approval. A2a creates and removes synthetic models through real handlers
+and tests real PATCH requests. The suite does not run ComfyUI, a GPU, or
+generation, and is not a required job in `.github/workflows/ci.yml`.
+E2E phases A1–A2c are complete; the accepted Linux and Windows evidence below is
+scoped to its recorded SHA.
 
-## Integration status and Linux evidence
+## Dated acceptance evidence — 2026-11-11
 
-[Actions run 42965352388](https://github.com/Omar60/iDev.Gen/actions/runs/42965352388)
-passed at that exact SHA on `e2e-a2c`, using Node 22.23.4, Python 3.12 and
-Chromium pinned by Playwright. Each pass verified smoke 1, ModelDetail 3,
-Submit 5, Prepare 4, guard 1, Review 8 and Approval 8. Complete Python passed
-3,729 tests with one opt-in 500-take synthesis benchmark skipped; frontend
-passed 1,007/1,007, Node checks 7/7 and privacy/source checks 46/46. Build and
-diff-check passed. Each fresh server had intact HTML, active egress guards,
-graceful exit 0, `forced=false`, drained streams, `clean=true` stop/root markers,
-absent owned PID/listener and zero remaining owned temporary roots.
+Accepted Windows validation at `c365c47` used Node 22.23.4, Playwright 1.65.0
+and pinned Chromium 158.0.8127.18
+(revision 1254). Four independent Chromium passes each passed 30/30 (120/120
+total), including Review 8/8 and Approval 8/8 in every pass. Frontend passed
+1,007/1,007, Node checks 7/7 and privacy/source checks 46/46; the build passed.
+HTML integrity and clean teardown passed in all four runs.
 
-A2d integration is in preparation; `origin/main` remains at
-`b6134746965d1e6344ebce2c0e30dcbf28adef81`. The documentation cleanup and
-retirement of the A2b workflow require a new commit and Linux validation of its
-exact SHA. Run 42965352388 validates only `d674826`; any later SHA requires
-separate validation.
+[Historical Linux run 42965352388](https://github.com/Omar60/iDev.Gen/actions/runs/42965352388)
+passed at `d67482658fa9a2a4f8c8c93433e09fc37dfdf248` only. It used Node 22.23.4,
+Python 3.12 and Playwright-pinned Chromium. The three independent passes each
+passed 30/30 (90/90 total), including Review 8/8 and Approval 8/8 per pass.
+Python passed 3,729 tests with one opt-in 500-take synthesis benchmark skipped;
+frontend passed 1,007/1,007, Node 7/7, privacy/source 46/46, build and
+diff-check. Each server had intact HTML, active egress guards, graceful exit 0,
+`forced=false`, drained streams, `clean=true` stop/root markers, absent owned
+PID/listener and no remaining owned temporary roots. This Linux result applies
+only to `d674826`.
+
+[Linux Actions run 43036836646](https://github.com/Omar60/iDev.Gen/actions/runs/43036836646)
+for `c365c47` had two installation attempts blocked by DNS resolution of an
+Ubuntu package host during apt dependency installation. Both stopped before the
+test suites, so they produced no Linux E2E result for c365.
+
+Commit `c365c47` was published to `e2e-a2c` and removed the temporary A2b
+workflow. Check Git for current branch refs, ancestry and integration status;
+this dated evidence is not a live status report.
 
 The retained `.github/workflows/e2e-a2c-validation.yml` runs only on push to
 `e2e-a2c`, with a matching job-level ref check. It requires exactly 30 tests per
 pass, three fresh-server passes, one worker and zero retries. The retired A2b
 workflow remains available in Git history; its decisions and original procedure
 are preserved in [the historical A2b guide](e2e-a2b-validation.md). A3 will decide
-how to replace temporary validation with permanent CI. The retained workflow
-does not run on main or pull requests and is not a required main CI gate.
+whether and how to add permanent Windows CI. The retained workflow does not run
+on main or pull requests and is not a required main CI gate.
 
 ## Requirements and commands
 
-- Node.js 22.x.
+- Node.js 22.x; use a Node 22 release.
 - Python 3.11+ with `backend/requirements.txt` installed in the repository
   `.venv`. A valid `.venv` is required: the harness reads `pyvenv.cfg`,
   resolves its base interpreter, runs it with `-S`, and supplies only that
@@ -226,7 +236,7 @@ This local functional evidence does not establish Linux validation.
 Subsequent Linux run 42965352388 validated Approval 8/8 and Review 8/8 in each
 of three complete 30/30 passes at `d674826`, as recorded above. Its workflow
 audits all seven scenario files and exact collection/pass totals. This closes
-A2c-b; validation of the subsequent A2d cleanup SHA remains a separate step.
+A2c-b's Linux acceptance; it does not apply to later SHAs.
 
 ## Historical A2a Windows verification
 

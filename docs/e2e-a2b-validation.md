@@ -1,32 +1,41 @@
 # Historical A2b Linux validation branch
 
-## Retired workflow and accepted evidence
+## Retired workflow and dated status — 2026-11-11
 
 This guide preserves the original A2b-D4 preparation decisions and publication
 procedure as historical records. All commands and execution instructions below
 belong to that earlier phase; they are not the current publication procedure.
-The A2b workflow is retired during A2d preparation. Its pre-retirement source
-is available at
+Commit `c365c47c95a5bde0e9d45c303a447bce743a6142` was published to `e2e-a2c`
+and removed the temporary A2b workflow. Its pre-retirement source is available at
 [`d674826`](https://github.com/Omar60/iDev.Gen/blob/d67482658fa9a2a4f8c8c93433e09fc37dfdf248/.github/workflows/e2e-a2b-validation.yml).
 
 A2b was accepted by
 [run 42942686174](https://github.com/Omar60/iDev.Gen/actions/runs/42942686174)
-at `cf063991826ea895179f2643486571e7eb3e7b10`. A1, A2a, A2b and A2c are now
-closed at `d67482658fa9a2a4f8c8c93433e09fc37dfdf248`:
+at `cf063991826ea895179f2643486571e7eb3e7b10`. The complete A1–A2c inventory
+had Linux acceptance at `d67482658fa9a2a4f8c8c93433e09fc37dfdf248`:
 [run 42965352388](https://github.com/Omar60/iDev.Gen/actions/runs/42965352388)
 passed three independent 30/30 Chromium inventories, totaling 90/90, including
 Review and Approval 8/8 per pass. Complete Python passed 3,729 tests with one
 opt-in skip; frontend passed 1,007/1,007, Node 7/7 and privacy/source 46/46.
 HTML integrity and graceful lifecycle/resource audits passed in every pass.
 
-A2d integration into main is still in preparation. The retained
+The accepted Windows validation of c365 used Node 22.23.4, Playwright 1.65.0
+and pinned Chromium 158.0.8127.18 (revision 1254). Four independent passes
+passed 30/30 each (120/120 total), including Review and Approval 8/8 per pass.
+Frontend passed 1,007/1,007, Node 7/7 and privacy/source 46/46; build and HTML
+integrity passed, and teardown was clean in each run.
+
+[Linux Actions run 43036836646](https://github.com/Omar60/iDev.Gen/actions/runs/43036836646)
+for c365 failed both installation attempts during apt dependency installation
+after Ubuntu package-host DNS resolution failed. The E2E suites never started,
+so it provides no Linux test result for c365. The retained
 `.github/workflows/e2e-a2c-validation.yml` triggers only on push to `e2e-a2c`;
-A3 will decide its replacement with permanent CI. It is not a main CI gate.
-The cleanup must receive a new SHA and its own Linux validation; the earlier
-run does not validate these subsequent changes. See
+A3 remains the separate phase for deciding permanent Windows CI. The A2c
+workflow is not a main CI gate. Consult Git for current refs and integration
+status; this dated guide is historical, not a live status source. See
 [the current E2E guide](e2e-testing.md) for commands and acceptance state.
 
-## Historical D4 preparation snapshot
+## Historical D4 preparation snapshot (before the 2026-11-11 publication)
 
 This is a prepared workflow, not evidence of a GitHub run. Nothing was staged,
 committed, branched or pushed while preparing it. The nineteen existing A2b/D2
