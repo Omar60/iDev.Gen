@@ -1,5 +1,15 @@
 # Project Diary
 
+## CI-W2 Windows-first CI — 2026-11-12
+
+Retire duplicate Ubuntu CI without changing the Windows validation script,
+suites or audits. Preserve the former all-PR trigger coverage and use the actual
+target branch's base SHA, not a hardcoded main SHA, for ancestry and diff checks.
+Pin the OS family to `windows-2025`; image updates and dependency patch versions
+remain floating. Keep `isolated-e2e` stable for future required-status settings.
+Preparing a branch/PR does not establish integration or branch protection.
+The earlier platform-specific lessons and acceptance records below are historical.
+
 ## Review and Explicit Approval E2E
 
 Review is read-only; Approval is a separate write bound to one plan revision.

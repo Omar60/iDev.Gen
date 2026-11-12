@@ -67,10 +67,13 @@ The frontend has its own suite, `npm --prefix frontend test`, covering the
 logic that is wrong in a way review cannot see. Run it when you touch
 `frontend/`.
 
-General CI in `.github/workflows/ci.yml` runs the Python suite and frontend
-build on pushes to `main` and pull requests. The separate Windows E2E workflow
-runs Playwright on pushes to `main` and pull requests targeting `main`; see
-[Browser E2E testing](docs/e2e-testing.md) for its isolated harness and checks.
+The only CI workflow is `.github/workflows/e2e-windows.yml`, running on
+`windows-2025` for pushes to `main` and pull requests targeting any branch.
+Its `isolated-e2e` job runs the full Python suite with `pytest.ini`/xdist,
+frontend tests and build, Node lifecycle, privacy/source controls, symlink
+coverage and Playwright 30/30 in three isolated passes. Windows is the sole CI
+acceptance platform. Required-status branch protection is configured separately;
+see [Browser E2E testing](docs/e2e-testing.md) for the harness and checks.
 
 ## Pull requests
 

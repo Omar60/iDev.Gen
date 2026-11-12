@@ -1,5 +1,21 @@
 # Latest Session Work
 
+## CI-W2 Handoff — 2026-11-12
+
+Prepared from `main@1cc55b275c9fb27700165c73a52b2fbb7fc4c978` on
+`ci/windows-first`, after D4c acceptance and RoomImport closure. The branch
+removes Ubuntu CI and keeps only E2E Windows / `isolated-e2e`, pinned to
+`windows-2025`, for PRs targeting any branch and pushes only to `main`.
+`E2E_DIFF_BASE` still selects the PR target's base SHA or the preceding main
+commit; full history and the ancestry guard are preserved. No product code,
+tests, dependencies, A3 inventory or audit thresholds change.
+
+Publication is limited to the branch and a PR targeting `main`. PR Windows
+acceptance, main integration and required-status protection are distinct facts;
+this handoff does not claim merge or protection. CI-W3 requires checking the
+published PR's exact SHA and `isolated-e2e` result. Earlier records below retain
+their original Linux/Windows results and SHAs.
+
 ## A3 Closure Snapshot — 2026-11-11
 
 A3 is technically closed on `main` at `d235127578683138b2e1e7df9c3a03e861ab43f1`.

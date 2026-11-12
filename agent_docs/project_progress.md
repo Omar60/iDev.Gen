@@ -1,5 +1,19 @@
 # Project Progress
 
+## CI-W2 Branch Preparation — 2026-11-12
+
+Base: `main@1cc55b275c9fb27700165c73a52b2fbb7fc4c978`. D4c is accepted and
+RoomImport is closed. CI-W1 approved Windows as the sole CI acceptance platform.
+Branch `ci/windows-first` retires `.github/workflows/ci.yml`, retains the
+`isolated-e2e` job on `windows-2025`, and validates every pull request plus
+pushes only to `main`. The actual PR base SHA and ancestry check remain intact.
+Suites, inventory, permissions and isolation audits are unchanged.
+
+This is preparation for a separate PR acceptance, not integration into `main`.
+CI-W3 remains pending: verify the PR's Windows result before merge and handle
+required-status branch protection separately. Historical evidence below remains
+scoped to its original SHA and workflow configuration.
+
 ## A3 Closure Snapshot — 2026-11-11
 
 A3 is technically closed on `main` at `d235127578683138b2e1e7df9c3a03e861ab43f1`.

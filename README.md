@@ -965,11 +965,13 @@ For rendered Resources and SessionView coverage against an isolated backend,
 follow the [Task 8.6 browser walkthrough](docs/task-8-6-browser-walkthrough.md).
 
 Dev dependencies: `pip install -r backend/requirements-dev.txt`.
-General CI in `.github/workflows/ci.yml` runs the Python suite and builds the
-frontend on pushes to `main` and pull requests. A separate [Windows E2E
-workflow](.github/workflows/e2e-windows.yml) runs the isolated Playwright suite
-on pushes to `main` and pull requests targeting `main`; see [Browser E2E
-testing](docs/e2e-testing.md).
+The [Windows validation workflow](.github/workflows/e2e-windows.yml) is the only
+CI workflow. It runs on `windows-2025` for pushes to `main` and pull requests
+targeting any branch: full Python and frontend suites, production build, Node
+lifecycle, privacy/source controls, symlink coverage and three isolated 30-case
+Playwright passes. Windows is the sole CI acceptance platform; Ubuntu CI is
+retired. Required-status branch protection is configured separately; see
+[Browser E2E testing](docs/e2e-testing.md).
 
 ## Cleanup
 
