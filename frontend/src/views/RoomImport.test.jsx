@@ -3,9 +3,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import RoomImport from './RoomImport.jsx'
-import { api } from '../api.js'
-let root, host, report
+let RoomImport, api, root, host, report, holdEffects, heldEffects
 const drain = () => new Promise((done) => setTimeout(done, 0))
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const mount = async () => {
@@ -19,7 +17,17 @@ const edit = async (id, value) => act(async () => {
 })
 const paths = async () => { await edit('ri-source', '  fixture-source  '); await edit('ri-map', '  fixture-map.json  ') }
 const submit = async () => act(async () => { host.querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await drain() })
-beforeEach(() => {
+beforeEach(async () => {
+  holdEffects = false; heldEffects = []
+  vi.doMock('react', () => ({ ...React, default: React, useEffect: (effect, dependencies) => React.useEffect(() => {
+    if (!holdEffects) return effect()
+    let cleanup, cancelled = false
+    heldEffects.push(() => { if (!cancelled) cleanup = effect() })
+    return () => { cancelled = true; cleanup?.() }
+  }, dependencies) }))
+  vi.resetModules()
+  ;({ default: RoomImport } = await import('./RoomImport.jsx'))
+  ;({ api } = await import('../api.js'))
   report = { accepted: 4, refused: 2, written: 5, created: 3, updated: 1, unchanged: 1, orphaned: 1, skipped_empty: 0,
     refused_identifiers: ['room_042', 'room_043'], refused_libraries: [{ library: 'unhandled_library', reason: 'not_adopted' }],
     by_signal: { identifier: 1, tags: 1, theme_text: 0 }, by_library: { general_scenes: 2 },
@@ -29,7 +37,7 @@ beforeEach(() => {
   vi.spyOn(api, 'get').mockResolvedValue([])
   Element.prototype.scrollIntoView = vi.fn()
 })
-afterEach(async () => { if (root) await act(async () => root.unmount()); host?.remove(); vi.restoreAllMocks() })
+afterEach(async () => { if (root) await act(async () => root.unmount()); host?.remove(); vi.restoreAllMocks(); vi.doUnmock('react') })
 it('opens without reads or writes and associates paths with labels and help', async () => {
   await mount(); expect(api.get).not.toHaveBeenCalled(); expect(api.post).not.toHaveBeenCalled()
   expect(host.textContent).toContain('No import report yet'); expect(host.querySelector('button').disabled).toBe(true)
@@ -126,4 +134,135 @@ it('does not steal focus from a foreign modal when the result arrives', async ()
   const control = document.createElement('button'); modal.append(control); host.append(modal); control.focus()
   await act(async () => { wait.resolve(report); await drain() })
   expect(document.activeElement).toBe(control); expect(host.querySelector('pre')).toBeTruthy()
+})
+
+const uncovered = [
+  { identifier: 'fixture-room-1', field: 'label', string: 'Invented untranslated label' },
+  { identifier: 'fixture-room-2', field: 'theme', string: 'Invented source text'.repeat(12) },
+]
+const finish = async (wait, kind) => act(async () => {
+  if (kind === '200') wait.resolve(structuredClone(report))
+  else wait.reject(Object.assign(Error(kind === '422' ? 'translation_missing' : 'Registry result unavailable'), {
+    status: Number(kind), detail: kind === '422' ? { error: 'translation_missing', uncovered } : 'Registry result unavailable',
+  }))
+  await drain()
+})
+const expectRecovered = (kind) => {
+  expect(host.querySelector('#ri-source').value).toBe('  fixture-source  ')
+  expect(host.querySelector('#ri-map').value).toBe('  fixture-map.json  ')
+  expect(host.querySelector('#ri-source').disabled).toBe(false)
+  expect(host.querySelector('form').getAttribute('aria-busy')).toBe('false')
+  expect([...host.querySelectorAll('.room-import-context dd')].map((node) => node.textContent)).toEqual(['fixture-source', 'fixture-map.json'])
+  expect(host.textContent).not.toContain('No import report yet')
+  expect(host.querySelector('.room-import-result').getAttribute('role')).toBe(kind === '200' ? 'status' : 'alert')
+  if (kind === '200') expect(JSON.parse(host.querySelector('pre').textContent)).toEqual(report)
+  else {
+    expect(host.querySelector('pre')).toBeNull()
+    if (kind === '422') {
+      expect([...host.querySelectorAll('tbody tr')].map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent))).toEqual(uncovered.map((row) => [row.identifier, row.field, row.string]))
+      expect(host.textContent).toContain('Nothing was written')
+      expect(host.querySelector('[aria-label="Strings still to translate"]').tabIndex).toBe(0)
+    } else {
+      expect(host.textContent).toContain('Registry result unavailable')
+      expect(host.textContent).toContain('Files or registry entries may already have changed')
+      expect(host.textContent).not.toContain('Nothing was written')
+    }
+  }
+  expect(api.post).toHaveBeenCalledExactlyOnceWith('/api/rooms/import', { source_dir: 'fixture-source', map_path: 'fixture-map.json' })
+}
+it.each(['200', '422', '503'])('recovers the exact %s outcome settled while the screen was unmounted', async (kind) => {
+  const wait = deferred(); api.post.mockReturnValueOnce(wait.promise)
+  await mount(); await paths(); await submit()
+  await act(async () => root.unmount()); root = null; host.remove()
+  await finish(wait, kind)
+  await mount(); expectRecovered(kind)
+})
+it.each(['200', '422', '503'])('recovers %s after remounting the same pending request without resending', async (kind) => {
+  const wait = deferred(); api.post.mockReturnValueOnce(wait.promise)
+  await mount(); await paths(); await submit()
+  await act(async () => root.unmount()); root = null; host.remove()
+  await mount()
+  expect(host.querySelector('#ri-source').value).toBe('  fixture-source  ')
+  expect(host.querySelector('#ri-map').value).toBe('  fixture-map.json  ')
+  expect(host.querySelectorAll('input:disabled')).toHaveLength(2)
+  expect(host.querySelector('button').disabled).toBe(true)
+  expect(host.querySelector('form').getAttribute('aria-busy')).toBe('true')
+  await submit(); await submit(); expect(api.post).toHaveBeenCalledTimes(1)
+  await finish(wait, kind); expectRecovered(kind)
+})
+it('retains a displayed report and its submitted provenance independently of subsequent draft edits', async () => {
+  await mount(); await paths(); await submit(); await edit('ri-source', 'next-source')
+  await act(async () => root.unmount()); root = null; host.remove()
+  await mount(); expectRecovered('200')
+  await edit('ri-source', 'next-source'); await edit('ri-map', 'next-map.json')
+  expect([...host.querySelectorAll('.room-import-context dd')].map((node) => node.textContent)).toEqual(['fixture-source', 'fixture-map.json'])
+  await edit('ri-source', ' '); await submit(); expect(api.post).toHaveBeenCalledTimes(1)
+  expect(JSON.parse(host.querySelector('pre').textContent)).toEqual(report)
+  await edit('ri-source', 'next-source'); await submit()
+  expect(api.post).toHaveBeenCalledTimes(2)
+  expect(api.post.mock.calls[1]).toEqual(['/api/rooms/import', { source_dir: 'next-source', map_path: 'next-map.json' }])
+  await act(async () => root.unmount()); root = null; host.remove()
+  await mount()
+  expect(host.querySelector('#ri-source').value).toBe('next-source')
+  expect(host.querySelector('.room-import-context dd').textContent).toBe('next-source')
+  expect(api.post).toHaveBeenCalledTimes(2)
+})
+it.each(['200', '422', '503'])('handles %s completion between the initial render and installation of its effects', async (kind) => {
+  const wait = deferred(); api.post.mockReturnValueOnce(wait.promise)
+  await mount(); await paths(); await submit()
+  await act(async () => root.unmount()); root = null; host.remove()
+  holdEffects = true; await mount()
+  expect(heldEffects).toHaveLength(2)
+  await finish(wait, kind)
+  expect(host.querySelector('form').getAttribute('aria-busy')).toBe('true')
+  holdEffects = false
+  await act(async () => { heldEffects.splice(0).forEach((effect) => effect()); await drain() })
+  expectRecovered(kind)
+})
+it('ignores an obsolete completion callback after an explicit newer operation starts', async () => {
+  const first = deferred(), next = deferred()
+  api.post.mockReturnValueOnce(first.promise).mockReturnValueOnce(next.promise)
+  await mount(); await paths(); await submit()
+  const firstRoot = root, firstHost = host
+  try {
+    holdEffects = true; await mount()
+    // This subscription captures the old operation, but its native promise callback is queued later.
+    holdEffects = false
+    await act(async () => {
+      first.resolve(report)
+      await first.promise
+      await Promise.resolve()
+      heldEffects.splice(0).forEach((effect) => effect())
+      firstHost.querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await drain()
+    })
+    expect(api.post).toHaveBeenCalledTimes(2)
+    expect(firstHost.querySelector('form').getAttribute('aria-busy')).toBe('true')
+    expect(firstHost.querySelector('.room-import-result')).toBeNull()
+    expect(host.querySelector('form').getAttribute('aria-busy')).toBe('true')
+    expect(host.querySelector('.room-import-result')).toBeNull()
+    await act(async () => root.unmount()); host.remove(); root = firstRoot; host = firstHost
+    await act(async () => { next.resolve({ written: 9 }); await drain() })
+    expect(JSON.parse(host.querySelector('pre').textContent)).toEqual({ written: 9 })
+    expect(api.post).toHaveBeenCalledTimes(2)
+  } finally {
+    if (root !== firstRoot) { await act(async () => root.unmount()); host.remove(); root = firstRoot; host = firstHost }
+    next.resolve({ written: 9 })
+  }
+})
+it.each(['200', '422', '503'])('recovers accessible %s content without moving focus from a foreign dialog or inert region', async (kind) => {
+  const wait = deferred(); api.post.mockReturnValueOnce(wait.promise)
+  await mount(); await paths(); await submit()
+  await act(async () => root.unmount()); root = null; host.remove()
+  const dialog = document.createElement('div'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('role', 'dialog')
+  const control = document.createElement('button'); dialog.append(control); document.body.append(dialog); control.focus()
+  try {
+    await finish(wait, kind); await mount(); expectRecovered(kind)
+    expect(document.activeElement).toBe(control)
+    await act(async () => root.unmount()); root = null; host.remove(); dialog.remove()
+    holdEffects = true; await mount(); host.setAttribute('inert', '')
+    document.body.append(control); control.focus(); holdEffects = false
+    await act(async () => { heldEffects.splice(0).forEach((effect) => effect()); await drain() })
+    expectRecovered(kind); expect(document.activeElement).toBe(control)
+  } finally { dialog.remove(); control.remove() }
 })

@@ -4,23 +4,29 @@ import { countRows, refusalRows, uncoveredRows } from '../roomImport.js'
 import '../ui/foundations.css'
 import './RoomImport.css'
 
-// Keep the existing request across route remounts without issuing a second import.
-let activeImport = null
+// Retain only the latest explicit import for this document's lifetime.
+let lastImport = null
 
 export default function RoomImport() {
-  const initialImport = useRef(activeImport)
-  const [sourceDir, setSourceDir] = useState(initialImport.current?.sourceDir ?? '')
-  const [mapPath, setMapPath] = useState(initialImport.current?.mapPath ?? '')
-  const [busy, setBusy] = useState(Boolean(initialImport.current))
-  const [outcome, setOutcome] = useState(null)
+  const operationRef = useRef(lastImport)
+  const [sourceDir, setSourceDir] = useState(operationRef.current?.sourceDir ?? '')
+  const [mapPath, setMapPath] = useState(operationRef.current?.mapPath ?? '')
+  const [busy, setBusy] = useState(Boolean(operationRef.current && !operationRef.current.outcome))
+  const [outcome, setOutcome] = useState(operationRef.current?.outcome ?? null)
   const mounted = useRef(false)
   const resultRef = useRef(null)
 
+  const showOutcome = (operation, result) => {
+    if (mounted.current && operationRef.current === operation && lastImport === operation) {
+      setOutcome(result)
+      setBusy(false)
+    }
+  }
   useEffect(() => {
     mounted.current = true
-    if (initialImport.current) initialImport.current.promise.then((result) => {
-      if (mounted.current) { setOutcome(result); setBusy(false) }
-    })
+    const operation = operationRef.current
+    // A settled promise also covers completion between the initial render and this effect.
+    if (operation) operation.promise.then((result) => showOutcome(operation, result))
     return () => { mounted.current = false }
   }, [])
   useEffect(() => {
@@ -33,25 +39,29 @@ export default function RoomImport() {
 
   const run = async (event) => {
     event.preventDefault()
-    if (activeImport || !sourceDir.trim() || !mapPath.trim()) return
+    if ((lastImport && !lastImport.outcome) || !sourceDir.trim() || !mapPath.trim()) return
     const request = { source_dir: sourceDir.trim(), map_path: mapPath.trim() }
+    const operation = { sourceDir, mapPath, request, promise: null, outcome: null }
+    lastImport = operation
+    operationRef.current = operation
     setBusy(true)
     setOutcome(null)
-    const promise = api.post('/api/rooms/import', request).then((report) => (
+    operation.promise = api.post('/api/rooms/import', request).then((report) => (
       { request, report, uncovered: [], error: '' }
     ), (error) => {
       const uncovered = uncoveredRows(error.detail ?? error.message)
       return { request, report: null, uncovered, error: uncovered.length
         ? `${uncovered.length} string${uncovered.length === 1 ? ' is' : 's are'} missing from the translation map. Nothing was written.`
         : error.message || 'The import result could not be confirmed.' }
+    }).then((result) => {
+      operation.outcome = result
+      return result
     })
-    activeImport = { promise, sourceDir, mapPath }
     try {
-      const result = await promise
-      if (mounted.current) setOutcome(result)
+      const result = await operation.promise
+      showOutcome(operation, result)
     } finally {
-      if (activeImport?.promise === promise) activeImport = null
-      if (mounted.current) setBusy(false)
+      if (mounted.current && operationRef.current === operation && lastImport === operation) setBusy(false)
     }
   }
 
