@@ -1147,7 +1147,10 @@ def test_cancel_outage_uses_three_probe_boundaries_and_fresh_heartbeat_claim(
         client, seeded, monkeypatch, make_runner,
     )
     queued = asyncio.Event()
+    history_entered = asyncio.Event()
+    release_history = asyncio.Event()
     original_queue = fake.queue_prompt
+    original_history = fake.history
     history_mode = {"outage": False}
     outage_reads: list[datetime] = []
     history_observations: list[bool] = []
@@ -1156,6 +1159,11 @@ def test_cancel_outage_uses_three_probe_boundaries_and_fresh_heartbeat_claim(
         prompt_id = await original_queue(*args, **kwargs)
         queued.set()
         return prompt_id
+
+    async def remain_running(_prompt_id):
+        history_entered.set()
+        await release_history.wait()
+        return None
 
     original_history_entries = fake.history_entries
 
@@ -1167,19 +1175,29 @@ def test_cancel_outage_uses_three_probe_boundaries_and_fresh_heartbeat_claim(
         return await original_history_entries()
 
     fake.queue_prompt = record_queue
+    fake.history = remain_running
     fake.history_entries = history_entries
     monkeypatch.setattr(runner_mod, "POLL_SECONDS", 0.001)
 
     async def start_and_cancel():
         assert runner.start(session_id, _full_auto_claim=owner)
-        await asyncio.wait_for(queued.wait(), timeout=5)
-        cancelled = await asyncio.to_thread(
-            client.post,
-            f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
-            json=_control_body(run_id),
-        )
-        await asyncio.wait_for(runner._task, timeout=5)
-        return cancelled
+        try:
+            await asyncio.wait_for(queued.wait(), timeout=5)
+            await asyncio.wait_for(history_entered.wait(), timeout=5)
+            assert db.one(
+                "SELECT dispatch_state, completion_state FROM full_auto_execution_attempt WHERE run_id = ?",
+                run_id,
+            ) == {"dispatch_state": "acknowledged", "completion_state": "pending"}
+            cancelled = await asyncio.wait_for(asyncio.to_thread(
+                client.post,
+                f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
+                json=_control_body(run_id),
+            ), timeout=5)
+            return cancelled
+        finally:
+            fake.history = original_history
+            release_history.set()
+            await asyncio.wait_for(runner._task, timeout=5)
 
     cancelled = asyncio.run(start_and_cancel())
     assert cancelled.status_code == 202, cancelled.text

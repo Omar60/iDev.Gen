@@ -115,11 +115,11 @@ def test_full_auto_runner_heartbeat_keeps_long_comfy_io_owned(
     runner, fake = make_runner()
     entered = asyncio.Event()
     release = asyncio.Event()
+    renewed = asyncio.Event()
     original_history = fake.history
-    original_now = db.now
-    clock = [datetime.fromisoformat(original_now().replace("Z", "+00:00"))]
-    # Each renewal validates both leases; keep synthetic clock steps below expiry.
-    step = [timedelta(seconds=10)]
+    original_renew = resource_full_auto.RunnerClaimHeartbeat.renew_now
+    clock = [None]
+    renewals = []
 
     async def slow_history(prompt_id):
         entered.set()
@@ -127,40 +127,64 @@ def test_full_auto_runner_heartbeat_keeps_long_comfy_io_owned(
         return await original_history(prompt_id)
 
     def fake_now():
-        value = clock[0]
-        clock[0] += step[0]
-        return value.isoformat(timespec="seconds")
+        return clock[0].isoformat(timespec="seconds")
+
+    def renew_with_clock(heartbeat):
+        advance = clock[0] is not None and not release.is_set() and len(renewals) < 5
+        if advance:
+            clock[0] += timedelta(seconds=15)
+        result = original_renew(heartbeat)
+        if advance:
+            renewals.append((heartbeat.run_claim.lease_started_at, heartbeat.claim.lease_started_at))
+            assert renewals[-1] == (fake_now(), fake_now()), renewals
+            if len(renewals) == 5:
+                renewed.set()
+        return result
 
     monkeypatch.setattr(fake, "history", slow_history)
+    monkeypatch.setattr(resource_full_auto.RunnerClaimHeartbeat, "renew_now", renew_with_clock)
+    monkeypatch.setattr(runner_mod, "POLL_SECONDS", 0.001)
     monkeypatch.setattr(
         resource_full_auto, "RUNNER_HEARTBEAT_INTERVAL", timedelta(milliseconds=5),
     )
 
     async def run_with_long_io():
-        runner.start(session_id, _full_auto_claim=execute_owner)
-        await entered.wait()
-        before = db.one(
-            "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
-        )["lease_started_at"]
-        before_runner = db.one(
-            "SELECT lease_started_at FROM global_runner_claim WHERE singleton = 1",
-        )["lease_started_at"]
-        monkeypatch.setattr(db, "now", fake_now)
-        await asyncio.sleep(0.1)
-        after = db.one(
-            "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
-        )["lease_started_at"]
-        after_runner = db.one(
-            "SELECT lease_started_at FROM global_runner_claim WHERE singleton = 1",
-        )["lease_started_at"]
-        assert datetime.fromisoformat(after) - datetime.fromisoformat(before) >= timedelta(seconds=60)
-        assert (
-            datetime.fromisoformat(after_runner) - datetime.fromisoformat(before_runner)
-            >= timedelta(seconds=60)
-        )
-        step[0] = timedelta(0)
-        release.set()
-        await runner._task
+        assert runner.start(session_id, _full_auto_claim=execute_owner)
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            before = db.one(
+                "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
+            )["lease_started_at"]
+            runner_owner = db.one("SELECT * FROM global_runner_claim WHERE singleton = 1")
+            before_runner = runner_owner["lease_started_at"]
+            clock[0] = max(datetime.fromisoformat(before), datetime.fromisoformat(before_runner))
+            monkeypatch.setattr(db, "now", fake_now)
+            try:
+                await asyncio.wait_for(renewed.wait(), timeout=5)
+            except TimeoutError as exc:
+                raise AssertionError(f"Expected five completed lease renewals; observed {renewals}") from exc
+            run = db.one("SELECT * FROM full_auto_run WHERE run_id = ?", run_id)
+            current_runner = db.one("SELECT * FROM global_runner_claim WHERE singleton = 1")
+            after = run["lease_started_at"]
+            after_runner = current_runner["lease_started_at"]
+            assert datetime.fromisoformat(after) - datetime.fromisoformat(before) >= timedelta(seconds=60)
+            assert (
+                datetime.fromisoformat(after_runner) - datetime.fromisoformat(before_runner)
+                >= timedelta(seconds=60)
+            )
+            assert len(renewals) == 5, renewals
+            assert (run["epoch"], run["fencing_token"]) == (execute_owner.epoch, execute_owner.fencing_token)
+            for field in ("owner_kind", "session_id", "run_id", "owner_nonce", "fencing_token"):
+                assert current_runner[field] == runner_owner[field], (field, renewals)
+            assert (current_runner["owner_kind"], current_runner["session_id"], current_runner["run_id"]) == (
+                "full_auto", session_id, run_id,
+            )
+            assert datetime.fromisoformat(run["lease_expires_at"]) == clock[0] + timedelta(seconds=60)
+            assert datetime.fromisoformat(current_runner["lease_expires_at"]) == clock[0] + timedelta(seconds=60)
+            assert fake.attempts == 1
+        finally:
+            release.set()
+            await asyncio.wait_for(runner._task, timeout=5)
 
     asyncio.run(run_with_long_io())
     assert fake.attempts == len(_targets)
