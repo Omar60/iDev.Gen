@@ -37,8 +37,9 @@
   independent 30/30 inventories, including Review and Approval 8/8 each. A3 is
   closed on `main`: PR #2 integrated the permanent
   `.github/workflows/e2e-windows.yml` at `ce9f495e`, and `d235127` removed the
-  temporary A2c workflow. The Windows workflow runs on pull requests targeting
-  `main` and pushes to `main`, separately from general Ubuntu CI. The A2b guide
+  temporary A2c workflow. At that A3 snapshot, the Windows workflow ran on pull
+  requests targeting `main` and pushes to `main`, separately from general Ubuntu
+  CI. The A2b guide
   and workflow history are preserved.
   Post-removal runs 43121838365 (general CI) and 43121838436 (Windows E2E) passed
   on `d235127`; see `docs/e2e-testing.md` for counts, runtime versions and limits.
@@ -51,9 +52,13 @@
   normal loop. A2b passed Linux run 42942686174. Setup, current evidence and
   limits are in `docs/e2e-testing.md`; canonical deployment state is in
   `agent_docs/project_progress.md` and `agent_docs/latest_session_work.md`.
-- GitHub Actions runs the backend suite on Python 3.12 after installing the
-  frontend lockfile with Node 22 and `npm ci`; a separate Node 22 job runs
-  `npm ci` and builds the frontend.
+- CI-W2 makes `.github/workflows/e2e-windows.yml` the sole CI workflow, on
+  `windows-2025`, for every pull request and pushes only to `main`. Its unchanged
+  `isolated-e2e` job runs Python 3.12/xdist, Node 22/Vitest, production build,
+  Node lifecycle 7/7, privacy/source controls, symlink coverage and Playwright
+  30 cases in three audited passes. The Ubuntu workflow is retired. PR ancestry
+  uses the actual target branch's base SHA; full-history checkout and ancestry
+  checks remain. CI-W2 does not merge the branch or enable branch protection.
 
 ## External Services and Infrastructure
 

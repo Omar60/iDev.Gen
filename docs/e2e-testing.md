@@ -5,13 +5,24 @@ an isolated FastAPI process. Its 30 cases comprise the A1 smoke, three A2a
 ModelDetail cases, ten A2b session/guard cases, and eight each for A2c Review
 and Approval. A2a creates and removes synthetic models through real handlers
 and tests real PATCH requests. The suite does not run ComfyUI, a GPU, or
-generation. The general Ubuntu workflow in `.github/workflows/ci.yml` runs the
-backend suite and frontend production build. The separate permanent Windows
-workflow in `.github/workflows/e2e-windows.yml` runs this E2E suite for pull
-requests targeting `main` and pushes to `main`, using
-`scripts/e2e_harness/validate-windows.ps1` for Windows lifecycle and process
-audits. A1–A3 are complete; historical A1–A2 evidence below remains scoped to
-its recorded SHA.
+generation. The only CI workflow, `.github/workflows/e2e-windows.yml`, runs on
+`windows-2025` for pull requests targeting any branch and pushes only to `main`.
+Its `isolated-e2e` job uses `scripts/e2e_harness/validate-windows.ps1` for the
+full Python suite with `pytest.ini`/xdist, complete Vitest suite, production
+build, Node lifecycle 7/7, privacy/source controls, symlink coverage, and exactly
+30 Playwright cases in each of three isolated passes with zero retries or flaky
+results. HTML, egress, identity, isolation and teardown audits remain unchanged.
+The symlink receipt distinguishes `executed-passed` from `skipped-unavailable`;
+workflow success alone does not prove the symlink test executed.
+
+Windows is the sole CI acceptance platform; `.github/workflows/ci.yml` is retired.
+For a pull request, `E2E_DIFF_BASE` uses `github.event.pull_request.base.sha`,
+regardless of the target branch. A push to `main` uses `github.event.before`.
+Checkout retains full history, and the validator still requires that base to be
+an ancestor of the checked-out commit. CI-W2 prepares this migration on
+`ci/windows-first`; merging into `main` and configuring required-status branch
+protection remain separate steps. A1–A3 are complete; the dated acceptance
+records below describe their original workflows, SHAs and platform results.
 
 ## A3 acceptance — 2026-11-11
 

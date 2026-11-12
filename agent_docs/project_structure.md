@@ -24,8 +24,9 @@ Verified baseline from the repository layout and application entry points.
   and baseline/folder cleanup checks. `tests/test_e2e_session_flow.py` covers
   session fixtures; `tests/test_e2e_lifecycle.py` covers server shutdown outcomes.
   The permanent `.github/workflows/e2e-windows.yml` runs this harness on
-  `windows-latest` for pull requests targeting `main` and pushes to `main`,
-  separately from general Ubuntu CI in `.github/workflows/ci.yml`. A3 was
+  `windows-2025` for pull requests targeting any branch and pushes only to
+  `main`. It is the sole CI workflow and acceptance platform; CI-W2 removes
+  `.github/workflows/ci.yml` without changing the harness or suites. A3 was
   integrated at `ce9f495e`; the temporary A2c workflow was removed from `main`
   at `d235127`. Exact acceptance and lifecycle evidence are in
   `docs/e2e-testing.md`. Automatic triggers do not establish a required status
