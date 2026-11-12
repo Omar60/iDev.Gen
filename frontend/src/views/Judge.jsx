@@ -36,11 +36,30 @@ export function Judge() {
   const setupHeading = useRef(null)
   const passHeading = useRef(null)
   const passRoot = useRef(null)
+  const viewRoot = useRef(null)
+  const focusTransfer = useRef(false)
   const reportHeading = useRef(null)
   const errorRef = useRef(null)
   const wasInPass = useRef(false)
   const sessionMatches = Boolean(session && String(session.id) === String(sessionId))
-  const exitPass = () => { passEpoch.current++; setInPass(false) }
+  const focusAllowed = (transfer = false) => {
+    const root = viewRoot.current
+    const focus = document.activeElement
+    if (!mounted.current || !root || root.closest('[inert]') || focus?.closest('[inert]')) return false
+    const modals = document.querySelectorAll('dialog[open], [role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')
+    if ([...modals].some((modal) => !root.contains(modal) && !modal.contains(root))) return false
+    return root.contains(focus) || (transfer && focus === document.body)
+  }
+  const focusWithin = (target, transfer = false) => {
+    if (!target?.isConnected || target.closest('[inert]') || !focusAllowed(transfer)) return false
+    target.focus({ preventScroll: true })
+    return document.activeElement === target
+  }
+  const exitPass = () => {
+    focusTransfer.current = focusAllowed()
+    passEpoch.current++
+    setInPass(false)
+  }
 
   // Pass execution state
   const [inPass, setInPass] = useState(false)
@@ -141,6 +160,7 @@ export function Judge() {
     if (!sessionId || !slot || !sessionMatches || sessionLoading || readingsLoading || readingsError || submitting || startPending.current) return
     if (axes.length && !axis) return
     startPending.current = true
+    focusWithin(setupHeading.current)
     const requestedContext = context.current
     const epoch = ++passEpoch.current
     setError(null)
@@ -160,6 +180,7 @@ export function Judge() {
         setLoading(false)
         return
       }
+      focusTransfer.current = focusAllowed()
       setDeck(newDeck)
       setDeckIndex(0)
       setResults([])
@@ -223,6 +244,7 @@ export function Judge() {
     answerPending.current = true
     const epoch = passEpoch.current
     const current = deck[deckIndex]
+    if (document.activeElement?.matches('.judge-choices button, .judge-defect button')) focusWithin(passHeading.current)
     setSubmitting(true)
     setError(null)
     setAnswerUncertain(false)
@@ -242,6 +264,7 @@ export function Judge() {
         defect: defect || null,
       }
       const nextResults = [...results, recorded]
+      focusTransfer.current = focusAllowed()
       setResults(nextResults)
 
       if (deckIndex + 1 < deck.length) {
@@ -309,19 +332,22 @@ export function Judge() {
   }, [inPass, deckIndex, choices, submitAnswer, submitting, imageState])
 
   useEffect(() => {
+    // Consume permission once, including when a modal blocks the transition.
+    const transfer = focusTransfer.current
+    focusTransfer.current = false
     const heading = inPass ? passHeading.current : passDone ? reportHeading.current : null
-    if (heading) { heading.focus({ preventScroll: true }); heading.scrollIntoView({ block: 'start' }) }
-    else if (wasInPass.current) (startRef.current?.disabled ? setupHeading.current : startRef.current)?.focus()
+    if (heading) { if (focusWithin(heading, transfer)) heading.scrollIntoView({ block: 'start' }) }
+    else if (wasInPass.current) focusWithin(startRef.current?.disabled ? setupHeading.current : startRef.current, transfer)
     wasInPass.current = inPass
   }, [inPass, deckIndex, passDone])
-  useEffect(() => { if (error) errorRef.current?.focus() }, [error])
+  useEffect(() => { if (error) focusWithin(errorRef.current) }, [error])
 
 
   const errorNotice = error && <div ref={errorRef} className="ui-notice" data-tone="error" role="alert" tabIndex={-1}>{error}</div>
 
   if (passDone) {
     const agreement = computeAgreement(results)
-    return <div className="studio-ui ui-page judge-view ui-stack">
+    return <div ref={viewRoot} className="studio-ui ui-page judge-view ui-stack">
       <header className="ui-page-header"><p className="judge-eyebrow">Judge / Report</p>
         <h2 ref={reportHeading} tabIndex={-1} className="ui-page-title">Judging Pass Complete</h2>
         <p className="ui-lead">Judged {results.length} photograph{results.length === 1 ? '' : 's'} on {slot} in {session?.name || `session #${sessionId}`}.</p></header>
@@ -344,7 +370,7 @@ export function Judge() {
   if (inPass && deckIndex < deck.length) {
     const current = deck[deckIndex]
     const question = slot === 'camera' ? 'Which camera position is in this photograph?' : slot === 'framing' ? 'Which framing is in this photograph?' : 'Which act/arrangement is in this photograph?'
-    return <div ref={passRoot} className="studio-ui ui-page judge-view judge-pass ui-stack">
+    return <div ref={(node) => { passRoot.current = node; viewRoot.current = node }} className="studio-ui ui-page judge-view judge-pass ui-stack">
       <header className="judge-pass-header"><div><p className="judge-eyebrow">Judge / Blind pass</p>
         <h2 ref={passHeading} tabIndex={-1} className="ui-page-title">Photo {deckIndex + 1} of {deck.length}</h2>
         <p className="ui-help">{slot}{axis ? ` / ${axis}` : ''} · {session?.name || `Session #${sessionId}`}</p></div>
@@ -357,7 +383,7 @@ export function Judge() {
           onLoad={() => setImageState('ready')} onError={() => setImageState('error')} />
         {imageState === 'loading' && <p className="judge-photo-state" role="status">Loading photograph…</p>}
         {imageState === 'error' && <div className="judge-photo-state ui-notice" data-tone="error" role="alert"><p>Photograph could not be loaded. No answer has been recorded.</p>
-          <button className="ui-button" onClick={() => { setImageState('loading'); setImageAttempt(imageAttempt + 1) }}>Reload photograph</button></div>}
+          <button className="ui-button" onClick={() => { focusWithin(passHeading.current); setImageState('loading'); setImageAttempt(imageAttempt + 1) }}>Reload photograph</button></div>}
       </div>
       <section className="ui-surface" aria-labelledby="judge-question" aria-busy={submitting}>
         <h3 id="judge-question" className="ui-section-title">{question}</h3>
@@ -376,7 +402,7 @@ export function Judge() {
 
   const blocked = !sessionId ? 'Select a session to begin.' : sessionLoading ? 'Loading session details…' : !sessionMatches ? 'Session details are unavailable. Retry before continuing.' : readingsLoading ? 'Loading readings…' : readingsError ? 'Readings are unavailable. Retry before continuing.' : axes.length && !axis ? 'Choose the question this pass will ask.' : 'Ready to request a blind pass. No verdict is recorded when you start.'
   const sessionReadings = allReadings.filter((r) => r.session_id !== null)
-  return <div className="studio-ui ui-page judge-view ui-stack">
+  return <div ref={viewRoot} className="studio-ui ui-page judge-view ui-stack">
     <header className="ui-page-header"><p className="judge-eyebrow">Judge / Evaluation</p><h2 ref={setupHeading} tabIndex={-1} className="ui-page-title">Judging Pass</h2>
       <p className="ui-lead">Read the photograph, not the prompt. A blind forced-choice pass measures visible components against the catalogue.</p></header>
     {errorNotice}
