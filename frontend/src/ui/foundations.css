@@ -46,6 +46,10 @@
 .studio-ui .ui-field-wide { grid-column: 1 / -1; }
 .studio-ui .ui-label { margin: 0; color: var(--ui-color-text); font-size: var(--ui-text-label); font-weight: 600; }
 .studio-ui .ui-control { width: 100%; min-width: 0; min-height: 44px; padding: var(--ui-padding-control); color: var(--ui-color-text); background: var(--ui-color-field); border: 1px solid var(--ui-color-control-border); border-radius: var(--ui-radius-control); }
+.studio-ui .ui-control::placeholder {
+  color: var(--ui-color-muted);
+  opacity: 1;
+}
 .studio-ui .ui-control:hover { border-color: var(--ui-color-muted); }
 .studio-ui .ui-control[aria-invalid="true"] { border-color: var(--ui-color-error); }
 .studio-ui .ui-help { margin: 0; max-width: 80ch; color: var(--ui-color-muted); font-size: var(--ui-text-help); overflow-wrap: anywhere; }
