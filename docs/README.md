@@ -2,6 +2,7 @@
 
 - [Getting started](getting-started.md) — install, Setup screen, first session.
 - [Workflows](workflows.md) — importing a ComfyUI workflow and mapping its nodes.
+- [Browser E2E testing](e2e-testing.md) — the isolated harness and permanent Windows CI.
 - [Sessions](sessions.md) — legacy and resource plans, operation recovery, review, submission, and generation.
 - [Saved looks](looks.md) — manually create and revise reusable appearance
   and outfit snapshots.

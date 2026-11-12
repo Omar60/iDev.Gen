@@ -33,10 +33,17 @@
   audited revision-advance control through real handlers, and checks complete
   persisted rows remain unchanged by reads. `session-approval.e2e.mjs` adds
   eight cases for the separate, revision-bound Approval action. A1 through A2c
-  are closed at `d674826`; Linux run 42965352388 passed three independent 30/30
-  inventories, including Review and Approval 8/8 each. The retained A2c workflow
-  triggers only on push to `e2e-a2c`; A3 will decide its replacement with
-  permanent CI. The A2b workflow is retired, with its history preserved.
+  were completed at `d674826`; historical Linux run 42965352388 passed three
+  independent 30/30 inventories, including Review and Approval 8/8 each. A3 is
+  closed on `main`: PR #2 integrated the permanent
+  `.github/workflows/e2e-windows.yml` at `ce9f495e`, and `d235127` removed the
+  temporary A2c workflow. The Windows workflow runs on pull requests targeting
+  `main` and pushes to `main`, separately from general Ubuntu CI. The A2b guide
+  and workflow history are preserved.
+  Post-removal runs 43121838365 (general CI) and 43121838436 (Windows E2E) passed
+  on `d235127`; see `docs/e2e-testing.md` for counts, runtime versions and limits.
+  Automatic triggers do not establish a required status check in branch
+  protection.
   Byte-exact HTML preflight and SHA256-bound document checks reject altered
   responses. Lifecycle monitoring distinguishes graceful, forced and failed
   outcomes, drains process streams and separately audits owned-root removal; the

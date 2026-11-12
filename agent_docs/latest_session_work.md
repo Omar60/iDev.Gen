@@ -1,6 +1,32 @@
 # Latest Session Work
 
-## Dated A2d Integration Snapshot — 2026-11-11
+## A3 Closure Snapshot — 2026-11-11
+
+A3 is technically closed on `main` at `d235127578683138b2e1e7df9c3a03e861ab43f1`.
+PR #2 merged by fast-forward at `ce9f495e`; the temporary A2c workflow was
+removed in `d235127`, and `.github/workflows/e2e-windows.yml` is the permanent
+Windows E2E workflow. No functional code changes were needed for A3.
+
+- [General CI run 43121838365](https://github.com/Omar60/iDev.Gen/actions/runs/43121838365):
+  SUCCESS; Python 3,729 passed, one skipped; frontend build SUCCESS.
+- [Windows E2E run 43121838436](https://github.com/Omar60/iDev.Gen/actions/runs/43121838436):
+  SUCCESS on push to `main`, attempt 1. Python 3,729 passed, one skipped;
+  frontend 1,007/1,007; Node 7/7; privacy/source 46/46; Playwright 30/30 in
+  three independent passes; symlink coverage `executed-passed`.
+- Windows Server 2025; Node 22.23.4; Python 3.12.10; Playwright 1.65.0;
+  Chromium 158.0.8127.18, revision 1254.
+- Build, HTML preflight, egress guard, Windows lifecycle audits and diff-check
+  passed. Each pass had one worker and zero retries; harness-owned PIDs and
+  ports, marked temporary roots, and harness-owned Chromium processes were
+  absent after teardown.
+- The Python skip was the opt-in 500-take synthesis benchmark. Python
+  dependency ranges remain floating. Automatic workflow triggers do not prove
+  that Windows E2E is required by branch protection.
+
+Current E2E architecture and full acceptance details are in
+[`docs/e2e-testing.md`](../docs/e2e-testing.md).
+
+## Historical A2d Integration Snapshot — before A3 closure (2026-11-11)
 
 As of this snapshot, `c365c47c95a5bde0e9d45c303a447bce743a6142` was published
 to `e2e-a2c` and removed the temporary A2b workflow. The current branch refs,

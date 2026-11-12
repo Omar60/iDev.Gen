@@ -23,7 +23,14 @@ Verified baseline from the repository layout and application entry points.
   bounded runtime writes, separate fixture-control audits, full SQLite snapshots
   and baseline/folder cleanup checks. `tests/test_e2e_session_flow.py` covers
   session fixtures; `tests/test_e2e_lifecycle.py` covers server shutdown outcomes.
-  Historical acceptance snapshot (2026-11-11): E2E phases A1–A2c are complete.
+  The permanent `.github/workflows/e2e-windows.yml` runs this harness on
+  `windows-latest` for pull requests targeting `main` and pushes to `main`,
+  separately from general Ubuntu CI in `.github/workflows/ci.yml`. A3 was
+  integrated at `ce9f495e`; the temporary A2c workflow was removed from `main`
+  at `d235127`. Exact acceptance and lifecycle evidence are in
+  `docs/e2e-testing.md`. Automatic triggers do not establish a required status
+  check in branch protection.
+  Historical pre-A3 acceptance snapshot (2026-11-11): E2E phases A1–A2c were complete.
   Linux run 42965352388 passed three independent 30/30 inventories at
   `d674826`; Windows validation of
   `c365c47` passed four independent 30/30 inventories. Run 43036836646 for

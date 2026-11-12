@@ -67,7 +67,10 @@ The frontend has its own suite, `npm --prefix frontend test`, covering the
 logic that is wrong in a way review cannot see. Run it when you touch
 `frontend/`.
 
-CI runs the Python suite plus a frontend build on every push and pull request.
+General CI in `.github/workflows/ci.yml` runs the Python suite and frontend
+build on pushes to `main` and pull requests. The separate Windows E2E workflow
+runs Playwright on pushes to `main` and pull requests targeting `main`; see
+[Browser E2E testing](docs/e2e-testing.md) for its isolated harness and checks.
 
 ## Pull requests
 

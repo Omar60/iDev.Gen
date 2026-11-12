@@ -1,6 +1,28 @@
 # Project Progress
 
-## Dated Verification Snapshot — 2026-11-11
+## A3 Closure Snapshot — 2026-11-11
+
+A3 is technically closed on `main` at `d235127578683138b2e1e7df9c3a03e861ab43f1`.
+The PR #2 commits were integrated by fast-forward at `ce9f495e`, and the
+temporary A2c validation workflow was removed in `d235127`. The permanent
+Windows workflow `.github/workflows/e2e-windows.yml` runs separately from the
+general Ubuntu workflow `.github/workflows/ci.yml`.
+
+- [General CI run 43121838365](https://github.com/Omar60/iDev.Gen/actions/runs/43121838365):
+  SUCCESS; Python 3,729 passed, one skipped; frontend build SUCCESS.
+- [Windows E2E run 43121838436](https://github.com/Omar60/iDev.Gen/actions/runs/43121838436):
+  SUCCESS; Python 3,729 passed, one skipped; frontend 1,007/1,007; Node 7/7;
+  privacy/source 46/46; exact 30-case inventory passed in three independent
+  Chromium runs; symlink coverage executed.
+- HTML preflight, egress guard, build, diff-check and Windows process/socket,
+  server and root lifecycle audits passed. See `docs/e2e-testing.md` for the
+  exact runtime versions, scenario inventory and scope limits.
+
+The one Python skip was the opt-in 500-take synthesis benchmark. Python
+dependency ranges remain floating; automatic execution of Windows E2E does not
+establish required-status branch protection.
+
+## Historical A2d Verification Snapshot — before A3 closure (2026-11-11)
 
 By this date, `c365c47c95a5bde0e9d45c303a447bce743a6142` had been published to
 `e2e-a2c`; it records the documentation reconciliation and removal of the

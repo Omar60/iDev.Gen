@@ -965,7 +965,11 @@ For rendered Resources and SessionView coverage against an isolated backend,
 follow the [Task 8.6 browser walkthrough](docs/task-8-6-browser-walkthrough.md).
 
 Dev dependencies: `pip install -r backend/requirements-dev.txt`.
-CI in `.github/workflows/ci.yml` runs the suite and builds the frontend.
+General CI in `.github/workflows/ci.yml` runs the Python suite and builds the
+frontend on pushes to `main` and pull requests. A separate [Windows E2E
+workflow](.github/workflows/e2e-windows.yml) runs the isolated Playwright suite
+on pushes to `main` and pull requests targeting `main`; see [Browser E2E
+testing](docs/e2e-testing.md).
 
 ## Cleanup
 

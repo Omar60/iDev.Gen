@@ -5,11 +5,57 @@ an isolated FastAPI process. Its 30 cases comprise the A1 smoke, three A2a
 ModelDetail cases, ten A2b session/guard cases, and eight each for A2c Review
 and Approval. A2a creates and removes synthetic models through real handlers
 and tests real PATCH requests. The suite does not run ComfyUI, a GPU, or
-generation, and is not a required job in `.github/workflows/ci.yml`.
-E2E phases A1–A2c are complete; the accepted Linux and Windows evidence below is
-scoped to its recorded SHA.
+generation. The general Ubuntu workflow in `.github/workflows/ci.yml` runs the
+backend suite and frontend production build. The separate permanent Windows
+workflow in `.github/workflows/e2e-windows.yml` runs this E2E suite for pull
+requests targeting `main` and pushes to `main`, using
+`scripts/e2e_harness/validate-windows.ps1` for Windows lifecycle and process
+audits. A1–A3 are complete; historical A1–A2 evidence below remains scoped to
+its recorded SHA.
 
-## Dated acceptance evidence — 2026-11-11
+## A3 acceptance — 2026-11-11
+
+A3 is integrated into `main` at `d235127578683138b2e1e7df9c3a03e861ab43f1`.
+PR #2 merged by fast-forward at `ce9f495e`; the temporary A2c workflow was
+removed in `d235127`. The CI and Windows E2E workflows remain separate. Their
+automatic triggers do not establish that either workflow is configured as a
+required status check in branch protection; verify that repository setting
+separately.
+
+[General CI run 43121838365](https://github.com/Omar60/iDev.Gen/actions/runs/43121838365)
+and [Windows E2E run 43121838436](https://github.com/Omar60/iDev.Gen/actions/runs/43121838436)
+both passed on push to `main` at `d235127` (attempt 1). General CI passed the
+backend suite (3,729 passed, one skipped) and frontend build. Windows passed
+Python (3,729 passed, one skipped), frontend 1,007/1,007, Node lifecycle 7/7,
+privacy/source controls 46/46, build, HTML preflight, and diff-check. The
+Python skip was the opt-in 500-take synthesis benchmark.
+
+The Playwright inventory was exactly Smoke 1, ModelDetail 3, Submit 5, Prepare
+4, Guard 1, Review 8, and Approval 8. Each of three independent passes passed
+30/30 with one worker, zero retries, no skips or flaky results, and a new
+FastAPI server, SQLite database, identity, and temporary root. The symlink test
+was `executed-passed`, not skipped. `E2E_HTML_PREFLIGHT clean=true`. The smoke
+test verified blocked browser HTTP, redirect and WebSocket probes with zero
+sibling-listener hits; backend HTTPX connections used synthetic-provider hosts
+only; the automatic fixture passed for every spec. External Windows
+lifecycle audits passed for preflight and every pass: server identity matched
+the harness; exit was graceful with code 0, `forced=false`, and drained
+streams; `E2E_SERVER_STOPPED` and `E2E_ROOT_REMOVED` reported `clean=true`; the
+harness-owned PID and port were absent; no marked temporary roots or
+harness-owned Chromium processes remained.
+
+The runner was Windows Server 2025 with Node 22.23.4, Python 3.12.10,
+Playwright 1.65.0, and Chromium 158.0.8127.18 (revision 1254). The workflow
+installs locked Node dependencies with `npm ci` and the Playwright-pinned
+Chromium build without `--with-deps`. Failure-only artifacts contain synthetic
+logs and traces and are retained for three days.
+
+Known limits: the opt-in 500-take benchmark was skipped; Python dependency
+ranges are still floating; hosted runner images and patch versions can change;
+non-blocking dependency and Actions warnings remain; and E2E does not exercise
+real providers, ComfyUI, a GPU, or image generation.
+
+## Historical A2 acceptance evidence — 2026-11-11
 
 Accepted Windows validation at `c365c47` used Node 22.23.4, Playwright 1.65.0
 and pinned Chromium 158.0.8127.18
@@ -38,13 +84,13 @@ Commit `c365c47` was published to `e2e-a2c` and removed the temporary A2b
 workflow. Check Git for current branch refs, ancestry and integration status;
 this dated evidence is not a live status report.
 
-The retained `.github/workflows/e2e-a2c-validation.yml` runs only on push to
-`e2e-a2c`, with a matching job-level ref check. It requires exactly 30 tests per
-pass, three fresh-server passes, one worker and zero retries. The retired A2b
-workflow remains available in Git history; its decisions and original procedure
-are preserved in [the historical A2b guide](e2e-a2b-validation.md). A3 will decide
-whether and how to add permanent Windows CI. The retained workflow does not run
-on main or pull requests and is not a required main CI gate.
+At the time of the `c365c47` snapshot, the temporary
+`.github/workflows/e2e-a2c-validation.yml` ran only on pushes to `e2e-a2c`, with
+a matching job-level ref check, exactly 30 tests per pass, three fresh-server
+passes, one worker, and zero retries. It was later removed from `main` in
+`d235127` after the permanent Windows workflow was accepted. The retired A2b
+workflow remains in Git history, and its decisions and original procedure are
+preserved in [the historical A2b guide](e2e-a2b-validation.md).
 
 ## Requirements and commands
 
