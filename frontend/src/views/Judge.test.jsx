@@ -9,7 +9,7 @@ import { api } from '../api.js'
 let root, host, readings, pass
 const drain = () => new Promise((resolve) => setTimeout(resolve, 0))
 const button = (text) => [...host.querySelectorAll('button')].find((b) => b.textContent.includes(text))
-const click = async (el) => { expect(el).toBeTruthy(); await act(async () => { el.click(); await drain() }) }
+const click = async (el) => { expect(el).toBeTruthy(); await act(async () => { if (!el.disabled) el.focus(); el.click(); await drain() }) }
 const edit = async (id, value) => act(async () => {
   const el = host.querySelector(`#${id}`)
   Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set.call(el, value)
@@ -234,4 +234,112 @@ it('keeps text-entry, editable, modified and handled events out of the answer sh
   })
   expect(api.post).not.toHaveBeenCalled()
   await key('1'); expect(api.post).toHaveBeenCalledTimes(1)
+})
+
+const deferred = () => {
+  let resolve, reject
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+const settleAnswer = async (request, status = 200) => act(async () => {
+  if (status === 200) request.resolve({ answered: 'front' })
+  else request.reject(Object.assign(Error('Response not confirmed'), { status }))
+  await drain()
+})
+
+it.each(['Enter', ' '])('keeps stable focus and Escape during a pending answer activated with %s', async (activation) => {
+  const request = deferred(); api.post.mockReturnValueOnce(request.promise)
+  await begin()
+  const answer = button('Front-facing'); answer.focus()
+  await key(activation)
+  // happy-dom does not implement the browser's default keyboard activation.
+  await click(answer)
+  expect(answer.disabled).toBe(true)
+  expect(document.activeElement).toBe(host.querySelector('.judge-pass h2'))
+  await key('0'); await key('C'); await click(answer)
+  expect(api.post).toHaveBeenCalledExactlyOnceWith('/api/shots/11/judge', { camera: 'front', control: false })
+  await key('Escape')
+  expect(host.querySelector('.judge-pass')).toBeNull()
+  expect(document.activeElement).toBe(host.querySelector('h2'))
+  await settleAnswer(request)
+  expect(host.textContent).not.toContain('Photo 2')
+  expect(api.post).toHaveBeenCalledTimes(1)
+})
+
+for (const modal of ['dialog', 'alertdialog', 'native']) {
+  it.each([200, 503])(`keeps an external ${modal} focused when an answer returns %s`, async (status) => {
+    const request = deferred(); api.post.mockReturnValueOnce(request.promise)
+    await begin(); await key('1')
+    const external = document.createElement(modal === 'native' ? 'dialog' : 'div')
+    if (modal === 'native') external.setAttribute('open', '')
+    else { external.setAttribute('role', modal); external.setAttribute('aria-modal', 'true') }
+    const action = document.createElement('button'); action.textContent = 'External action'
+    external.append(action); host.append(external); action.focus()
+    await settleAnswer(request, status)
+    expect(document.activeElement).toBe(action)
+    expect(host.textContent).toContain(status === 200 ? 'Photo 2' : 'The response was not confirmed')
+    await key('0'); expect(api.post).toHaveBeenCalledTimes(1)
+    external.remove()
+    const navigation = document.createElement('button'); host.append(navigation); navigation.focus()
+    await act(async () => { await drain() })
+    expect(document.activeElement).toBe(navigation)
+  })
+}
+
+it.each([200, 503])('does not steal voluntary external focus after an answer returns %s', async (status) => {
+  const request = deferred(); api.post.mockReturnValueOnce(request.promise)
+  await begin(); await key('1')
+  const outside = document.createElement('button'); outside.textContent = 'Navigation'; host.append(outside); outside.focus()
+  await settleAnswer(request, status)
+  expect(document.activeElement).toBe(outside)
+  expect(api.post).toHaveBeenCalledTimes(1)
+})
+
+it.each([200, 503])('leaves the mobile drawer focused while an answer returns %s behind inert content', async (status) => {
+  const get = api.get.getMockImplementation()
+  api.get.mockImplementation((path) => path === '/api/comfy/status' ? Promise.resolve({ online: true }) : get(path))
+  vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+  const request = deferred(); api.post.mockReturnValueOnce(request.promise)
+  await mount(shell()); await click(button('Start Judging Pass')); await loaded(); await key('1')
+  const trigger = host.querySelector('[aria-label="Open navigation"]'); await click(trigger)
+  const focused = document.activeElement
+  expect(host.querySelector('.judge-pass').closest('[inert]')).toBeTruthy()
+  await settleAnswer(request, status)
+  expect(document.activeElement).toBe(focused)
+  await key('0'); expect(api.post).toHaveBeenCalledTimes(1)
+  await key('Escape'); expect(document.activeElement).toBe(trigger)
+})
+
+it('moves focus before removing Reload and keeps answers disabled until the current image loads', async () => {
+  await begin()
+  await act(async () => host.querySelector('img').dispatchEvent(new Event('error')))
+  const reload = button('Reload photograph'); await click(reload)
+  expect(document.activeElement).toBe(host.querySelector('.judge-pass h2'))
+  expect(button('Front-facing').disabled).toBe(true)
+  expect(host.querySelector('img').getAttribute('src')).toBe('/api/shots/11/image')
+  await key('1'); expect(api.post).not.toHaveBeenCalled()
+  await loaded(); expect(document.activeElement).toBe(host.querySelector('.judge-pass h2'))
+  await key('1'); expect(api.post).toHaveBeenCalledExactlyOnceWith('/api/shots/11/judge', { camera: 'front', control: false })
+})
+
+it('does not restore image retry focus after voluntary navigation or a later modal', async () => {
+  await begin()
+  await act(async () => host.querySelector('img').dispatchEvent(new Event('error')))
+  await click(button('Reload photograph'))
+  const outside = document.createElement('div'); outside.setAttribute('role', 'dialog'); outside.setAttribute('aria-modal', 'true')
+  const action = document.createElement('button'); outside.append(action); host.append(outside); action.focus()
+  await loaded()
+  expect(document.activeElement).toBe(action)
+  await key('1'); expect(api.post).not.toHaveBeenCalled()
+})
+
+it.each([200, 503])('does not restore focus or a pass after unmount and a late %s response', async (status) => {
+  const request = deferred(); api.post.mockReturnValueOnce(request.promise)
+  await begin(); await key('1')
+  await act(async () => root.unmount()); root = null
+  const outside = document.createElement('button'); host.append(outside); outside.focus()
+  await settleAnswer(request, status)
+  expect(document.activeElement).toBe(outside)
+  expect(host.querySelector('.judge-pass')).toBeNull()
+  expect(api.post).toHaveBeenCalledTimes(1)
 })
