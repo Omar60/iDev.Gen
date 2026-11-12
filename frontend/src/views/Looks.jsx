@@ -1471,6 +1471,8 @@ export default function Looks() {
         const rows = reviewedRows(form)
         const source = prospectiveSource(form.appearance, rows)
         const digest = await draftContentDigest(source)
+        // A save that leaves this surface before the digest is ready has not reached the POST boundary.
+        if (!mountedRef.current || surfaceEpoch !== detailRequest.current) return
         const profile = prospectiveProfile(automationDraft, form.appearance, rows, digest)
         const suggestion = profileSuggestion
           && (photoMode !== 'extracted' || profileSuggestion.proposal_id === photoProposal?.proposal_id)
@@ -1561,9 +1563,11 @@ export default function Looks() {
         await runSaveAttempt({ path, body, integerFields }, false, surfaceEpoch)
       }
     } catch (error) {
-      setSaveError(errorText(error, 'prepare this look save'))
-      combinedSaveRef.current = null
-      setUncertainSave(false)
+      if (mountedRef.current && surfaceEpoch === detailRequest.current) {
+        setSaveError(errorText(error, 'prepare this look save'))
+        combinedSaveRef.current = null
+        setUncertainSave(false)
+      }
     } finally {
       savingRef.current = false
       if (mountedRef.current && surfaceEpoch === detailRequest.current) setSaving(false)
