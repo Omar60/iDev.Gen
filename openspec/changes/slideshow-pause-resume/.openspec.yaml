@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-13
+goal: Pause and resume automatic slideshow playback without changing existing
+  playback behavior while playing.

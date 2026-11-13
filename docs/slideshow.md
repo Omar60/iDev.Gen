@@ -122,32 +122,60 @@ viewer. The Fullscreen button label follows external fullscreen changes.
 
 ## Studio viewer and recovery
 
-Opening the Slideshow route remains the explicit action that starts its existing
-automatic playback. There is no new play/pause or manual next/previous control.
+Opening the Slideshow route starts autoplay. The footer has a **Pause slideshow**
+button; while paused it becomes **Resume slideshow**. Pausing keeps the current
+photograph and deck order and stops automatic advances. Resuming waits one full
+interval using the currently selected speed. Changing the interval while
+playing retains the existing retune behavior; changing it while paused does not
+resume playback.
+
+Pause remains in effect while a rating request or Retry is pending and during
+fullscreen changes. A completed rating update or Retry may rebuild the set and
+select its first photograph, as before, but does not resume a paused viewer.
+If a listing request fails while paused, the footer continues to say that no
+photographs will advance while the set is unavailable. Resume stays disabled
+until automatic advance is possible again.
+Fullscreen Escape returns to the window view without changing playback; leaving
+Slideshow and opening it again starts autoplay. Pause is local to the viewer and
+does not add a setting to the address.
+
+The playback button remains visible but is disabled while there is no possible
+automatic advance: the list is empty or unavailable, only one photograph is in
+the set, or every photograph has failed. It remains available while an older
+multi-photograph set is still visible during a rating request. The viewer has no
+manual next or previous control.
+
 The photograph has its own area, separate from the session name, rating,
 interval and exit controls. Vertical, horizontal and square photographs use
 `object-fit: contain` without distortion or controls covering their edges.
 Session names wrap, with a visual session-ID fallback when a name is absent.
 
 A native modal viewer with explicit Tab wrapping keeps focus inside its controls
-and makes the
-underlying navigation inactive. Focus starts on the viewer heading, remains
-stable during timed changes, and returns to the application on exit. Body scroll,
-listeners, buffer references and the timer are cleaned up on unmount. Fullscreen
-is requested only by its button; failures are shown without repeating a request.
-Fullscreen entered by the viewer is released when it unmounts, including a
-request that finishes after navigation away.
+and makes the underlying navigation inactive. Focus starts on the viewer
+heading, remains stable during timed changes and Pause/Resume, and returns to the
+application on exit. If an asynchronous result disables the focused playback
+button, focus returns to the viewer heading. Body scroll, listeners, buffer
+references and the timer are cleaned up on unmount. Fullscreen is requested only
+by its button; failures are shown without repeating a request. Fullscreen entered
+by the viewer is released when it unmounts, including a request that finishes
+after navigation away.
 
 The initial list request has a distinct loading state. Changing the rating keeps
 the previous set running until the new list arrives, as before; the viewer says
-that the set is updating. Stale list and image events do not replace the current
-selection. Changing the interval preserves the set and retunes the existing timer.
+that the set is updating. The playback button remains available during that
+pending request when the old set has multiple photographs. Stale list and image
+events do not replace the current selection. Changing the interval preserves the
+set and retunes the existing timer.
 
-Missing images still advance using the unchanged deck transition. If every image
+While playing, a missing image still advances using the unchanged deck
+transition. If the current image fails while paused, Slideshow keeps its index,
+shows an unavailable message instead of an endless loading message, and does not
+request that failed image again while it remains selected. Resume keeps the
+message in place until one full interval elapses, then advances. If every image
 in the set fails, an unavailable-state panel prevents repeated failing image
-mounts and offers an explicit retry. The deck and its timer are not changed or
-filtered by this panel. Retry reads the list again and builds a fresh shuffled
-set; it does not write data. A single available photograph still has no timer.
+mounts and offers an explicit retry. Retry reads the list again and builds a
+fresh shuffled set without changing pause state or writing data. A single
+available photograph still has no timer.
 
 Preloading retains the existing rolling decode window. An ID repeated by a
 lookahead larger than the set is decoded once per window, not once per repeated

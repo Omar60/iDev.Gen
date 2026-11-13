@@ -55,26 +55,40 @@ export default function Slideshow() {
   // on. As one updater it is a pure transition on one value.
   const [play, setPlay] = useState({ deck: [], index: 0 })
   const { deck, index } = play
+  const [playing, setPlaying] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [emptyStatus, setEmptyStatus] = useState('')
   const [loading, setLoading] = useState(true)
   const [reload, setReload] = useState(0)
   const [failedIds, setFailedIds] = useState(new Set())
+  const [pausedErrorId, setPausedErrorId] = useState(null)
   const [imageState, setImageState] = useState({ id: null, ready: false })
   const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement))
   const [fullscreenError, setFullscreenError] = useState('')
   const dialogRef = useRef(null)
   const headingRef = useRef(null)
+  const playbackRef = useRef(null)
+  const playingRef = useRef(playing)
+  playingRef.current = playing
+  // Queued interval callbacks must observe exhaustion before effect cleanup.
+  const allFailedRef = useRef(false)
   const mounted = useRef(false)
   const ownsFullscreen = useRef(false)
   const fullscreenEscapePending = useRef(false)
   const fullscreenEscapeFailed = useRef(false)
   const currentId = useRef(null)
+  // Photo ids repeat across a pass; reject events from an earlier image element.
+  const imageRef = useRef(null)
   currentId.current = deck[index]?.id
+  const allFailed = deck.length > 0 && failedIds.size === deck.length
+  allFailedRef.current = allFailed
 
   // Mutable, on purpose: filling a buffer is a side effect of advancing, and
   // doing it through state would re-render with a stale buffer for one frame.
   const bufferRef = useRef([])
+  const focusHeadingIfPlaybackDisables = () => {
+    if (document.activeElement === playbackRef.current) headingRef.current?.focus()
+  }
 
   useEffect(() => {
     mounted.current = true
@@ -117,7 +131,9 @@ export default function Slideshow() {
       .then((rows) => {
         if (cancelled) return
         setEmptyStatus(rows.length === 0 ? EMPTY_RESULT_MESSAGE : '')
+        if (rows.length < 2) focusHeadingIfPlaybackDisables()
         setFailedIds(new Set())
+        setPausedErrorId(null)
         setImageState({ id: null, ready: false })
         setPlay({ deck: shuffle(rows), index: 0 })
         // The old buffer points at rows that no longer exist. Clear it; the
@@ -126,8 +142,10 @@ export default function Slideshow() {
       })
       .catch((e) => {
         if (cancelled) return
+        focusHeadingIfPlaybackDisables()
         setLoadError(e.message || 'The photograph list could not be loaded.')
         setPlay({ deck: [], index: 0 })
+        setPausedErrorId(null)
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -147,7 +165,7 @@ export default function Slideshow() {
   // dropping the last reference to an Image is what lets the decode be
   // collected and paid for again.
   useEffect(() => {
-    if (deck.length === 0) { bufferRef.current = []; return }
+    if (deck.length === 0 || allFailed) { bufferRef.current = []; return }
     const want = []
     for (let k = 0; k < lookahead; k++) {
       const photo = deck[(index + 1 + k) % deck.length]
@@ -167,25 +185,28 @@ export default function Slideshow() {
       held.add(photo.id)
     }
     bufferRef.current = buffer
-  }, [deck, index, lookahead])
+  }, [allFailed, deck, index, lookahead])
 
   // One step of the walk, and the only place the deck advances: the timer and
-  // the missing-file handler share it. Walking off the end draws a fresh order
+  // an active-playback missing-file handler share it. Walking off the end draws
+  // a fresh order
   // — same set, different sequence — so a thirteen-photograph set is not a
   // memorised loop after one pass. The buffer is not touched here; the effect
   // above re-derives the window from the new index.
-  const advance = () => setPlay(nextPlay)
+  const advance = () => {
+    if (!playingRef.current || allFailedRef.current) return
+    setPausedErrorId(null)
+    setPlay(nextPlay)
+  }
 
-  // The timer. Re-declared when the interval changes so a tighter or longer
-  // setting takes effect on the next tick, mid-set. It is keyed on the deck's
-  // LENGTH, not the deck: a reshuffle at the end of a pass keeps the same
-  // length, so the timer is left running rather than being torn down and
-  // restarted under the photograph that just appeared.
+  // The timer restarts for Resume, an interval change, or recovery after Retry,
+  // never on index. It is keyed on deck length, not deck, so a normal reshuffle
+  // leaves the timer running under the photograph that just appeared.
   useEffect(() => {
-    if (deck.length < 2) return
+    if (!playing || deck.length < 2 || allFailed) return
     const id = setInterval(advance, interval * 1000)
     return () => clearInterval(id)
-  }, [deck.length, interval])
+  }, [allFailed, deck.length, interval, playing])
 
   // Write one setting back into the hash. The hash IS the state: this changes
   // the address, the hashchange listener above re-parses it, and the effects
@@ -210,17 +231,37 @@ export default function Slideshow() {
     setReload((value) => value + 1)
   }
 
+  const togglePlayback = () => {
+    const next = !playingRef.current
+    playingRef.current = next
+    setPlaying(next)
+  }
+
   const current = deck[index]
   const name = current?.session_name || (current ? `Session #${current.session_id}` : '')
-  const allFailed = deck.length > 0 && failedIds.size === deck.length
-  const imageLoading = current && (imageState.id !== current.id || !imageState.ready)
+  const pausedImageFailed = current && pausedErrorId === current.id
+  const imageLoading = current && !pausedImageFailed && (imageState.id !== current.id || !imageState.ready)
+  const canAdvance = deck.length > 1 && !allFailed && !loadError
+  const playbackStatus = loading && current
+    ? `Updating the photograph set…${playing ? '' : ' Playback is paused; resume to continue.'}`
+    : current && !allFailed
+      ? deck.length === 1 ? 'Single photograph; no automatic advance.' : playing ? `Advances automatically every ${interval} seconds.` : 'Playback is paused; resume to continue.'
+      : !playing
+        ? 'Playback is paused; no photographs will advance while this set is unavailable.'
+        : allFailed ? 'No photographs are available to advance.' : 'Adjust the minimum rating to choose the set.'
   const intervalChoices = INTERVAL_CHOICES.includes(interval)
     ? INTERVAL_CHOICES
     : [...INTERVAL_CHOICES, interval].sort((a, b) => a - b)
 
-  const onImgError = (id) => {
-    if (!mounted.current || currentId.current !== id) return
-    setFailedIds((previous) => new Set(previous).add(id))
+  const onImgError = (id, image) => {
+    if (!mounted.current || currentId.current !== id || imageRef.current !== image) return
+    const nextFailed = new Set(failedIds).add(id)
+    if (nextFailed.size === deck.length) focusHeadingIfPlaybackDisables()
+    setFailedIds(nextFailed)
+    if (!playingRef.current) {
+      setPausedErrorId(id)
+      return
+    }
     advance()
   }
   const toggleFullscreen = async () => {
@@ -291,9 +332,11 @@ export default function Slideshow() {
         <p className="ui-section-description" role="status">The images in this set could not be loaded. Retry the list or change the minimum rating.</p>
         <button className="ui-button" onClick={retryPhotos}>Retry photographs</button>
       </section> : current ? <>
-        <img key={current.id} className="slideshow-photo" src={shotImage(current.id)}
-          alt={`Photograph from ${name}`} decoding="async" onError={() => onImgError(current.id)}
-          onLoad={() => { if (mounted.current && currentId.current === current.id) setImageState({ id: current.id, ready: true }) }} />
+        {pausedImageFailed
+          ? <p className="slideshow-image-unavailable">This photograph is unavailable. Resume playback to continue.</p>
+          : <img ref={imageRef} key={current.id} className="slideshow-photo" src={shotImage(current.id)}
+            alt={`Photograph from ${name}`} decoding="async" onError={(event) => onImgError(current.id, event.currentTarget)}
+            onLoad={(event) => { if (mounted.current && currentId.current === current.id && imageRef.current === event.currentTarget) setImageState({ id: current.id, ready: true }) }} />}
         {imageLoading && <p className="slideshow-image-loading" role="status">Loading photograph…</p>}
       </> : loading ? <div className="slideshow-message" role="status"><h2 className="ui-section-title">Loading photographs…</h2><p className="ui-help">Reading the photographs that meet the minimum rating.</p></div>
         : <section className="slideshow-message ui-surface" aria-labelledby="ss-empty-title"><h2 id="ss-empty-title" className="ui-section-title">{EMPTY_RESULT_MESSAGE}</h2>
@@ -303,8 +346,8 @@ export default function Slideshow() {
 
     <footer className="slideshow-controls">
       <div className="slideshow-context"><p className="slideshow-session">{name || 'No photograph selected'}</p>
-        <p className="ui-help">{loading && current ? 'Updating the photograph set…' : current && !allFailed ? deck.length === 1 ? 'Single photograph; no automatic advance.' : `Advances automatically every ${interval} seconds.` : 'Adjust the minimum rating to choose the set.'}</p>
-        {current && failedIds.size > 0 && !allFailed && <p className="ui-help" role="status">Unavailable photographs encountered: {failedIds.size}. Playback continues.</p>}
+        <p className="ui-help">{playbackStatus}</p>
+        {current && failedIds.size > 0 && !allFailed && <p className="ui-help" role="status">{pausedImageFailed ? 'The current photograph is unavailable. Playback is paused.' : `Unavailable photographs encountered: ${failedIds.size}. ${playing ? 'Playback continues.' : 'Playback is paused.'}`}</p>}
       </div>
       <div className="ui-field"><label className="ui-label" htmlFor="ss-rating">Minimum rating</label>
         <select id="ss-rating" name="min_rating" className="ui-control" value={min_rating} onChange={(event) => setSetting('min_rating', event.target.value)}>
@@ -314,9 +357,14 @@ export default function Slideshow() {
         <select id="ss-interval" name="interval" className="ui-control" value={interval} onChange={(event) => setSetting('interval', event.target.value)}>
           {intervalChoices.map((seconds) => <option key={seconds} value={seconds}>{seconds}s</option>)}
         </select></div>
-      <div className="slideshow-fullscreen"><button className="ui-button" onClick={toggleFullscreen}
-        disabled={!fullscreen && !document.documentElement.requestFullscreen}>{fullscreen ? 'Exit fullscreen' : 'Fullscreen'}</button>
-        {!document.documentElement.requestFullscreen && <p className="ui-help">Fullscreen is unavailable in this browser.</p>}</div>
+      <div className="slideshow-actions">
+        <button ref={playbackRef} className="ui-button" type="button" onClick={togglePlayback} disabled={!canAdvance}>
+          {playing ? 'Pause slideshow' : 'Resume slideshow'}
+        </button>
+        <div className="slideshow-fullscreen"><button className="ui-button" onClick={toggleFullscreen}
+          disabled={!fullscreen && !document.documentElement.requestFullscreen}>{fullscreen ? 'Exit fullscreen' : 'Fullscreen'}</button>
+          {!document.documentElement.requestFullscreen && <p className="ui-help">Fullscreen is unavailable in this browser.</p>}</div>
+      </div>
       {fullscreenError && <p className="ui-notice slideshow-fullscreen-error" data-tone="error" role="alert">{fullscreenError}</p>}
     </footer>
   </dialog>
