@@ -15,6 +15,14 @@ const mount = async () => {
 }
 const image = () => host.querySelector('.slideshow-photo')
 const click = async (name) => act(async () => { const el = [...host.querySelectorAll('button')].find((b) => b.textContent === name); expect(el).toBeTruthy(); el.click(); await Promise.resolve() })
+const keyboardActivate = async (name, key) => act(async () => {
+  const el = [...host.querySelectorAll('button')].find((button) => button.textContent === name)
+  expect(el).toBeTruthy(); el.focus()
+  el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }))
+  el.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }))
+  await Promise.resolve()
+})
 const hash = async (value) => { await act(async () => { window.location.hash = value; window.dispatchEvent(new HashChangeEvent('hashchange')); await Promise.resolve() }); await tick(0) }
 const edit = async (id, value) => {
   await act(async () => {
@@ -132,6 +140,59 @@ it('retries listing errors only on an explicit action and keeps URL settings', a
   await click('Retry photographs'); expect(api.get).toHaveBeenCalledTimes(2)
   expect(host.querySelector('#ss-interval').value).toBe('7'); expect(host.querySelector('#ss-rating').value).toBe('4')
 })
+it('keeps focus on the viewer while a keyboard retry is pending and after success', async () => {
+  const response = deferred()
+  api.get.mockRejectedValueOnce(Error('Listing unavailable')).mockReturnValueOnce(response.promise)
+  window.location.hash = '#/slideshow?interval=7&min_rating=4&lookahead=2'
+  await mount()
+  await keyboardActivate('Retry photographs', 'Enter')
+  expect(api.get).toHaveBeenCalledTimes(2)
+  expect(document.activeElement).toBe(host.querySelector('h1'))
+  expect(host.querySelector('.slideshow-stage').getAttribute('aria-busy')).toBe('true')
+  await act(async () => { response.resolve(rows); await Promise.resolve(); await Promise.resolve() })
+  expect(image()).toBeTruthy(); expect(document.activeElement).toBe(host.querySelector('h1'))
+  expect(window.location.hash).toBe('#/slideshow?interval=7&min_rating=4&lookahead=2')
+})
+it('keeps focus on the viewer when a keyboard retry returns another error', async () => {
+  const response = deferred()
+  api.get.mockRejectedValueOnce(Error('Listing unavailable')).mockReturnValueOnce(response.promise)
+  await mount(); await keyboardActivate('Retry photographs', ' ')
+  expect(document.activeElement).toBe(host.querySelector('h1'))
+  await act(async () => { response.reject(Error('Retry unavailable')); await Promise.resolve(); await Promise.resolve() })
+  expect(host.querySelector('[role="alert"]').textContent).toBe('Retry unavailable')
+  expect(document.activeElement).toBe(host.querySelector('h1'))
+  expect(api.get).toHaveBeenCalledTimes(2)
+})
+it('keeps focus on the viewer when reloading an empty set by keyboard', async () => {
+  const response = deferred()
+  api.get.mockResolvedValueOnce([]).mockReturnValueOnce(response.promise)
+  rows = []
+  await mount(); await keyboardActivate('Reload photographs', 'Enter')
+  expect(document.activeElement).toBe(host.querySelector('h1'))
+  expect(host.querySelector('.slideshow-stage').getAttribute('aria-busy')).toBe('true')
+  await act(async () => { response.resolve([]); await Promise.resolve(); await Promise.resolve() })
+  expect(host.textContent).toContain('No photographs meet this threshold')
+  expect(document.activeElement).toBe(host.querySelector('h1'))
+})
+it('does not move focus to the viewer when a pointer retry starts without focus', async () => {
+  const response = deferred()
+  api.get.mockRejectedValueOnce(Error('Listing unavailable')).mockReturnValueOnce(response.promise)
+  await mount()
+  const interval = host.querySelector('#ss-interval'), button = [...host.querySelectorAll('button')].find((item) => item.textContent === 'Retry photographs')
+  interval.focus()
+  await act(async () => { button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })); await Promise.resolve() })
+  expect(document.activeElement).toBe(interval)
+  await act(async () => { response.resolve(rows); await Promise.resolve(); await Promise.resolve() })
+})
+it('does not steal focus moved voluntarily while a keyboard retry is pending', async () => {
+  const response = deferred()
+  api.get.mockRejectedValueOnce(Error('Listing unavailable')).mockReturnValueOnce(response.promise)
+  await mount(); await keyboardActivate('Retry photographs', 'Enter')
+  const interval = host.querySelector('#ss-interval')
+  interval.focus()
+  await act(async () => { response.resolve(rows); await Promise.resolve(); await Promise.resolve() })
+  expect(document.activeElement).toBe(interval)
+})
 it('skips a missing image while decode failures leave playback working', async () => {
   decodeFailure = true; await mount(); await fail()
   expect(image().getAttribute('src')).toBe('/api/shots/12/image'); expect(host.textContent).toContain('Unavailable photographs encountered: 1')
@@ -160,11 +221,58 @@ it('reports a fullscreen refusal without changing the photograph or writing data
   await mount(); await click('Fullscreen')
   expect(host.textContent).toContain('Fullscreen blocked'); expect(image().getAttribute('src')).toBe('/api/shots/11/image'); expect(api.post).not.toHaveBeenCalled()
 })
-it('handles native Escape cancellation and the real Library link', async () => {
+it('leaves on native Escape cancellation when fullscreen is not active', async () => {
+  await mount()
+  const cancel = new Event('cancel', { cancelable: true })
+  await act(async () => host.querySelector('dialog').dispatchEvent(cancel))
+  expect(cancel.defaultPrevented).toBe(true); expect(window.location.hash).toBe('#/library')
+  expect(document.exitFullscreen).not.toHaveBeenCalled()
+})
+it('uses the first fullscreen Escape only to return to window mode', async () => {
   await mount(); await click('Fullscreen')
-  await act(async () => host.querySelector('dialog').dispatchEvent(new Event('cancel', { cancelable: true })))
-  expect(window.location.hash).toBe('#/library'); expect(document.exitFullscreen).toHaveBeenCalledTimes(1)
+  const dialog = host.querySelector('dialog')
+  const cancel = new Event('cancel', { cancelable: true })
+  await act(async () => {
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    dialog.dispatchEvent(cancel)
+    dialog.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true }))
+    fullElement = null
+    document.dispatchEvent(new Event('fullscreenchange'))
+  })
+  expect(cancel.defaultPrevented).toBe(true)
+  expect(document.exitFullscreen).toHaveBeenCalledTimes(1)
+  expect(window.location.hash).toBe('#/slideshow')
+  expect(dialog.open).toBe(true); expect(fullElement).toBeNull()
+
+  const secondCancel = new Event('cancel', { cancelable: true })
+  await act(async () => dialog.dispatchEvent(secondCancel))
+  expect(window.location.hash).toBe('#/library')
   expect(host.querySelector('a').getAttribute('href')).toBe('#/library')
+})
+it('allows the next Escape to leave when fullscreen exit fails', async () => {
+  await mount(); await click('Fullscreen')
+  document.exitFullscreen.mockRejectedValueOnce(Error('Fullscreen exit blocked'))
+  const dialog = host.querySelector('dialog')
+  await act(async () => {
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    dialog.dispatchEvent(new Event('cancel', { cancelable: true }))
+    dialog.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true }))
+    await Promise.resolve(); await Promise.resolve()
+  })
+  expect(dialog.open).toBe(true); expect(window.location.hash).toBe('#/slideshow')
+  expect(host.querySelector('[role="alert"]').textContent).toContain('Fullscreen exit blocked')
+
+  await act(async () => {
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    dialog.dispatchEvent(new Event('cancel', { cancelable: true }))
+    dialog.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true }))
+  })
+  expect(window.location.hash).toBe('#/library')
+})
+it('lets the fullscreen button exit without closing the viewer', async () => {
+  await mount(); await click('Fullscreen'); await click('Exit fullscreen')
+  expect(fullElement).toBeNull(); expect(host.querySelector('dialog').open).toBe(true)
+  expect(window.location.hash).toBe('#/slideshow')
 })
 it('does not adopt a listing that resolves after unmount', async () => {
   const wait = deferred(); api.get.mockReturnValueOnce(wait.promise); await mount()
