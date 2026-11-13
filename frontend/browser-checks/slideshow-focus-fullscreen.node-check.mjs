@@ -76,6 +76,23 @@ test('Slideshow preserves focus through list recovery and separates fullscreen E
         if (url.pathname === '/api/sessions') return route.fulfill({ json: [] })
         if (url.pathname === '/api/photos') {
           state.photoCalls += 1
+          if (state.mode === 'empty-initial' && state.photoCalls === 1) {
+            state.started.resolve()
+            const response = await state.response.promise
+            return route.fulfill({ status: response.status, json: response.body })
+          }
+          if (state.mode === 'empty-retry' && state.photoCalls === 1) return route.fulfill({ json: [] })
+          if (state.mode === 'empty-retry' && state.photoCalls === 2) {
+            state.started.resolve()
+            const response = await state.response.promise
+            return route.fulfill({ status: response.status, json: response.body })
+          }
+          if (state.mode === 'empty-rating' && state.photoCalls === 1) return route.fulfill({ json: photos })
+          if (state.mode === 'empty-rating' && state.photoCalls === 2 && url.searchParams.get('min_rating') === '5') {
+            state.started.resolve()
+            const response = await state.response.promise
+            return route.fulfill({ status: response.status, json: response.body })
+          }
           if (state.mode === 'empty-reload' && state.photoCalls === 1) return route.fulfill({ json: [] })
           if (state.mode !== 'fullscreen' && state.photoCalls === 1) {
             return route.fulfill({ status: 503, json: { detail: 'Synthetic list failure' } })
@@ -108,6 +125,41 @@ test('Slideshow preserves focus through list recovery and separates fullscreen E
       await page.goto(`${origin}/#/slideshow?interval=60&min_rating=0&lookahead=2`)
       await page.getByRole('heading', { name: 'Slideshow', level: 1 }).waitFor()
       return { page, state }
+    }
+
+    async function statusNodes(page) {
+      const session = await page.context().newCDPSession(page)
+      try {
+        const { nodes } = await session.send('Accessibility.getFullAXTree')
+        const byId = new Map(nodes.map((node) => [node.nodeId, node]))
+        const collectText = (nodeId, seen = new Set()) => {
+          if (seen.has(nodeId)) return []
+          seen.add(nodeId)
+          const node = byId.get(nodeId)
+          if (!node) return []
+          return [
+            node.name?.value || '',
+            ...(node.childIds || []).flatMap((childId) => collectText(childId, seen)),
+          ].filter(Boolean)
+        }
+        const statuses = []
+        for (const node of nodes.filter((item) => item.role?.value === 'status')) {
+          let className = ''
+          if (node.backendDOMNodeId) {
+            const { node: domNode } = await session.send('DOM.describeNode', { backendNodeId: node.backendDOMNodeId })
+            const classIndex = domNode.attributes?.indexOf('class') ?? -1
+            if (classIndex >= 0) className = domNode.attributes[classIndex + 1]
+          }
+          statuses.push({
+            className,
+            live: node.properties?.find((item) => item.name === 'live')?.value?.value || null,
+            text: collectText(node.nodeId).join(' ').trim(),
+          })
+        }
+        return statuses
+      } finally {
+        await session.detach()
+      }
     }
 
     async function recovery(width, height, mode, key, outcome, preserveExternalFocus = false) {
@@ -242,6 +294,96 @@ test('Slideshow preserves focus through list recovery and separates fullscreen E
         }
         if (failure) throw failure
       })
+    }
+
+    async function emptyResultScenario(width, height, mode) {
+      await suite.test(width + 'x' + height + ': ' + mode + ' announces only the current empty result', async () => {
+        const { page, state } = await openPage(width, height, mode)
+        let failure
+        try {
+          const region = page.locator('.slideshow-empty-status')
+          await region.waitFor()
+          assert.equal(await region.getAttribute('role'), 'status')
+
+          if (mode === 'empty-initial') {
+            await state.started.promise
+            await page.getByText('Loading photographs…').waitFor()
+            assert.equal(await region.textContent(), '')
+            const loadingAx = await statusNodes(page)
+            assert.ok(loadingAx.some((item) => item.className.split(' ').includes('slideshow-empty-status') && item.live === 'polite'))
+            assert.ok(loadingAx.some((item) => item.text.includes('Loading photographs…')))
+            state.response.resolve({ status: 200, body: [] })
+          } else if (mode === 'empty-retry') {
+            await page.getByRole('heading', { name: 'No photographs meet this threshold' }).waitFor()
+            assert.equal(await region.textContent(), 'No photographs meet this threshold')
+            await tabTo(page, page.getByRole('button', { name: 'Reload photographs', exact: true }))
+            await page.keyboard.press('Enter')
+            await state.started.promise
+            await page.getByText('Loading photographs…').waitFor()
+            assert.equal(await region.textContent(), '')
+            const loadingAx = await statusNodes(page)
+            assert.ok(loadingAx.some((item) => item.className.split(' ').includes('slideshow-empty-status') && item.text === '' && item.live === 'polite'))
+            state.response.resolve({ status: 200, body: [] })
+          } else {
+            await page.waitForFunction(() => {
+              const image = document.querySelector('.slideshow-photo')
+              return image?.complete && image.naturalWidth > 0
+            })
+            assert.equal(await region.textContent(), '')
+            await page.locator('#ss-rating').focus()
+            await page.locator('#ss-rating').selectOption('5')
+            await state.started.promise
+            await page.waitForFunction(() => document.querySelector('.slideshow-stage')?.getAttribute('aria-busy') === 'true')
+            assert.equal(await region.textContent(), '')
+            assert.equal(await page.evaluate(() => document.activeElement.id), 'ss-rating')
+            state.response.resolve({ status: 200, body: [] })
+          }
+
+          await page.getByRole('heading', { name: 'No photographs meet this threshold' }).waitFor()
+          assert.equal(await region.textContent(), 'No photographs meet this threshold')
+          assert.equal(await page.getByRole('button', { name: 'Reload photographs', exact: true }).count(), 1)
+          assert.equal(await page.locator('.slideshow-stage').getAttribute('aria-busy'), 'false')
+          const resultAx = await statusNodes(page)
+          assert.ok(resultAx.some((item) => item.className.split(' ').includes('slideshow-empty-status')
+            && item.live === 'polite' && item.text.includes('No photographs meet this threshold')))
+          assert.equal(await page.evaluate(() => location.hash), mode === 'empty-rating'
+            ? '#/slideshow?interval=60&min_rating=5&lookahead=2'
+            : '#/slideshow?interval=60&min_rating=0&lookahead=2')
+          assert.equal(await page.evaluate(() => document.activeElement.id), mode === 'empty-rating' ? 'ss-rating' : 'ss-title')
+
+          if (mode === 'empty-rating') {
+            await page.locator('#ss-rating').selectOption('0')
+            await page.waitForFunction(() => {
+              const image = document.querySelector('.slideshow-photo')
+              return image?.complete && image.naturalWidth > 0
+            })
+            assert.equal(await region.textContent(), '')
+            assert.equal(await page.evaluate(() => location.hash), '#/slideshow?interval=60&min_rating=0&lookahead=2')
+            assert.equal(await page.evaluate(() => document.activeElement.id), 'ss-rating')
+          }
+          assert.equal(state.photoCalls, mode === 'empty-rating' ? 3 : mode === 'empty-initial' ? 1 : 2)
+        } catch (error) {
+          failure = error
+        } finally {
+          const cleanupErrors = []
+          state.response.resolve({ status: 503, body: { detail: 'Synthetic teardown' } })
+          let pageCloseFailed = false
+          try {
+            await page.close()
+          } catch (error) {
+            cleanupErrors.push(error); pageCloseFailed = true
+          }
+          if (!pageCloseFailed) await Promise.allSettled([...handlers])
+          failure = combineFailures(failure, cleanupErrors, 'Empty-result scenario and cleanup failed')
+        }
+        if (failure) throw failure
+      })
+    }
+
+    for (const [width, height] of [[375, 812], [1440, 1000]]) {
+      await emptyResultScenario(width, height, 'empty-initial')
+      await emptyResultScenario(width, height, 'empty-retry')
+      await emptyResultScenario(width, height, 'empty-rating')
     }
 
     function stateFor(page) { return states.get(page) }

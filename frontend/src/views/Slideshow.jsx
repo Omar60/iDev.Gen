@@ -20,6 +20,7 @@ const INTERVAL_CHOICES = [1, 2, 3, 5, 10, 15, 30, 60]
 // `0` is "everything that was not rejected", which is the useful setting until
 // rating has happened, so it leads the list rather than reading as "off".
 const RATING_LABELS = ['All', '1★+', '2★+', '3★+', '4★+', '5★']
+const EMPTY_RESULT_MESSAGE = 'No photographs meet this threshold'
 
 /** Parse the three settings from the hash, returning each clamped to its
  *  range. Anything that is not a usable number takes the default rather than
@@ -55,6 +56,7 @@ export default function Slideshow() {
   const [play, setPlay] = useState({ deck: [], index: 0 })
   const { deck, index } = play
   const [loadError, setLoadError] = useState('')
+  const [emptyStatus, setEmptyStatus] = useState('')
   const [loading, setLoading] = useState(true)
   const [reload, setReload] = useState(0)
   const [failedIds, setFailedIds] = useState(new Set())
@@ -109,10 +111,12 @@ export default function Slideshow() {
   useEffect(() => {
     let cancelled = false
     setLoadError('')
+    setEmptyStatus('')
     setLoading(true)
     api.get(`/api/photos?min_rating=${min_rating}`)
       .then((rows) => {
         if (cancelled) return
+        setEmptyStatus(rows.length === 0 ? EMPTY_RESULT_MESSAGE : '')
         setFailedIds(new Set())
         setImageState({ id: null, ready: false })
         setPlay({ deck: shuffle(rows), index: 0 })
@@ -268,6 +272,7 @@ export default function Slideshow() {
 
   return <dialog ref={dialogRef} className="studio-ui slideshow-view" aria-labelledby="ss-title" aria-modal="true"
     onKeyDown={onDialogKeyDown} onKeyUp={onDialogKeyUp} onCancel={onDialogCancel}>
+    <p className="slideshow-empty-status" role="status">{emptyStatus}</p>
     <header className="slideshow-header">
       <div><h1 id="ss-title" ref={headingRef} tabIndex={-1}>Slideshow</h1>
         <p className="ui-help">{current && !allFailed ? `Photograph ${index + 1} of ${deck.length}` : 'Photographs across sessions'}</p></div>
@@ -291,7 +296,7 @@ export default function Slideshow() {
           onLoad={() => { if (mounted.current && currentId.current === current.id) setImageState({ id: current.id, ready: true }) }} />
         {imageLoading && <p className="slideshow-image-loading" role="status">Loading photograph…</p>}
       </> : loading ? <div className="slideshow-message" role="status"><h2 className="ui-section-title">Loading photographs…</h2><p className="ui-help">Reading the photographs that meet the minimum rating.</p></div>
-        : <section className="slideshow-message ui-surface" aria-labelledby="ss-empty-title"><h2 id="ss-empty-title" className="ui-section-title">No photographs meet this threshold</h2>
+        : <section className="slideshow-message ui-surface" aria-labelledby="ss-empty-title"><h2 id="ss-empty-title" className="ui-section-title">{EMPTY_RESULT_MESSAGE}</h2>
           <p className="ui-section-description">Lower the minimum rating below, or return to Library to review your photographs.</p>
           <button className="ui-button" onClick={retryPhotos}>Reload photographs</button></section>}
     </div>
