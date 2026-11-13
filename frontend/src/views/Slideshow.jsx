@@ -65,6 +65,8 @@ export default function Slideshow() {
   const headingRef = useRef(null)
   const mounted = useRef(false)
   const ownsFullscreen = useRef(false)
+  const fullscreenEscapePending = useRef(false)
+  const fullscreenEscapeFailed = useRef(false)
   const currentId = useRef(null)
   currentId.current = deck[index]?.id
 
@@ -79,7 +81,10 @@ export default function Slideshow() {
     dialog.showModal()
     document.body.style.overflow = 'hidden'
     headingRef.current?.focus()
-    const onFullscreen = () => setFullscreen(Boolean(document.fullscreenElement))
+    const onFullscreen = () => {
+      if (!document.fullscreenElement) fullscreenEscapeFailed.current = false
+      setFullscreen(Boolean(document.fullscreenElement))
+    }
     document.addEventListener('fullscreenchange', onFullscreen)
     return () => {
       mounted.current = false
@@ -196,6 +201,11 @@ export default function Slideshow() {
     window.location.hash = '#/library'
   }
 
+  const retryPhotos = (event) => {
+    if (event.detail === 0 && document.activeElement === event.currentTarget) headingRef.current?.focus()
+    setReload((value) => value + 1)
+  }
+
   const current = deck[index]
   const name = current?.session_name || (current ? `Session #${current.session_id}` : '')
   const allFailed = deck.length > 0 && failedIds.size === deck.length
@@ -235,8 +245,29 @@ export default function Slideshow() {
     }
   }
 
+  // The native dialog cancel event runs before fullscreenchange on Escape.
+  const onDialogKeyDown = (event) => {
+    fullscreenEscapePending.current = event.key === 'Escape' && Boolean(document.fullscreenElement) && !fullscreenEscapeFailed.current
+    trapFocus(event)
+  }
+  const onDialogKeyUp = (event) => {
+    if (event.key === 'Escape') fullscreenEscapePending.current = false
+  }
+  const onDialogCancel = (event) => {
+    event.preventDefault()
+    if (fullscreenEscapePending.current) {
+      fullscreenEscapePending.current = false
+      document.exitFullscreen().catch((error) => {
+        fullscreenEscapeFailed.current = true
+        if (mounted.current) setFullscreenError(`Fullscreen could not be changed. Try again or use the window view. ${error.message || ''}`.trim())
+      })
+      return
+    }
+    leave()
+  }
+
   return <dialog ref={dialogRef} className="studio-ui slideshow-view" aria-labelledby="ss-title" aria-modal="true"
-    onKeyDown={trapFocus} onCancel={(event) => { event.preventDefault(); leave() }}>
+    onKeyDown={onDialogKeyDown} onKeyUp={onDialogKeyUp} onCancel={onDialogCancel}>
     <header className="slideshow-header">
       <div><h1 id="ss-title" ref={headingRef} tabIndex={-1}>Slideshow</h1>
         <p className="ui-help">{current && !allFailed ? `Photograph ${index + 1} of ${deck.length}` : 'Photographs across sessions'}</p></div>
@@ -249,11 +280,11 @@ export default function Slideshow() {
         <h2 id="ss-error-title" className="ui-section-title">Photographs could not be loaded</h2>
         <p className="ui-notice" data-tone="error" role="alert">{loadError}</p>
         <p className="ui-section-description">Your interval and minimum rating are kept in the address. Retry the list or adjust the rating below.</p>
-        <button className="ui-button ui-button--primary" onClick={() => setReload((value) => value + 1)}>Retry photographs</button>
+        <button className="ui-button ui-button--primary" onClick={retryPhotos}>Retry photographs</button>
       </section> : allFailed ? <section className="slideshow-message ui-surface" aria-labelledby="ss-unavailable-title">
         <h2 id="ss-unavailable-title" className="ui-section-title">No photograph could be displayed</h2>
         <p className="ui-section-description" role="status">The images in this set could not be loaded. Retry the list or change the minimum rating.</p>
-        <button className="ui-button" onClick={() => setReload((value) => value + 1)}>Retry photographs</button>
+        <button className="ui-button" onClick={retryPhotos}>Retry photographs</button>
       </section> : current ? <>
         <img key={current.id} className="slideshow-photo" src={shotImage(current.id)}
           alt={`Photograph from ${name}`} decoding="async" onError={() => onImgError(current.id)}
@@ -262,7 +293,7 @@ export default function Slideshow() {
       </> : loading ? <div className="slideshow-message" role="status"><h2 className="ui-section-title">Loading photographs…</h2><p className="ui-help">Reading the photographs that meet the minimum rating.</p></div>
         : <section className="slideshow-message ui-surface" aria-labelledby="ss-empty-title"><h2 id="ss-empty-title" className="ui-section-title">No photographs meet this threshold</h2>
           <p className="ui-section-description">Lower the minimum rating below, or return to Library to review your photographs.</p>
-          <button className="ui-button" onClick={() => setReload((value) => value + 1)}>Reload photographs</button></section>}
+          <button className="ui-button" onClick={retryPhotos}>Reload photographs</button></section>}
     </div>
 
     <footer className="slideshow-controls">
