@@ -428,21 +428,41 @@ def test_resume_preflight_recomputes_scope_and_renewal_is_atomic_and_linked(
         "SELECT request_json FROM full_auto_run_scope_input WHERE run_id = ?", run_id,
     )["request_json"])["scene_anchor"]
     monkeypatch.setattr(resource_full_auto.resource_planning, "is_enabled", lambda: False)
-    db.run(
-        "UPDATE resource_library SET kind = 'other' WHERE library_key = ?",
+    library = db.one(
+        "SELECT id, kind FROM resource_library WHERE library_key = ?",
         anchor["library_key"],
     )
+    assert library is not None
+    library_id = library["id"]
+    original_kind = library["kind"]
+    assert original_kind != "other"
+    try:
+        db.run(
+            "UPDATE resource_library SET kind = 'other' WHERE id = ?",
+            library_id,
+        )
+        assert db.one(
+            "SELECT id, kind FROM resource_library WHERE id = ?", library_id,
+        ) == {"id": library_id, "kind": "other"}
 
-    replay = client.post(
-        f"/api/sessions/{session_id}/full-auto/{run_id}/resume",
-        json=accept_body,
-    )
-    assert replay.status_code == 200, replay.text
-    assert replay.json() == accepted.json()
-    assert db.one("SELECT revision FROM full_auto_run WHERE run_id = ?", run_id)["revision"] == accepted.json()["revision"]
-    assert len(db.q(
-        "SELECT * FROM full_auto_run_authorization WHERE run_id = ?", run_id,
-    )) == 1
+        replay = client.post(
+            f"/api/sessions/{session_id}/full-auto/{run_id}/resume",
+            json=accept_body,
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json() == accepted.json()
+        assert db.one("SELECT revision FROM full_auto_run WHERE run_id = ?", run_id)["revision"] == accepted.json()["revision"]
+        assert len(db.q(
+            "SELECT * FROM full_auto_run_authorization WHERE run_id = ?", run_id,
+        )) == 1
+    finally:
+        db.run(
+            "UPDATE resource_library SET kind = ? WHERE id = ?",
+            original_kind, library_id,
+        )
+    assert db.one(
+        "SELECT id, kind FROM resource_library WHERE id = ?", library_id,
+    ) == {"id": library_id, "kind": original_kind}
 
 
 def test_unchanged_resume_without_comparison_pair_replays_after_dependency_drift(
@@ -463,13 +483,34 @@ def test_unchanged_resume_without_comparison_pair_replays_after_dependency_drift
         "SELECT request_json FROM full_auto_run_scope_input WHERE run_id = ?", run_id,
     )["request_json"])["scene_anchor"]
     monkeypatch.setattr(resource_full_auto.resource_planning, "is_enabled", lambda: False)
-    db.run(
-        "UPDATE resource_library SET kind = 'other' WHERE library_key = ?",
+    library = db.one(
+        "SELECT id, kind FROM resource_library WHERE library_key = ?",
         anchor["library_key"],
     )
-    replay = client.post(path, json=body)
-    assert replay.status_code == 200, replay.text
-    assert replay.json() == resumed.json()
+    assert library is not None
+    library_id = library["id"]
+    original_kind = library["kind"]
+    assert original_kind != "other"
+    try:
+        db.run(
+            "UPDATE resource_library SET kind = 'other' WHERE id = ?",
+            library_id,
+        )
+        assert db.one(
+            "SELECT id, kind FROM resource_library WHERE id = ?", library_id,
+        ) == {"id": library_id, "kind": "other"}
+
+        replay = client.post(path, json=body)
+        assert replay.status_code == 200, replay.text
+        assert replay.json() == resumed.json()
+    finally:
+        db.run(
+            "UPDATE resource_library SET kind = ? WHERE id = ?",
+            original_kind, library_id,
+        )
+    assert db.one(
+        "SELECT id, kind FROM resource_library WHERE id = ?", library_id,
+    ) == {"id": library_id, "kind": original_kind}
 
 
 def test_changed_scope_comparison_deadline_survives_post_after_seconds(
