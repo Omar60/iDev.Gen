@@ -95,16 +95,37 @@ def test_probe_resume_receipt_replays_after_dependency_drift(client, seeded, mon
     anchor = json.loads(db.one(
         "SELECT request_json FROM full_auto_run_scope_input WHERE run_id = ?", run_id,
     )["request_json"])["scene_anchor"]
-    db.run(
-        "UPDATE resource_library SET kind = 'other' WHERE library_key = ?",
+    library = db.one(
+        "SELECT id, kind FROM resource_library WHERE library_key = ?",
         anchor["library_key"],
     )
-    current_time["value"] = (start + timedelta(seconds=301)).isoformat(timespec="seconds")
-    replay = client.post(
-        f"/api/sessions/{session_id}/full-auto/{run_id}/resume", json=body,
-    )
-    assert replay.status_code == 200, replay.text
-    assert replay.json() == accepted.json()
+    assert library is not None
+    library_id = library["id"]
+    original_kind = library["kind"]
+    assert original_kind != "other"
+    try:
+        db.run(
+            "UPDATE resource_library SET kind = 'other' WHERE id = ?",
+            library_id,
+        )
+        assert db.one(
+            "SELECT id, kind FROM resource_library WHERE id = ?", library_id,
+        ) == {"id": library_id, "kind": "other"}
+
+        current_time["value"] = (start + timedelta(seconds=301)).isoformat(timespec="seconds")
+        replay = client.post(
+            f"/api/sessions/{session_id}/full-auto/{run_id}/resume", json=body,
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json() == accepted.json()
+    finally:
+        db.run(
+            "UPDATE resource_library SET kind = ? WHERE id = ?",
+            original_kind, library_id,
+        )
+    assert db.one(
+        "SELECT id, kind FROM resource_library WHERE id = ?", library_id,
+    ) == {"id": library_id, "kind": original_kind}
 
 
 def test_probe_expired_comparison_refuses_with_zero_writes(client, seeded, monkeypatch):
