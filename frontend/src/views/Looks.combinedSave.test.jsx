@@ -353,9 +353,50 @@ describe('combined look and automation save', () => {
     api.postVersioned.mockImplementationOnce(() => pending)
     await render()
     await readyManualDraft('Recover after remount')
-    await click(button('Save look + automation profile'))
+
+    const subtle = globalThis.crypto.subtle
+    const digest = subtle.digest.bind(subtle)
+    let releaseDigest
+    const digestGate = new Promise((resolve) => { releaseDigest = resolve })
+    const digestSpy = vi.spyOn(subtle, 'digest').mockImplementation(async (...args) => {
+      await digestGate
+      return digest(...args)
+    })
+    try {
+      await click(button('Save look + automation profile'))
+      await act(async () => {
+        await vi.waitFor(() => {
+          const saveError = container.querySelector('form[aria-label="Create look form"] [role="alert"]')?.textContent.trim() || 'none'
+          const blockers = container.querySelector('[aria-label="Combined save blockers"]')?.textContent.trim() || 'none'
+          const saveButton = container.querySelector('form[aria-label="Create look form"] button[type="submit"]')
+          expect(
+            digestSpy,
+            `The save did not reach its digest. Save error: ${saveError}; blockers: ${blockers}; button: ${saveButton?.textContent.trim() || 'missing'} (disabled: ${saveButton?.disabled ?? 'unknown'})`,
+          ).toHaveBeenCalledTimes(1)
+        }, { timeout: 1000 })
+      })
+      expect(api.postVersioned).not.toHaveBeenCalled()
+    } finally {
+      releaseDigest()
+    }
+
+    await act(async () => {
+      await vi.waitFor(() => {
+        const saveError = container.querySelector('form[aria-label="Create look form"] [role="alert"]')?.textContent.trim() || 'none'
+        const blockers = container.querySelector('[aria-label="Combined save blockers"]')?.textContent.trim() || 'none'
+        const saveButton = container.querySelector('form[aria-label="Create look form"] button[type="submit"]')
+        expect(
+          api.postVersioned.mock.calls.length,
+          `The initial POST did not start. Save error: ${saveError}; blockers: ${blockers}; button: ${saveButton?.textContent.trim() || 'missing'} (disabled: ${saveButton?.disabled ?? 'unknown'})`,
+        ).toBe(1)
+      }, { timeout: 1000 })
+    })
+    expect(api.postVersioned).toHaveBeenCalledTimes(1)
     const originalPath = api.postVersioned.mock.calls[0][0]
     const originalBody = api.postVersioned.mock.calls[0][1]
+    const originalRequestId = originalBody.request_id
+    expect(originalRequestId).toEqual(expect.any(String))
+    expect(Object.isFrozen(originalBody)).toBe(true)
     await act(async () => { root.render(<Looks key="retry-surface" />); await flush() })
 
     rejectWrite(new TypeError('connection lost'))
@@ -367,7 +408,7 @@ describe('combined look and automation save', () => {
     expect(api.postVersioned).toHaveBeenCalledTimes(2)
     expect(api.postVersioned.mock.calls[1][0]).toBe(originalPath)
     expect(api.postVersioned.mock.calls[1][1]).toBe(originalBody)
-    expect(api.postVersioned.mock.calls[1][1].request_id).toBe(originalBody.request_id)
+    expect(api.postVersioned.mock.calls[1][1].request_id).toBe(originalRequestId)
     expect(container.textContent).toContain('Saved look version 1 and automation profile revision 1')
   })
 
