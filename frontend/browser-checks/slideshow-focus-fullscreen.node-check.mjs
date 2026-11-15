@@ -33,6 +33,75 @@ async function tabTo(page, locator) {
   throw new Error('The keyboard target was not reached.')
 }
 
+async function assertVisibleFocus(locator, label) {
+  const focus = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect()
+    const region = element.closest('.slideshow-controls, .slideshow-header').getBoundingClientRect()
+    const style = getComputedStyle(element)
+    return {
+      active: document.activeElement === element,
+      focusVisible: element.matches(':focus-visible'),
+      outlineStyle: style.outlineStyle,
+      outlineWidth: parseFloat(style.outlineWidth),
+      left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+      width: rect.width, height: rect.height,
+      regionLeft: region.left, regionRight: region.right, regionTop: region.top, regionBottom: region.bottom,
+      viewportWidth: innerWidth, viewportHeight: innerHeight,
+    }
+  })
+  assert.ok(focus.active, `${label} lost keyboard focus: ${JSON.stringify(focus)}`)
+  assert.ok(focus.focusVisible && focus.outlineStyle !== 'none' && focus.outlineWidth >= 2,
+    `${label} has no visible keyboard focus: ${JSON.stringify(focus)}`)
+  assert.ok(focus.width >= 44 && focus.height >= 44, `${label} is smaller than 44px: ${JSON.stringify(focus)}`)
+  assert.ok(focus.left >= 0 && focus.right <= focus.viewportWidth
+    && focus.top >= 0 && focus.bottom <= focus.viewportHeight
+    && focus.left >= focus.regionLeft && focus.right <= focus.regionRight
+    && focus.top >= focus.regionTop && focus.bottom <= focus.regionBottom,
+  `${label} is not fully visible: ${JSON.stringify(focus)}`)
+}
+
+async function waitForScrollToSettle(page, selector, start) {
+  await page.locator(selector).evaluate((element, scrollTop) => {
+    element.__scrollCheck = { last: scrollTop, changed: false, stableFrames: 0 }
+  }, start)
+  await page.waitForFunction((target) => {
+    const element = document.querySelector(target), state = element.__scrollCheck
+    const current = element.scrollTop
+    if (Math.abs(current - state.last) > 0.1) {
+      state.last = current; state.changed = true; state.stableFrames = 0
+    } else if (state.changed) state.stableFrames += 1
+    return state.changed && state.stableFrames >= 3
+  }, selector, { polling: 'raf', timeout: 5000 })
+  return page.locator(selector).evaluate((element) => {
+    const scrollTop = element.scrollTop
+    delete element.__scrollCheck
+    return scrollTop
+  })
+}
+
+async function pageKeyScrollState(page) {
+  return page.evaluate(() => {
+    const rect = (selector) => {
+      const { left, right, top, bottom } = document.querySelector(selector).getBoundingClientRect()
+      return { left, right, top, bottom }
+    }
+    const active = document.activeElement
+    const footer = document.querySelector('.slideshow-controls')
+    return {
+      active: active === document.querySelector('.slideshow-actions > button'),
+      focusVisible: active.matches(':focus-visible'),
+      name: active.textContent.trim(),
+      clicks: window.pauseActivations,
+      footerScrollTop: footer.scrollTop,
+      footerMaxScroll: Math.max(0, footer.scrollHeight - footer.clientHeight),
+      dialogScrollTop: document.querySelector('.slideshow-view').scrollTop,
+      documentScrollTop: document.scrollingElement.scrollTop,
+      stage: rect('.slideshow-stage'),
+      photo: rect('.slideshow-photo'),
+    }
+  })
+}
+
 test('Slideshow preserves focus through list recovery and separates fullscreen Escape in Chromium', { timeout: 120000 }, async (suite) => {
   const owned = await createOwnedRoot()
   const unexpected = [], runtimeErrors = [], handlers = new Set(), states = new WeakMap()
@@ -580,8 +649,17 @@ test('Slideshow preserves focus through list recovery and separates fullscreen E
       if (failure) throw failure
     })
 
-    for (const [width, height] of [[320, 568], [375, 812], [768, 1024], [1440, 1000], [844, 390], [844, 320]]) {
-      await suite.test(`${width}x${height}: playback controls remain visible, reachable, and inside the viewport`, async () => {
+    for (const [width, height] of [
+      [320, 320], [320, 568], [375, 320], [375, 812], [768, 1024], [1440, 1000], [844, 390], [844, 320],
+      [499, 320], [499, 390], [499, 420], [499, 421],
+      [500, 320], [560, 320], [607, 320], [608, 320],
+      [500, 390], [607, 390], [608, 390],
+      [500, 420], [500, 421], [608, 420], [608, 421],
+      [899, 320], [900, 320],
+    ]) {
+      const compact = width <= 499 && height <= 420
+      const nativeVerticalScroll = width === 499 && height === 421
+      await suite.test(`${width}x${height}: slideshow layout and keyboard controls remain usable`, async () => {
         const { page } = await openPage(width, height, 'fullscreen')
         let failure
         try {
@@ -594,32 +672,192 @@ test('Slideshow preserves focus through list recovery and separates fullscreen E
               const { left, right, top, bottom, width, height } = element.getBoundingClientRect()
               return { left, right, top, bottom, width, height }
             }
+            const dialog = document.querySelector('dialog.slideshow-view')
+            const header = document.querySelector('.slideshow-header')
             const play = document.querySelector('.slideshow-actions > button')
             const fullscreen = document.querySelector('.slideshow-fullscreen .ui-button')
             const stage = document.querySelector('.slideshow-stage')
+            const photo = document.querySelector('.slideshow-photo')
             const footer = document.querySelector('.slideshow-controls')
+            const documentScroller = document.scrollingElement
+            const compactMedia = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules])
+              .find((rule) => rule.type === CSSRule.MEDIA_RULE
+                && rule.conditionText.includes('max-width: 499px') && rule.conditionText.includes('max-height: 420px'))
+            const compactCSS = compactMedia ? [...compactMedia.cssRules].map((rule) => rule.cssText).join('\n') : ''
+            const headerStyle = getComputedStyle(header), footerStyle = getComputedStyle(footer)
             return {
               documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
               viewportWidth: innerWidth,
               viewportHeight: innerHeight,
-              play: bounds(play), fullscreen: bounds(fullscreen), stage: bounds(stage), footer: bounds(footer),
-              objectFit: getComputedStyle(document.querySelector('.slideshow-photo')).objectFit,
+              documentScrollHeight: documentScroller.scrollHeight,
+              documentClientHeight: documentScroller.clientHeight,
+              documentScrollTop: documentScroller.scrollTop,
+              dialog: {
+                ...bounds(dialog),
+                scrollWidth: dialog.scrollWidth,
+                clientWidth: dialog.clientWidth,
+                scrollHeight: dialog.scrollHeight,
+                clientHeight: dialog.clientHeight,
+                scrollTop: dialog.scrollTop,
+              },
+              header: bounds(header), play: bounds(play), fullscreen: bounds(fullscreen),
+              stage: bounds(stage), photo: bounds(photo), footer: bounds(footer),
+              footerScrollHeight: footer.scrollHeight,
+              footerClientHeight: footer.clientHeight,
+              footerScrollWidth: footer.scrollWidth,
+              footerClientWidth: footer.clientWidth,
+              footerScrollTop: footer.scrollTop,
+              footerOverflowY: getComputedStyle(footer).overflowY,
+              compactPadding: {
+                headerBlockStart: parseFloat(headerStyle.paddingBlockStart),
+                headerBlockEnd: parseFloat(headerStyle.paddingBlockEnd),
+                headerInlineStart: parseFloat(headerStyle.paddingInlineStart),
+                headerInlineEnd: parseFloat(headerStyle.paddingInlineEnd),
+                footerBlockStart: parseFloat(footerStyle.paddingBlockStart),
+                footerBlockEnd: parseFloat(footerStyle.paddingBlockEnd),
+                footerInlineStart: parseFloat(footerStyle.paddingInlineStart),
+                footerInlineEnd: parseFloat(footerStyle.paddingInlineEnd),
+              },
+              compactCSS,
+              objectFit: getComputedStyle(photo).objectFit,
             }
           })
+          assert.ok(metrics.dialog.scrollWidth <= metrics.dialog.clientWidth, 'dialog horizontal overflow: ' + JSON.stringify(metrics))
+          assert.ok(metrics.footerScrollWidth <= metrics.footerClientWidth, 'footer horizontal overflow: ' + JSON.stringify(metrics))
           assert.ok(metrics.documentWidth <= metrics.viewportWidth, `horizontal overflow: ${JSON.stringify(metrics)}`)
           for (const button of [metrics.play, metrics.fullscreen]) {
             assert.ok(button.left >= 0 && button.right <= width, `button outside horizontal viewport: ${JSON.stringify(metrics)}`)
-            assert.ok(button.top >= 0 && button.bottom <= height, `button outside vertical viewport: ${JSON.stringify(metrics)}`)
+            if (!compact && !nativeVerticalScroll) {
+              assert.ok(button.top >= 0 && button.bottom <= height, `button outside vertical viewport: ${JSON.stringify(metrics)}`)
+            }
             assert.ok(button.width >= 44 && button.height >= 44, `undersized target: ${JSON.stringify(metrics)}`)
           }
           assert.ok(metrics.play.right <= metrics.fullscreen.left || metrics.fullscreen.right <= metrics.play.left
             || metrics.play.bottom <= metrics.fullscreen.top || metrics.fullscreen.bottom <= metrics.play.top,
           `playback and fullscreen controls overlap: ${JSON.stringify(metrics)}`)
+          assert.ok(metrics.header.bottom <= metrics.stage.top, 'header overlaps photo area: ' + JSON.stringify(metrics))
           assert.ok(metrics.stage.bottom <= metrics.footer.top, `photo area overlaps footer: ${JSON.stringify(metrics)}`)
+          assert.ok(metrics.photo.left >= metrics.stage.left && metrics.photo.right <= metrics.stage.right
+            && metrics.photo.top >= metrics.stage.top && metrics.photo.bottom <= metrics.stage.bottom,
+          'photograph escapes its stage: ' + JSON.stringify(metrics))
+          if (compact) {
+            assert.ok(Object.entries(metrics.compactPadding)
+              .every(([side, value]) => value >= (side.includes('Inline') ? 12 : 4)),
+            'compact padding is below its CSS minimum: ' + JSON.stringify(metrics.compactPadding))
+            for (const declaration of [
+              'max(4px, env(safe-area-inset-top))', 'max(4px, env(safe-area-inset-bottom))',
+              'max(12px, env(safe-area-inset-left))', 'max(12px, env(safe-area-inset-right))',
+            ]) assert.ok(metrics.compactCSS.includes(declaration), `compact CSS lost ${declaration}`)
+            assert.ok(metrics.dialog.scrollHeight <= metrics.dialog.clientHeight, 'dialog has exterior vertical overflow: ' + JSON.stringify(metrics))
+            assert.ok(metrics.documentScrollHeight <= metrics.documentClientHeight && metrics.documentScrollTop === 0,
+              'document has exterior vertical scrolling: ' + JSON.stringify(metrics))
+            assert.equal(metrics.dialog.scrollTop, 0, 'dialog scrolled outside the compact footer: ' + JSON.stringify(metrics))
+            assert.ok(metrics.header.top >= 0 && metrics.header.bottom <= height, 'header outside compact viewport: ' + JSON.stringify(metrics))
+            assert.ok(metrics.stage.top >= 0 && metrics.stage.bottom <= height && metrics.stage.height >= 160,
+              'compact photo stage is outside the viewport or below 160px: ' + JSON.stringify(metrics))
+            assert.ok(metrics.footer.top >= 0 && metrics.footer.bottom <= height, 'footer outside compact viewport: ' + JSON.stringify(metrics))
+            assert.equal(metrics.footerOverflowY, 'auto', 'compact footer is not the scroll container: ' + JSON.stringify(metrics))
+          } else if (!nativeVerticalScroll) {
+            assert.ok(metrics.header.top >= 0 && metrics.header.bottom <= height, 'header outside vertical viewport: ' + JSON.stringify(metrics))
+            assert.ok(metrics.stage.top >= 0 && metrics.stage.bottom <= height, 'photo area outside vertical viewport: ' + JSON.stringify(metrics))
+            assert.ok(metrics.footer.top >= 0 && metrics.footer.bottom <= height, 'footer outside vertical viewport: ' + JSON.stringify(metrics))
+          } else {
+            await page.locator('.slideshow-view').evaluate((dialog) => { dialog.scrollTop = dialog.scrollHeight })
+            const scroll = await page.locator('.slideshow-view').evaluate((dialog) => ({
+              top: dialog.scrollTop,
+              playBottom: document.querySelector('.slideshow-actions > button').getBoundingClientRect().bottom,
+              fullscreenBottom: document.querySelector('.slideshow-fullscreen .ui-button').getBoundingClientRect().bottom,
+            }))
+            assert.ok(scroll.top > 0 && scroll.playBottom <= height && scroll.fullscreenBottom <= height,
+              'native dialog scroll did not reveal the controls: ' + JSON.stringify({ metrics, scroll }))
+          }
           assert.equal(metrics.objectFit, 'contain')
           const play = page.getByRole('button', { name: 'Pause slideshow', exact: true })
-          await tabTo(page, play)
-          assert.equal(await play.evaluate((button) => document.activeElement === button), true)
+          const fullscreen = page.getByRole('button', { name: 'Fullscreen', exact: true })
+          if (compact) {
+            const focusOrder = [
+              [page.getByRole('link', { name: 'Exit to Library', exact: true }), 'Exit to Library'],
+              [page.getByLabel('Minimum rating', { exact: true }), 'Minimum rating'],
+              [page.getByLabel('Seconds per photograph', { exact: true }), 'Seconds per photograph'],
+              [play, 'Pause slideshow'],
+              [fullscreen, 'Fullscreen'],
+            ]
+            assert.equal(await page.evaluate(() => document.activeElement.id), 'ss-title',
+              'the compact keyboard path did not begin at the focused slideshow heading')
+            for (const [target, label] of focusOrder) {
+              await page.keyboard.press('Tab')
+              await assertVisibleFocus(target, label)
+            }
+            for (let index = focusOrder.length - 2; index >= 0; index -= 1) {
+              await page.keyboard.press('Shift+Tab')
+              await assertVisibleFocus(focusOrder[index][0], `${focusOrder[index][1]} after Shift+Tab`)
+            }
+            await page.keyboard.press('Shift+Tab')
+            await assertVisibleFocus(fullscreen, 'Fullscreen after Shift+Tab wraps')
+            await page.keyboard.press('Tab')
+            await assertVisibleFocus(focusOrder[0][0], 'Exit to Library after Tab wraps')
+            for (let index = 1; index <= 3; index += 1) {
+              await page.keyboard.press('Tab')
+              await assertVisibleFocus(focusOrder[index][0], `${focusOrder[index][1]} before manual scrolling`)
+            }
+            await page.evaluate(() => {
+              window.pauseActivations = 0
+              document.querySelector('.slideshow-actions > button').addEventListener('click', () => { window.pauseActivations += 1 })
+            })
+            const beforePageKeys = await pageKeyScrollState(page)
+            const requirePageKeys = height === 320
+            assert.ok(!requirePageKeys || beforePageKeys.footerMaxScroll > 0,
+              'compact 320px viewport has no footer scroll range: ' + JSON.stringify(beforePageKeys))
+            if (beforePageKeys.footerMaxScroll > 0) {
+              const pauseNode = await play.elementHandle()
+              assert.ok(pauseNode, 'Pause button DOM node is missing')
+              await page.locator('.slideshow-controls').evaluate((footer) => { footer.scrollTop = footer.scrollHeight })
+              const initial = await pageKeyScrollState(page)
+              assert.ok(initial.footerScrollTop > 0 && Math.abs(initial.footerScrollTop - initial.footerMaxScroll) <= 1,
+                'footer was not scrolled to a position that allows PageUp: ' + JSON.stringify({ beforePageKeys, initial }))
+              assert.equal(await page.evaluate((pause) => document.activeElement === pause, pauseNode), true,
+                'Pause lost focus before PageUp')
+              await page.keyboard.press('PageUp')
+              await waitForScrollToSettle(page, '.slideshow-controls', initial.footerScrollTop)
+              const afterPageUp = await pageKeyScrollState(page)
+              assert.equal(await page.evaluate((pause) => document.activeElement === pause, pauseNode), true,
+                'PageUp moved focus from the original Pause button')
+              assert.ok(afterPageUp.active && afterPageUp.focusVisible && afterPageUp.name === 'Pause slideshow',
+                'PageUp activated Pause or lost its focus ring: ' + JSON.stringify({ initial, afterPageUp }))
+              assert.equal(afterPageUp.clicks, 0, 'PageUp activated Pause: ' + JSON.stringify({ initial, afterPageUp }))
+              assert.equal(afterPageUp.dialogScrollTop, initial.dialogScrollTop, 'PageUp scrolled the dialog: ' + JSON.stringify({ initial, afterPageUp }))
+              assert.equal(afterPageUp.documentScrollTop, initial.documentScrollTop, 'PageUp scrolled the document: ' + JSON.stringify({ initial, afterPageUp }))
+              assert.deepEqual(afterPageUp.stage, initial.stage, 'PageUp moved the photo stage')
+              assert.deepEqual(afterPageUp.photo, initial.photo, 'PageUp moved the photograph')
+              assert.ok(afterPageUp.footerScrollTop <= 1, 'PageUp did not reach the footer top: ' + JSON.stringify({ initial, afterPageUp }))
+              await page.keyboard.press('PageDown')
+              await waitForScrollToSettle(page, '.slideshow-controls', afterPageUp.footerScrollTop)
+              const afterPageDown = await pageKeyScrollState(page)
+              assert.equal(await page.evaluate((pause) => document.activeElement === pause, pauseNode), true,
+                'PageDown moved focus from the original Pause button')
+              assert.ok(afterPageDown.active && afterPageDown.focusVisible && afterPageDown.name === 'Pause slideshow',
+                'PageDown activated Pause or lost its focus ring: ' + JSON.stringify({ initial, afterPageUp, afterPageDown }))
+              assert.equal(afterPageDown.clicks, 0, 'PageDown activated Pause: ' + JSON.stringify({ initial, afterPageUp, afterPageDown }))
+              assert.equal(afterPageDown.dialogScrollTop, initial.dialogScrollTop, 'PageDown scrolled the dialog: ' + JSON.stringify({ initial, afterPageUp, afterPageDown }))
+              assert.equal(afterPageDown.documentScrollTop, initial.documentScrollTop, 'PageDown scrolled the document: ' + JSON.stringify({ initial, afterPageUp, afterPageDown }))
+              assert.deepEqual(afterPageDown.stage, initial.stage, 'PageDown moved the photo stage')
+              assert.deepEqual(afterPageDown.photo, initial.photo, 'PageDown moved the photograph')
+              assert.ok(Math.abs(afterPageDown.footerScrollTop - afterPageDown.footerMaxScroll) <= 1,
+                'PageDown did not reach the footer end: ' + JSON.stringify({ initial, afterPageUp, afterPageDown }))
+            }
+            await assertVisibleFocus(play, 'Pause slideshow after manual footer scrolling')
+            await page.keyboard.press('Tab')
+            await assertVisibleFocus(fullscreen, 'Fullscreen after manual footer scrolling')
+            await page.keyboard.press('Shift+Tab')
+            await assertVisibleFocus(play, 'Pause slideshow after returning from manual footer scrolling')
+          } else {
+            await tabTo(page, play)
+            await assertVisibleFocus(play, 'Pause slideshow')
+            await page.keyboard.press('Tab')
+            await assertVisibleFocus(fullscreen, 'Fullscreen')
+            await page.keyboard.press('Shift+Tab')
+            await assertVisibleFocus(play, 'Pause slideshow after Shift+Tab')
+          }
         } catch (error) {
           failure = error
         } finally {

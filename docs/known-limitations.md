@@ -107,6 +107,9 @@ discover them mid-shoot.
   you are running. A tunnel providing a genuine certificate (Tailscale Serve
   or equivalent) turns the origin secure and Wake Lock becomes available;
   until then the limitation is documented rather than worked around.
+- **The slideshow may scroll vertically at 499×421.** The dialog needs about
+  26px of native scrolling to reveal the controls; keyboard navigation still
+  reaches them.
 - **Sustained bandwidth at short intervals.** The slideshow sustains roughly
   3.3 Mbps at a three-second interval regardless of the look-ahead value,
   because preparing ahead moves the same cost earlier rather than removing
