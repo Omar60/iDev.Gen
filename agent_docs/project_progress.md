@@ -1,5 +1,76 @@
 # Project Progress
 
+## F03 Closure — 2026-11-15
+
+F03 is closed on main at 016d7b12e4a950ac8a2104adad5a4baac21a8172.
+PR [#11](https://github.com/Omar60/iDev.Gen/pull/11) was integrated with
+GitHub's Rebase and merge from original head
+bf6179e9eb5fdfff893a88f2d2dd5353317c43f7. The integrated commit is a direct
+child of 890c326cb413021f7d0f15e46de25ba23c3ce218; its stable patch ID matches
+the original, and the F03 commit diff contains only the three authorized files.
+
+This closure resolves the minor landscape overflow listed as pending in the
+historical U01-A3 record below; that record remains unchanged.
+
+- D2-H uses three footer columns at widths 500–607px, with context spanning a
+  full row, and four columns from 608px.
+- D3-V applies at widths up to 499px and heights up to 420px. It compacts the
+  header, keeps a 160px minimum stage, preserves object-fit: contain and safe
+  area insets, and lets the footer scroll internally without horizontal or
+  outer-dialog overflow.
+- At 499×421, native dialog scrolling of about 26px remains documented; the
+  controls remain reachable by keyboard.
+
+Post-merge Windows run
+[43740618171](https://github.com/Omar60/iDev.Gen/actions/runs/43740618171) completed SUCCESS on the exact
+integrated SHA, attempt 1. Runtime: Node 22.23.4, Python 3.12.10,
+Playwright 1.65.0 and Chromium 158.0.8127.18. The required
+isolated-e2e check succeeded. Python reported 3,729 passed, one opt-in
+benchmark skipped, and 14 warnings; frontend passed 1,063/1,063; Vite 7.3.6
+build passed with the existing large-chunk warning; Node lifecycle passed
+7/7; privacy/source passed 46/46; and Playwright passed 30/30 in each of three
+runs, with zero E2E skips, retries, flaky or unexpected results. HTML, identity,
+egress, isolation and teardown audits passed with no residual processes, ports
+or temporary roots. Symlink coverage executed and passed with one warning.
+The dedicated local Slideshow Chromium check passed 46/46; it is separate from
+the hosted Playwright inventory.
+
+Non-blocking CI observations include React act warnings, punycode
+deprecations and the GitHub Actions Node 20 runtime deprecation warning.
+
+Separate pending items remain outside F03: spoken screen-reader verification
+for H01, a product decision on automatic reduced-motion behavior, and physical
+device verification of safe-area insets. No global WCAG conformance is claimed.
+
+## U01-A3 Closure — 2026-11-14
+
+U01-A3 is closed on `main` at `890c326cb413021f7d0f15e46de25ba23c3ce218`.
+PR [#10](https://github.com/Omar60/iDev.Gen/pull/10) was integrated using
+GitHub's Rebase and merge. The rebased commits are:
+
+- `38dcfdb742f09040c0671aac5a95e0aefe304c0c`, parent `2ac978a4f0a2bf87286e4ec5eeacfd9ad5ccbf3b`.
+- `890c326cb413021f7d0f15e46de25ba23c3ce218`, parent `38dcfdb742f09040c0671aac5a95e0aefe304c0c`.
+
+Their stable patch IDs match the two original commits, the resulting tree is
+identical to the approved PR head tree, and the accumulated diff contains only
+`frontend/src/views/Looks.combinedSave.test.jsx`, `tests/test_fa46_probe.py`,
+and `tests/test_full_auto_control_api.py`. The history is linear.
+
+Post-merge [Windows run 43620593551](https://github.com/Omar60/iDev.Gen/actions/runs/43620593551)
+passed on the exact `main` SHA above, attempt 1. `isolated-e2e` and its audits
+passed. Python reported 3,729 passed and one skipped; frontend 1,063/1,063;
+build passed; Node lifecycle 7/7; privacy/source 46/46; and the 30-case, seven-file
+A3 inventory passed three times with no E2E skips, retries, flaky or unexpected
+results.
+
+Non-blocking observations: the opt-in Python benchmark was skipped, the build
+reported the existing large-chunk warning, and GitHub Actions reported a runtime
+deprecation warning. No follow-up work was opened for these observations.
+
+Separate pending items remain outside U01-A3: F03's minor landscape overflow,
+any future product decision on automatic reduced-motion behavior, and spoken
+screen-reader verification for H01. No global WCAG conformance is claimed.
+
 ## CI-W2 Branch Preparation — 2026-11-12
 
 Base: `main@1cc55b275c9fb27700165c73a52b2fbb7fc4c978`. D4c is accepted and
